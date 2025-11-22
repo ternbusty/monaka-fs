@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "fs-core",
+  "fs-wasm",
+  "examples/rust",
+]
+resolver="3"
+
+# examples/c is built with its own Makefile (no cargo)
+
+[profile.dev]
+opt-level = 1
