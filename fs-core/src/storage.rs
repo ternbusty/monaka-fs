@@ -112,7 +112,7 @@ impl BlockStorage {
     pub fn truncate(&mut self, new_size: usize) {
         if new_size < self.size {
             // Shrinking the file
-            let new_block_count = (new_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            let new_block_count = new_size.div_ceil(BLOCK_SIZE);
 
             // Free blocks beyond the new size
             self.blocks.truncate(new_block_count);

@@ -4,18 +4,21 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::cell::RefCell;
 
-mod time;
 pub mod ffi;
+mod time;
 
 use time::WasiTimeProvider;
 
 // Re-export FFI functions and types for external use
-pub use ffi::{FsStat, fs_open_path, fs_open_path_with_flags, fs_write, fs_read, fs_close, fs_seek, fs_fstat, fs_mkdir};
+pub use ffi::{
+    FsStat, fs_close, fs_fstat, fs_mkdir, fs_open_path, fs_open_path_with_flags, fs_read, fs_seek,
+    fs_write,
+};
 pub use fs_core::*;
 
 // Global filesystem state for single-threaded WASM environment
 thread_local! {
-    static FS: RefCell<Option<Box<fs_core::Fs<WasiTimeProvider>>>> = RefCell::new(None);
+    static FS: RefCell<Option<Box<fs_core::Fs<WasiTimeProvider>>>> = const { RefCell::new(None) };
 }
 
 // Helper function to get or initialize the global filesystem instance
