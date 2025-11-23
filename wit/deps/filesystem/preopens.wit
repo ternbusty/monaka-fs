@@ -1,0 +1,10 @@
+// Simplified WASI filesystem preopens interface for halycon VFS
+// Based on wasi:filesystem/preopens@0.2.0
+
+interface preopens {
+    use types.{descriptor};
+
+    // Get preopened directories
+    // Returns list of (descriptor, path) tuples
+    get-directories: func() -> list<tuple<descriptor, string>>;
+}

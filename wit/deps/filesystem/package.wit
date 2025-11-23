@@ -1,0 +1,2 @@
+// WASI Filesystem Package
+package wasi:filesystem@0.2.0;

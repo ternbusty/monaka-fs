@@ -129,6 +129,112 @@ impl<T: TimeProvider> Fs<T> {
         self.open_path_with_flags(path, O_RDWR | O_CREAT)
     }
 
+    pub fn open_at(&mut self, dir_fd: Fd, path: &str, flags: u32) -> Result<Fd, FsError> {
+        debug!(
+            "open_at: dir_fd={}, path={}, flags={:#x}",
+            dir_fd, path, flags
+        );
+
+        // Reject absolute paths - open_at only accepts relative paths
+        if path.starts_with('/') {
+            error!("open_at: absolute path not allowed");
+            return Err(FsError::InvalidArgument);
+        }
+
+        // Get the directory file descriptor
+        let dir_handle = self.fd_table.get(&dir_fd).ok_or_else(|| {
+            error!("open_at: bad directory file descriptor {}", dir_fd);
+            FsError::BadFileDescriptor
+        })?;
+
+        // Get the directory inode
+        let dir_inode = self
+            .inode_table
+            .get(&dir_handle.inode_id)
+            .ok_or(FsError::NotFound)?
+            .clone();
+
+        // Verify it's a directory
+        {
+            let inode = dir_inode.borrow();
+            if matches!(inode.content, FileContent::File(_)) {
+                error!("open_at: dir_fd {} is not a directory", dir_fd);
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        // Handle empty path - refers to the directory itself
+        if path.is_empty() {
+            error!("open_at: empty path not supported yet");
+            return Err(FsError::InvalidArgument);
+        }
+
+        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if comps.is_empty() {
+            return Err(FsError::InvalidArgument);
+        }
+
+        // Start from the directory fd, not root
+        let mut current_inode = dir_inode;
+
+        // Navigate to parent directory (all components except last)
+        for comp in comps.iter().take(comps.len() - 1) {
+            current_inode = self.find_inode(&current_inode, comp)?;
+
+            // Verify it's a directory
+            let inode = current_inode.borrow();
+            if matches!(inode.content, FileContent::File(_)) {
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        // Handle final component (file name)
+        let filename = comps[comps.len() - 1];
+        let file_inode = match self.find_inode(&current_inode, filename) {
+            Ok(inode) => inode,
+            Err(FsError::NotFound) if flags & O_CREAT != 0 => {
+                // Create new file if O_CREAT is set
+                self.create_inode(&current_inode, filename, false)?
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Verify it's a file, not a directory
+        {
+            let inode = file_inode.borrow();
+            if matches!(inode.content, FileContent::Dir(_)) {
+                return Err(FsError::IsADirectory);
+            }
+        }
+
+        // Handle O_TRUNC: truncate file to 0 bytes if flag is set
+        if flags & O_TRUNC != 0 {
+            let access_mode = flags & 0x3;
+            if access_mode == O_RDONLY {
+                return Err(FsError::InvalidArgument);
+            }
+            let mut inode = file_inode.borrow_mut();
+            if let FileContent::File(storage) = &mut inode.content {
+                storage.truncate(0);
+                inode.metadata.size = 0;
+                inode.metadata.modified = self.time_provider.now();
+            }
+        }
+
+        let inode_id = file_inode.borrow().id;
+        let handle = FileHandle {
+            inode_id,
+            position: 0,
+            flags,
+        };
+
+        let fd = self.allocate_fd();
+        self.fd_table.insert(fd, handle);
+        debug!("open_at: allocated fd={} for inode={}", fd, inode_id);
+        Ok(fd)
+    }
+
     pub fn open_path_with_flags(&mut self, path: &str, flags: u32) -> Result<Fd, FsError> {
         debug!("open_path_with_flags: path={}, flags={:#x}", path, flags);
 

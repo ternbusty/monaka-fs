@@ -1,0 +1,257 @@
+// Simplified WASI filesystem types interface for halycon VFS
+// Based on wasi:filesystem/types@0.2.0
+
+interface types {
+    use wasi:io/streams@0.2.0.{input-stream, output-stream};
+    use wasi:clocks/wall-clock@0.2.0.{datetime};
+
+    // Error resource for filesystem operations
+    resource error;
+
+    // Get filesystem error code
+    filesystem-error-code: func(err: borrow<error>) -> option<error-code>;
+
+    // File size type
+    type filesize = u64;
+
+    // Link count type
+    type link-count = u64;
+
+    // Error codes
+    variant error-code {
+        access,           // 0
+        would-block,      // 1
+        already,          // 2
+        bad-descriptor,   // 3
+        busy,             // 4
+        deadlock,         // 5
+        quota,            // 6
+        exist,            // 7
+        file-too-large,   // 8
+        illegal-byte-sequence, // 9
+        in-progress,      // 10
+        interrupted,      // 11
+        invalid,          // 12
+        io,               // 13
+        is-directory,     // 14
+        loop,             // 15
+        too-many-links,   // 16
+        message-size,     // 17
+        name-too-long,    // 18
+        no-device,        // 19
+        no-entry,         // 20
+        no-lock,          // 21
+        insufficient-memory, // 22
+        insufficient-space,  // 23
+        not-directory,    // 24
+        not-empty,        // 25
+        not-recoverable,  // 26
+        unsupported,      // 27
+        no-tty,           // 28
+        no-such-device,   // 29
+        overflow,         // 30
+        not-permitted,    // 31
+        pipe,             // 32
+        read-only,        // 33
+        invalid-seek,     // 34
+        text-file-busy,   // 35
+        cross-device,     // 36
+    }
+
+    // Descriptor flags
+    flags descriptor-flags {
+        read,
+        write,
+        file-integrity-sync,
+        data-integrity-sync,
+        requested-write-sync,
+        mutate-directory,
+    }
+
+    // Path flags
+    flags path-flags {
+        symlink-follow,
+    }
+
+    // Open flags
+    flags open-flags {
+        create,
+        directory,
+        exclusive,
+        truncate,
+    }
+
+    // Descriptor type
+    enum descriptor-type {
+        unknown,
+        block-device,
+        character-device,
+        directory,
+        fifo,
+        symbolic-link,
+        regular-file,
+        socket,
+    }
+
+    // File metadata
+    record descriptor-stat {
+        // File type
+        file-type: descriptor-type,
+        // Link count
+        link-count: u64,
+        // File size
+        size: filesize,
+        // Access time
+        data-access-timestamp: option<datetime>,
+        // Modification time
+        data-modification-timestamp: option<datetime>,
+        // Status change time
+        status-change-timestamp: option<datetime>,
+    }
+
+    // Directory entry
+    record directory-entry {
+        // Entry type
+        entry-type: descriptor-type,
+        // Entry name
+        name: string,
+    }
+
+    // Advice for file access patterns
+    enum advice {
+        normal,
+        sequential,
+        random,
+        will-need,
+        dont-need,
+        no-reuse,
+    }
+
+    // Metadata hash value
+    record metadata-hash-value {
+        lower: u64,
+        upper: u64,
+    }
+
+    // New timestamp
+    variant new-timestamp {
+        no-change,
+        now,
+        timestamp(datetime),
+    }
+
+    // Directory entry stream
+    resource directory-entry-stream {
+        // Read next directory entry
+        read-directory-entry: func() -> result<option<directory-entry>, error-code>;
+    }
+
+    // File descriptor resource
+    resource descriptor {
+        // Read via stream from offset
+        read-via-stream: func(offset: filesize) -> result<input-stream, error-code>;
+
+        // Write via stream from offset
+        write-via-stream: func(offset: filesize) -> result<output-stream, error-code>;
+
+        // Append via stream
+        append-via-stream: func() -> result<output-stream, error-code>;
+
+        // Advise on file access pattern
+        advise: func(offset: filesize, length: filesize, advice: advice) -> result<_, error-code>;
+
+        // Sync data
+        sync-data: func() -> result<_, error-code>;
+
+        // Get flags
+        get-flags: func() -> result<descriptor-flags, error-code>;
+
+        // Get type
+        get-type: func() -> result<descriptor-type, error-code>;
+
+        // Set size
+        set-size: func(size: filesize) -> result<_, error-code>;
+
+        // Set times
+        set-times: func(
+            data-access-timestamp: new-timestamp,
+            data-modification-timestamp: new-timestamp,
+        ) -> result<_, error-code>;
+
+        // Read
+        read: func(length: filesize, offset: filesize) -> result<tuple<list<u8>, bool>, error-code>;
+
+        // Write
+        write: func(buffer: list<u8>, offset: filesize) -> result<filesize, error-code>;
+
+        // Read directory
+        read-directory: func() -> result<directory-entry-stream, error-code>;
+
+        // Sync
+        sync: func() -> result<_, error-code>;
+
+        // Create directory at
+        create-directory-at: func(path: string) -> result<_, error-code>;
+
+        // Stat
+        stat: func() -> result<descriptor-stat, error-code>;
+
+        // Stat at
+        stat-at: func(path-flags: path-flags, path: string) -> result<descriptor-stat, error-code>;
+
+        // Set times at
+        set-times-at: func(
+            path-flags: path-flags,
+            path: string,
+            data-access-timestamp: new-timestamp,
+            data-modification-timestamp: new-timestamp,
+        ) -> result<_, error-code>;
+
+        // Link at
+        link-at: func(
+            old-path-flags: path-flags,
+            old-path: string,
+            new-descriptor: borrow<descriptor>,
+            new-path: string,
+        ) -> result<_, error-code>;
+
+        // Open at
+        open-at: func(
+            path-flags: path-flags,
+            path: string,
+            open-flags: open-flags,
+            %flags: descriptor-flags,
+        ) -> result<descriptor, error-code>;
+
+        // Readlink at
+        readlink-at: func(path: string) -> result<string, error-code>;
+
+        // Remove directory at
+        remove-directory-at: func(path: string) -> result<_, error-code>;
+
+        // Rename at
+        rename-at: func(
+            old-path: string,
+            new-descriptor: borrow<descriptor>,
+            new-path: string,
+        ) -> result<_, error-code>;
+
+        // Symlink at
+        symlink-at: func(old-path: string, new-path: string) -> result<_, error-code>;
+
+        // Unlink file at
+        unlink-file-at: func(path: string) -> result<_, error-code>;
+
+        // Is same object
+        is-same-object: func(other: borrow<descriptor>) -> bool;
+
+        // Metadata hash
+        metadata-hash: func() -> result<metadata-hash-value, error-code>;
+
+        // Metadata hash at
+        metadata-hash-at: func(
+            path-flags: path-flags,
+            path: string,
+        ) -> result<metadata-hash-value, error-code>;
+    }
+}

@@ -1,0 +1,16 @@
+// Simplified WASI clocks wall-clock interface for halycon VFS
+// Based on wasi:clocks/wall-clock@0.2.0
+
+interface wall-clock {
+    // Datetime representation
+    record datetime {
+        seconds: u64,
+        nanoseconds: u32,
+    }
+
+    // Get current time
+    now: func() -> datetime;
+
+    // Resolution of the clock
+    resolution: func() -> datetime;
+}

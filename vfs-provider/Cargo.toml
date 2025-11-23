@@ -1,0 +1,19 @@
+[package]
+name = "vfs-provider"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fs-core = { path = "../fs-core", features = ["logging"] }
+wit-bindgen = "0.36"
+
+[build-dependencies]
+wit-bindgen = "0.36"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

@@ -1,0 +1,16 @@
+// Simplified WASI I/O poll interface for halycon VFS
+// Based on wasi:io/poll@0.2.0
+
+interface poll {
+    // Pollable resource for async operations
+    resource pollable {
+        // Check if ready (returns immediately)
+        ready: func() -> bool;
+
+        // Block until ready
+        block: func();
+    }
+
+    // Poll multiple pollables
+    poll: func(in: list<borrow<pollable>>) -> list<u32>;
+}

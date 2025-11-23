@@ -22,4 +22,19 @@ impl FsError {
             FsError::AlreadyExists => -17,    // EEXIST
         }
     }
+
+    /// Convert error to WASI error-code (u8)
+    /// Reference: WASI Preview 2 filesystem error-code enum
+    /// https://github.com/WebAssembly/wasi-filesystem/blob/main/wit/types.wit
+    pub fn to_wasi_error_code(&self) -> u8 {
+        match self {
+            FsError::NotFound => 44,         // noent
+            FsError::NotADirectory => 54,    // notdir
+            FsError::IsADirectory => 31,     // isdir
+            FsError::InvalidArgument => 28,  // inval
+            FsError::BadFileDescriptor => 8, // badf
+            FsError::PermissionDenied => 2,  // access
+            FsError::AlreadyExists => 20,    // exist
+        }
+    }
 }

@@ -1,0 +1,66 @@
+// Simplified WASI I/O streams interface for halycon VFS
+// Based on wasi:io/streams@0.2.0
+
+interface streams {
+    use poll.{pollable};
+
+    // Error resource for stream operations
+    resource error;
+
+    // Error type for stream operations
+    variant stream-error {
+        last-operation-failed(string),
+        closed,
+    }
+
+    // Input stream for reading
+    resource input-stream {
+        // Read up to len bytes from the stream
+        read: func(len: u64) -> result<list<u8>, stream-error>;
+
+        // Blocking read
+        blocking-read: func(len: u64) -> result<list<u8>, stream-error>;
+
+        // Skip bytes
+        skip: func(len: u64) -> result<u64, stream-error>;
+
+        // Blocking skip
+        blocking-skip: func(len: u64) -> result<u64, stream-error>;
+
+        // Subscribe to readability
+        subscribe: func() -> pollable;
+    }
+
+    // Output stream for writing
+    resource output-stream {
+        // Check how many bytes can be written
+        check-write: func() -> result<u64, stream-error>;
+
+        // Write bytes to the stream
+        write: func(contents: list<u8>) -> result<_, stream-error>;
+
+        // Blocking write that writes all bytes
+        blocking-write-and-flush: func(contents: list<u8>) -> result<_, stream-error>;
+
+        // Flush the stream
+        flush: func() -> result<_, stream-error>;
+
+        // Blocking flush
+        blocking-flush: func() -> result<_, stream-error>;
+
+        // Subscribe to writability
+        subscribe: func() -> pollable;
+
+        // Write zeroes
+        write-zeroes: func(len: u64) -> result<_, stream-error>;
+
+        // Blocking write zeroes and flush
+        blocking-write-zeroes-and-flush: func(len: u64) -> result<_, stream-error>;
+
+        // Splice from input stream
+        splice: func(src: borrow<input-stream>, len: u64) -> result<u64, stream-error>;
+
+        // Blocking splice
+        blocking-splice: func(src: borrow<input-stream>, len: u64) -> result<u64, stream-error>;
+    }
+}
