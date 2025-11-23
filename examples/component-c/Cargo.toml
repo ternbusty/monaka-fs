@@ -1,0 +1,14 @@
+[package]
+name = "component-c"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+
+[build-dependencies]

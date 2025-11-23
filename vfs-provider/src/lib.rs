@@ -142,28 +142,22 @@ struct VfsProvider;
 
 impl exports::wasi::filesystem::preopens::Guest for VfsProvider {
     fn get_directories() -> Vec<(Descriptor, String)> {
-        // Return root directory as descriptor 0
-        unsafe { vec![(Descriptor::from_handle(0), "/".to_string())] }
+        // Create a proper Descriptor resource for the root directory
+        let desc = Descriptor::new(DescriptorImpl { handle: 0 });
+        vec![(desc, "/".to_string())]
     }
 }
 
 impl exports::wasi::filesystem::types::Guest for VfsProvider {
     type Descriptor = DescriptorImpl;
     type DirectoryEntryStream = DirectoryEntryStreamImpl;
-    type Error = ErrorImpl;
 
-    fn filesystem_error_code(
-        _err: exports::wasi::filesystem::types::ErrorBorrow<'_>,
-    ) -> Option<ErrorCode> {
-        // Not yet implemented - would convert error resource to error code
+    fn filesystem_error_code(_err: &wasi::io::error::Error) -> Option<ErrorCode> {
+        // Not yet implemented - would convert io error resource to filesystem error code
+        // This function is used to downcast stream errors to filesystem errors
         None
     }
 }
-
-// Error resource implementation (stub)
-struct ErrorImpl;
-
-impl exports::wasi::filesystem::types::GuestError for ErrorImpl {}
 
 // Descriptor resource implementation
 struct DescriptorImpl {
@@ -221,10 +215,16 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn get_type(&self) -> Result<DescriptorType, ErrorCode> {
         VFS_STATE.with(|state| {
             let state = state.borrow();
+
+            // Handle root directory specially
+            if self.handle == 0 {
+                return Ok(DescriptorType::Directory);
+            }
+
             let fd = state.get_fd(self.handle)?;
 
             // Get metadata from fs
-            let metadata = state.fs.borrow().fstat(fd).map_err(to_error_code)?;
+            let _metadata = state.fs.borrow().fstat(fd).map_err(to_error_code)?;
 
             // Determine type based on metadata
             // For now, assume regular file (we need to add type info to metadata)
@@ -340,12 +340,34 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn stat(&self) -> Result<DescriptorStat, ErrorCode> {
         VFS_STATE.with(|state| {
             let state = state.borrow();
-            let fd = state.get_fd(self.handle)?;
 
+            // Handle root directory specially (handle 0, no FD)
+            if self.handle == 0 {
+                let metadata = state.fs.borrow().stat("/").map_err(to_error_code)?;
+                return Ok(DescriptorStat {
+                    type_: DescriptorType::Directory,
+                    link_count: 1,
+                    size: metadata.size,
+                    data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
+                        seconds: metadata.created,
+                        nanoseconds: 0,
+                    }),
+                    data_modification_timestamp: Some(wasi::clocks::wall_clock::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    }),
+                    status_change_timestamp: Some(wasi::clocks::wall_clock::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    }),
+                });
+            }
+
+            let fd = state.get_fd(self.handle)?;
             let metadata = state.fs.borrow().fstat(fd).map_err(to_error_code)?;
 
             Ok(DescriptorStat {
-                file_type: DescriptorType::RegularFile, // TODO: get from metadata
+                type_: DescriptorType::RegularFile, // TODO: get from metadata
                 link_count: 1,
                 size: metadata.size,
                 data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
@@ -378,7 +400,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             let metadata = state.fs.borrow().stat(&full_path).map_err(to_error_code)?;
 
             Ok(DescriptorStat {
-                file_type: DescriptorType::RegularFile, // TODO: determine from metadata
+                type_: DescriptorType::RegularFile, // TODO: determine from metadata
                 link_count: 1,
                 size: metadata.size,
                 data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
@@ -448,8 +470,8 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                     .map_err(to_error_code)?
             };
 
-            let descriptor = state.allocate_descriptor(fd);
-            Ok(unsafe { Descriptor::from_handle(descriptor) })
+            let handle = state.allocate_descriptor(fd);
+            Ok(Descriptor::new(DescriptorImpl { handle }))
         })
     }
 
