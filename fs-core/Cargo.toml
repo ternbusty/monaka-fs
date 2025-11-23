@@ -5,7 +5,9 @@ edition = "2024"
 resolver="3"
 
 [dependencies]
+log = { version = "0.4", optional = true, default-features = false }
 
 [features]
 default = ["std"]
 std = []
+logging = ["dep:log"]
