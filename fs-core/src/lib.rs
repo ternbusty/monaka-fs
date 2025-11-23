@@ -2,6 +2,40 @@
 
 extern crate alloc;
 
+// Logging support - conditional compilation for zero-cost when disabled
+#[cfg(feature = "logging")]
+pub use log::{debug, error, info, trace, warn};
+
+#[cfg(not(feature = "logging"))]
+#[macro_export]
+macro_rules! trace {
+    ($($t:tt)*) => {};
+}
+
+#[cfg(not(feature = "logging"))]
+#[macro_export]
+macro_rules! debug {
+    ($($t:tt)*) => {};
+}
+
+#[cfg(not(feature = "logging"))]
+#[macro_export]
+macro_rules! info {
+    ($($t:tt)*) => {};
+}
+
+#[cfg(not(feature = "logging"))]
+#[macro_export]
+macro_rules! warn {
+    ($($t:tt)*) => {};
+}
+
+#[cfg(not(feature = "logging"))]
+#[macro_export]
+macro_rules! error {
+    ($($t:tt)*) => {};
+}
+
 mod error;
 mod fs;
 mod handle;

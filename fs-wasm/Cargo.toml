@@ -8,8 +8,8 @@ resolver="3"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-fs-core = { path = "../fs-core"}
-wasi = "0.11"
+fs-core = { path = "../fs-core", features = ["logging"] }
+log = "0.4"
 
 [dev-dependencies]
 serial_test = "3.2"

@@ -7,6 +7,13 @@ use crate::inode::{FileContent, Inode, Metadata};
 use crate::time::{MonotonicCounter, TimeProvider};
 use crate::types::*;
 
+// Import logging macros
+#[cfg(feature = "logging")]
+use crate::{debug, error, trace};
+
+#[cfg(not(feature = "logging"))]
+use crate::{debug, error, trace};
+
 /// Main filesystem structure
 pub struct Fs<T: TimeProvider = MonotonicCounter> {
     next_inode: InodeId,
@@ -123,7 +130,10 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn open_path_with_flags(&mut self, path: &str, flags: u32) -> Result<Fd, FsError> {
+        debug!("open_path_with_flags: path={}, flags={:#x}", path, flags);
+
         if path.is_empty() {
+            error!("open_path_with_flags: empty path");
             return Err(FsError::InvalidArgument);
         }
 
@@ -198,14 +208,20 @@ impl<T: TimeProvider> Fs<T> {
 
         let fd = self.allocate_fd();
         self.fd_table.insert(fd, handle);
+        debug!(
+            "open_path_with_flags: allocated fd={} for inode={}",
+            fd, inode_id
+        );
         Ok(fd)
     }
 
     pub fn write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
-        let handle = self
-            .fd_table
-            .get_mut(&fd)
-            .ok_or(FsError::BadFileDescriptor)?;
+        trace!("write: fd={}, len={}", fd, buf.len());
+
+        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
+            error!("write: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
 
         // Check write permission
         let access_mode = handle.flags & 0x3;
@@ -234,17 +250,23 @@ impl<T: TimeProvider> Fs<T> {
                 handle.position += n as u64;
                 inode_ref.metadata.size = storage.size() as u64;
                 inode_ref.metadata.modified = self.time_provider.now();
+                debug!("write: fd={}, wrote {} bytes at pos {}", fd, n, pos);
                 Ok(n)
             }
-            FileContent::Dir(_) => Err(FsError::BadFileDescriptor),
+            FileContent::Dir(_) => {
+                error!("write: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
         }
     }
 
     pub fn read(&mut self, fd: Fd, out: &mut [u8]) -> Result<usize, FsError> {
-        let handle = self
-            .fd_table
-            .get_mut(&fd)
-            .ok_or(FsError::BadFileDescriptor)?;
+        trace!("read: fd={}, buf_len={}", fd, out.len());
+
+        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
+            error!("read: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
 
         // Check read permission
         let access_mode = handle.flags & 0x3;
@@ -263,9 +285,13 @@ impl<T: TimeProvider> Fs<T> {
                 let pos = handle.position as usize;
                 let n = storage.read(pos, out);
                 handle.position += n as u64;
+                debug!("read: fd={}, read {} bytes at pos {}", fd, n, pos);
                 Ok(n)
             }
-            FileContent::Dir(_) => Err(FsError::BadFileDescriptor),
+            FileContent::Dir(_) => {
+                error!("read: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
         }
     }
 
@@ -296,9 +322,14 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn close(&mut self, fd: Fd) -> Result<(), FsError> {
-        self.fd_table
-            .remove(&fd)
-            .ok_or(FsError::BadFileDescriptor)?;
+        trace!("close: fd={}", fd);
+
+        self.fd_table.remove(&fd).ok_or_else(|| {
+            error!("close: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
+
+        debug!("close: fd={} closed successfully", fd);
         Ok(())
     }
 
@@ -347,14 +378,16 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn seek(&mut self, fd: Fd, offset: i64, whence: i32) -> Result<u64, FsError> {
+        trace!("seek: fd={}, offset={}, whence={}", fd, offset, whence);
+
         const SEEK_SET: i32 = 0;
         const SEEK_CUR: i32 = 1;
         const SEEK_END: i32 = 2;
 
-        let handle = self
-            .fd_table
-            .get_mut(&fd)
-            .ok_or(FsError::BadFileDescriptor)?;
+        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
+            error!("seek: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
         let inode = self
             .inode_table
             .get(&handle.inode_id)
@@ -384,18 +417,28 @@ impl<T: TimeProvider> Fs<T> {
                         }
                         new_pos_signed as u64
                     }
-                    _ => return Err(FsError::InvalidArgument),
+                    _ => {
+                        error!("seek: invalid whence {}", whence);
+                        return Err(FsError::InvalidArgument);
+                    }
                 };
 
                 handle.position = new_pos;
+                debug!("seek: fd={}, new_pos={}", fd, new_pos);
                 Ok(new_pos)
             }
-            FileContent::Dir(_) => Err(FsError::BadFileDescriptor),
+            FileContent::Dir(_) => {
+                error!("seek: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
         }
     }
 
     pub fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
+        debug!("mkdir: path={}", path);
+
         if path.is_empty() {
+            error!("mkdir: empty path");
             return Err(FsError::InvalidArgument);
         }
 
@@ -430,6 +473,7 @@ impl<T: TimeProvider> Fs<T> {
         // Create the final directory component
         let dirname = comps[comps.len() - 1];
         self.create_inode(&current_inode, dirname, true)?;
+        debug!("mkdir: created directory {}", path);
         Ok(())
     }
 
@@ -480,7 +524,10 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn unlink(&mut self, path: &str) -> Result<(), FsError> {
+        debug!("unlink: path={}", path);
+
         if path.is_empty() {
+            error!("unlink: empty path");
             return Err(FsError::InvalidArgument);
         }
 
@@ -537,6 +584,7 @@ impl<T: TimeProvider> Fs<T> {
                 let timestamp = self.time_provider.now();
                 parent.metadata.modified = timestamp;
 
+                debug!("unlink: removed {}", path);
                 Ok(())
             }
             FileContent::File(_) => Err(FsError::NotADirectory),
