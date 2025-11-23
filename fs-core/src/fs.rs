@@ -202,7 +202,10 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
-        let handle = self.fd_table.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
+        let handle = self
+            .fd_table
+            .get_mut(&fd)
+            .ok_or(FsError::BadFileDescriptor)?;
 
         // Check write permission
         let access_mode = handle.flags & 0x3;
@@ -210,7 +213,10 @@ impl<T: TimeProvider> Fs<T> {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&handle.inode_id).ok_or(FsError::NotFound)?;
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
         let mut inode_ref = inode.borrow_mut();
 
         match &mut inode_ref.content {
@@ -235,7 +241,10 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn read(&mut self, fd: Fd, out: &mut [u8]) -> Result<usize, FsError> {
-        let handle = self.fd_table.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
+        let handle = self
+            .fd_table
+            .get_mut(&fd)
+            .ok_or(FsError::BadFileDescriptor)?;
 
         // Check read permission
         let access_mode = handle.flags & 0x3;
@@ -243,7 +252,10 @@ impl<T: TimeProvider> Fs<T> {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&handle.inode_id).ok_or(FsError::NotFound)?;
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
         let inode_ref = inode.borrow();
 
         match &inode_ref.content {
@@ -266,7 +278,10 @@ impl<T: TimeProvider> Fs<T> {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&handle.inode_id).ok_or(FsError::NotFound)?;
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
         let mut inode_ref = inode.borrow_mut();
 
         match &mut inode_ref.content {
@@ -281,7 +296,9 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn close(&mut self, fd: Fd) -> Result<(), FsError> {
-        self.fd_table.remove(&fd).ok_or(FsError::BadFileDescriptor)?;
+        self.fd_table
+            .remove(&fd)
+            .ok_or(FsError::BadFileDescriptor)?;
         Ok(())
     }
 
@@ -298,7 +315,10 @@ impl<T: TimeProvider> Fs<T> {
 
         if comps.is_empty() {
             // Root directory
-            let root = self.inode_table.get(&self.root_inode).ok_or(FsError::NotFound)?;
+            let root = self
+                .inode_table
+                .get(&self.root_inode)
+                .ok_or(FsError::NotFound)?;
             return Ok(root.borrow().metadata);
         }
 
@@ -319,7 +339,10 @@ impl<T: TimeProvider> Fs<T> {
 
     pub fn fstat(&self, fd: Fd) -> Result<Metadata, FsError> {
         let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
-        let inode = self.inode_table.get(&handle.inode_id).ok_or(FsError::NotFound)?;
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
         Ok(inode.borrow().metadata)
     }
 
@@ -328,8 +351,14 @@ impl<T: TimeProvider> Fs<T> {
         const SEEK_CUR: i32 = 1;
         const SEEK_END: i32 = 2;
 
-        let handle = self.fd_table.get_mut(&fd).ok_or(FsError::BadFileDescriptor)?;
-        let inode = self.inode_table.get(&handle.inode_id).ok_or(FsError::NotFound)?;
+        let handle = self
+            .fd_table
+            .get_mut(&fd)
+            .ok_or(FsError::BadFileDescriptor)?;
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
         let inode_ref = inode.borrow();
 
         match &inode_ref.content {
@@ -550,6 +579,12 @@ impl<T: TimeProvider> Fs<T> {
             }
             FileContent::File(_) => Err(FsError::NotADirectory),
         }
+    }
+}
+
+impl Default for Fs<MonotonicCounter> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

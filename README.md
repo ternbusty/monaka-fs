@@ -2,6 +2,20 @@
 
 Halycon is a virtual in-memory filesystem implemented in Rust and compiled to WebAssembly (WASM). It provides a C FFI layer for integration with C code.
 
+## Development Setup
+
+### Git Hooks (lefthook)
+
+This project uses [lefthook](https://github.com/evilmartians/lefthook) to run code formatting and linting checks before commits.
+
+```bash
+lefthook install
+```
+
+Once installed, the following checks run automatically on `git commit`.
+- `cargo fmt` - Auto-formats Rust code
+- `cargo clippy` - Runs linter with warnings as errors
+
 ## How to Build
 
 ```bash

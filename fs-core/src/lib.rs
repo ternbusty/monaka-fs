@@ -3,16 +3,16 @@
 extern crate alloc;
 
 mod error;
+mod fs;
+mod handle;
+mod inode;
+mod storage;
 mod time;
 mod types;
-mod storage;
-mod inode;
-mod handle;
-mod fs;
 
 // Re-export public API
 pub use error::FsError;
-pub use time::{TimeProvider, MonotonicCounter};
-pub use types::{Fd, InodeId, O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, BLOCK_SIZE};
-pub use inode::Metadata;
 pub use fs::Fs;
+pub use inode::Metadata;
+pub use time::{MonotonicCounter, TimeProvider};
+pub use types::{BLOCK_SIZE, Fd, InodeId, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};

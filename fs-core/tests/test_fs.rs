@@ -396,15 +396,9 @@ mod mkdir {
         // mkdir should succeed
         assert!(fs.mkdir("/test").is_ok());
         // mkdir should fail if already exists
-        assert!(matches!(
-            fs.mkdir("/test"),
-            Err(FsError::AlreadyExists)
-        ));
+        assert!(matches!(fs.mkdir("/test"), Err(FsError::AlreadyExists)));
         // mkdir should fail if parent doesn't exist
-        assert!(matches!(
-            fs.mkdir("/foo/bar"),
-            Err(FsError::NotFound)
-        ));
+        assert!(matches!(fs.mkdir("/foo/bar"), Err(FsError::NotFound)));
         // mkdir_p should create all parents
         assert!(fs.mkdir_p("/foo/bar/baz").is_ok());
         // Verify directories were created
