@@ -122,12 +122,15 @@ impl BlockStorage {
                 let last_block_index = new_block_count - 1;
                 let offset_in_last_block = new_size % BLOCK_SIZE;
 
-                if offset_in_last_block > 0 {
-                    if let Some(Some(block)) = self.blocks.get_mut(last_block_index) {
-                        // Clear the remainder of the block
-                        for byte in &mut block[offset_in_last_block..] {
-                            *byte = 0;
-                        }
+                if offset_in_last_block > 0
+                    && let Some(block) = self
+                        .blocks
+                        .get_mut(last_block_index)
+                        .and_then(|opt| opt.as_mut())
+                {
+                    // Clear the remainder of the block
+                    for byte in &mut block[offset_in_last_block..] {
+                        *byte = 0;
                     }
                 }
             }
