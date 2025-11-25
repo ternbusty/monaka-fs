@@ -43,29 +43,54 @@ cargo test -p fs-wasm          # FFI layer
 
 ## Examples
 
-### How to Build Examples
+This project provides two types of examples demonstrating different usage approaches:
 
+### 1. Legacy Examples (Direct Library Usage)
+
+These examples use fs-core and fs-wasm libraries directly through FFI or Rust APIs.
+
+**Location**: `examples/c/` and `examples/rust/`
+
+**Build and Run**:
 ```bash
-# Build all examples (C + Rust)
-make examples
-
-# Or build specific examples
-make build-c-example          # C integration example
-make build-rust-example       # Rust example
-```
-
-### How to Run Examples
-
-```bash
-# Run C integration example
+# Build C example
+make build-c-example
 make run-c-example
 
-# Run Rust example
+# Build Rust example
+make build-rust-example
 make run-rust-example
 
-# Or run all examples
+# Or build all legacy examples
+make examples
 make run-example
 ```
+
+**Architecture**: Application code links directly with fs-wasm library in a single WASM module.
+
+### 2. Component Model Examples (WASI Composition)
+
+These examples use standard POSIX/C I/O APIs composed with the VFS provider via WebAssembly Component Model.
+
+**Location**: `examples/component-c/` and `examples/component-rust/`
+
+**Build and Run**:
+```bash
+cd examples
+
+# Build components
+./build-components.sh
+
+# Compose with VFS provider
+./compose-demo.sh
+
+# Run composed applications
+./run-demo.sh
+```
+
+**Architecture**: Application components import WASI filesystem interfaces, which are satisfied by the VFS provider component through `wac plug` composition.
+
+See [examples/README.md](examples/README.md) for detailed Component Model usage.
 
 ## Component Model VFS Provider
 
