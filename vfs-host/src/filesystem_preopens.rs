@@ -17,15 +17,21 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
         )>,
         anyhow::Error,
     > {
-        // Lock shared VFS core
-        let mut core = self.shared_vfs.lock().unwrap();
+        // Get VFS directories
+        let vfs_dirs = {
+            // Lock shared VFS core
+            let core = self.lock_vfs_core()?;
 
-        // Call VFS adapter's get_directories
+            // Call VFS adapter's get_directories
+            let vfs_store_arc = core.vfs_store.clone();
+            let mut vfs_store = vfs_store_arc
+                .lock()
+                .map_err(|e| anyhow::anyhow!("VFS store lock poisoned: {}", e))?;
 
-        let vfs_dirs = core
-            .vfs_instance
-            .wasi_filesystem_preopens()
-            .call_get_directories(&mut *core.vfs_store.lock().unwrap())?;
+            core.vfs_instance
+                .wasi_filesystem_preopens()
+                .call_get_directories(&mut *vfs_store)?
+        };
 
         // Map VFS descriptors to host descriptors
         let mut host_dirs = Vec::new();
@@ -37,6 +43,23 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
 
             // Create properly typed resource from rep
             // Resource<T> is just a u32 wrapper, so we can reinterpret cast
+            // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
+            // Compile-time checks ensure size and alignment match
+            const _: () = {
+                use std::mem::{align_of, size_of};
+                assert!(
+                    size_of::<Resource<()>>()
+                        == size_of::<
+                            Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+                        >()
+                );
+                assert!(
+                    align_of::<Resource<()>>()
+                        == align_of::<
+                            Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+                        >()
+                );
+            };
             let host_descriptor = unsafe {
                 std::mem::transmute::<
                     Resource<()>,
@@ -44,7 +67,8 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
                 >(temp_resource)
             };
 
-            // Map host descriptor to VFS descriptor
+            // Re-lock core to insert into descriptor map
+            let mut core = self.lock_vfs_core()?;
             core.descriptor_map.insert(rep_value, vfs_descriptor);
 
             host_dirs.push((host_descriptor, path));

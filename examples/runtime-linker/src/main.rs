@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::Instant;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::bindings::filesystem::preopens::Host;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
 // Import VFS Host trait implementations from vfs-host crate
@@ -35,6 +36,20 @@ impl WasiView for HostState {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
+}
+
+/// Helper function to safely get root descriptor from VfsHostState
+fn get_root_descriptor(
+    store: &mut Store<vfs_host::VfsHostState>,
+) -> Result<wasmtime::component::Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>> {
+    let dirs = store
+        .data_mut()
+        .get_directories()
+        .context("Failed to get directories")?;
+    dirs.into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No preopened directories available"))
+        .map(|(desc, _)| desc)
 }
 
 fn get_file_size(path: &str) -> Result<u64> {
@@ -143,17 +158,10 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let start = Instant::now();
 
     // Get root directory
-    use wasmtime_wasi::bindings::sync::filesystem::preopens::Host as PreopensHost;
+    
     use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-
-    if dirs.is_empty() {
-        return Err(anyhow::anyhow!("No preopened directories"));
-    }
-
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     // Create directories
     let path_flags = wasmtime_wasi::bindings::sync::filesystem::types::PathFlags::empty();
@@ -167,9 +175,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let open_flags = wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags::CREATE;
     let descriptor_flags = wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags::WRITE;
 
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     let file_desc = store1.data_mut().open_at(
         root_desc,
@@ -193,9 +199,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("        (Note: Store1 still exists - true concurrent access!)");
     let start = Instant::now();
 
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     // Verify app1_data exists
     let _stat1 = store2.data_mut().stat_at(
@@ -211,9 +215,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let read_flags = wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags::empty();
     let read_descriptor_flags = wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags::READ;
 
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     let file_desc = store2.data_mut().open_at(
         root_desc,
@@ -238,9 +240,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("Step 6: Application 2 - Creating its own directory...");
     let start = Instant::now();
 
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     store2.data_mut().create_directory_at(root_desc, "app2_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to create directory: {:?}", e))?;
@@ -248,9 +248,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 2 created directory: /app2_data");
 
     // Also create and write to a file
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     let file_desc = store2.data_mut().open_at(
         root_desc,
@@ -273,9 +271,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("        (Note: Store2 still exists - true concurrent access!)");
     let start = Instant::now();
 
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     // Verify app2_data exists
     let _stat = store1.data_mut().stat_at(
@@ -288,9 +284,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ TRUE CONCURRENT ACCESS - Both stores still active!");
 
     // Also read the file created by App2
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     let file_desc = store1.data_mut().open_at(
         root_desc,
@@ -317,9 +311,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let start = Instant::now();
 
     // App2 appends to the file created by App1
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     // Open file for appending (need to read current size first)
 
@@ -329,9 +321,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
         "app1_data/shared.txt".to_string(),
     ).map_err(|e| anyhow::anyhow!("Failed to stat file: {:?}", e))?;
 
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     let file_desc = store2.data_mut().open_at(
         root_desc,
@@ -348,9 +338,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 2 appended {} bytes to /app1_data/shared.txt", written);
 
     // App1 reads the updated file
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     let file_desc = store1.data_mut().open_at(
         root_desc,
@@ -379,9 +367,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let start = Instant::now();
 
     // App1 deletes App2's file
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     store1.data_mut().unlink_file_at(root_desc, "app2_data/message.txt".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete file: {:?}", e))?;
@@ -389,9 +375,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 1 deleted /app2_data/message.txt");
 
     // App2 verifies the file is gone
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     let stat_result = store2.data_mut().stat_at(
         root_desc,
@@ -405,9 +389,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     }
 
     // App2 deletes App1's file
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     store2.data_mut().unlink_file_at(root_desc, "app1_data/shared.txt".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete file: {:?}", e))?;
@@ -415,9 +397,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 2 deleted /app1_data/shared.txt");
 
     // App1 verifies the file is gone
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     let stat_result = store1.data_mut().stat_at(
         root_desc,
@@ -431,9 +411,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     }
 
     // Now delete the directories (must be empty first)
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     store1.data_mut().remove_directory_at(root_desc, "app2_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete directory: {:?}", e))?;
@@ -441,9 +419,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 1 deleted /app2_data directory");
 
     // App2 deletes App1's directory
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     store2.data_mut().remove_directory_at(root_desc, "app1_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete directory: {:?}", e))?;
@@ -451,9 +427,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!("  ✓ Application 2 deleted /app1_data directory");
 
     // Verify both directories are gone
-    let dirs = store1.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store1)?;
 
     let stat_result = store1.data_mut().stat_at(
         root_desc,
@@ -537,17 +511,10 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
         // Store1 exists only in this scope
         let mut store1 = Store::new(engine, vfs_host_state);
 
-        use wasmtime_wasi::bindings::sync::filesystem::preopens::Host as PreopensHost;
+        
         use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
-        let dirs = store1.data_mut().get_directories()
-            .context("Failed to get directories")?;
-
-        if dirs.is_empty() {
-            return Err(anyhow::anyhow!("No preopened directories"));
-        }
-
-        let root_desc = dirs.into_iter().next().unwrap().0;
+        let root_desc = get_root_descriptor(&mut store1)?;
 
         // App1 creates a directory
         store1.data_mut().create_directory_at(root_desc, "persistent_data".to_string())
@@ -581,12 +548,10 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
     println!("Step 5: Application 2 - Checking if App1's data still exists...");
     let start = Instant::now();
 
-    use wasmtime_wasi::bindings::sync::filesystem::preopens::Host as PreopensHost;
+    
     use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
-    let dirs = store2.data_mut().get_directories()
-        .context("Failed to get directories")?;
-    let root_desc = dirs.into_iter().next().unwrap().0;
+    let root_desc = get_root_descriptor(&mut store2)?;
 
     let path_flags = wasmtime_wasi::bindings::sync::filesystem::types::PathFlags::empty();
 
