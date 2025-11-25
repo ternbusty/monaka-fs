@@ -2,11 +2,13 @@
 members = [
   "fs-core",
   "fs-wasm",
-  "vfs-provider",
+  "vfs-adapter",
   "examples/rust",
 ]
 exclude = [
   ".tmp",  # Temporary work-in-progress code
+  "test-app",  # Test application for composition testing
+  "test-simple",  # Simple test without console I/O
 ]
 resolver="3"
 

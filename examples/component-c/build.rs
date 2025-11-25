@@ -1,12 +1,9 @@
 use std::env;
-use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target = env::var("TARGET").unwrap();
 
-    // Only compile C code for wasm32-wasip2 target
+    // Only compile C code for wasm32-wasip targets
     if !target.starts_with("wasm32-wasip") {
         println!("cargo:warning=Skipping C compilation for non-WASI target: {}", target);
         return;
@@ -14,56 +11,27 @@ fn main() {
 
     println!("cargo:rerun-if-changed=main.c");
 
-    // Find clang in WASI SDK or system
-    let clang = env::var("CC").unwrap_or_else(|_| {
-        // Try common WASI SDK locations
-        let candidates = vec![
-            "/opt/wasi-sdk/bin/clang",
-            "/usr/local/opt/wasi-sdk/bin/clang",
-            "clang",
-        ];
+    // Set up WASI SDK compiler if available
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let wasi_sdk_paths = vec![
+        format!("{}/wasi-sdk", home),
+        "/opt/wasi-sdk".to_string(),
+        "/usr/local/opt/wasi-sdk".to_string(),
+    ];
 
-        for candidate in &candidates {
-            if Command::new(candidate).arg("--version").output().is_ok() {
-                return candidate.to_string();
-            }
+    for path in &wasi_sdk_paths {
+        let clang_path = format!("{}/bin/clang", path);
+        if std::path::Path::new(&clang_path).exists() {
+            env::set_var("CC", clang_path);
+            break;
         }
-
-        "clang".to_string()
-    });
-
-    // Compile C code to object file
-    let obj_file = out_dir.join("main.o");
-    let status = Command::new(&clang)
-        .args(&[
-            "--target=wasm32-wasip2",
-            "-c",
-            "-o",
-        ])
-        .arg(&obj_file)
-        .arg("main.c")
-        .status()
-        .expect("Failed to compile C code");
-
-    if !status.success() {
-        panic!("C compilation failed");
     }
 
-    // Link the object file
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=main");
-
-    // Create static library from object file
-    let lib_file = out_dir.join("libmain.a");
-    let ar = env::var("AR").unwrap_or_else(|_| "ar".to_string());
-    let status = Command::new(&ar)
-        .args(&["rcs"])
-        .arg(&lib_file)
-        .arg(&obj_file)
-        .status()
-        .expect("Failed to create static library");
-
-    if !status.success() {
-        panic!("Library creation failed");
-    }
+    // Use cc crate to compile C code
+    cc::Build::new()
+        .file("main.c")
+        .opt_level(2)
+        .flag("-fno-exceptions")
+        .warnings(false)
+        .compile("main");
 }

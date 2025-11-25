@@ -12,3 +12,13 @@ crate-type = ["cdylib"]
 [dependencies]
 
 [build-dependencies]
+cc = "1.0"
+
+[profile.dev]
+opt-level = 2
+lto = true
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

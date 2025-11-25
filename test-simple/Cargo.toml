@@ -1,0 +1,26 @@
+[package]
+name = "test-simple"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-simple2"
+path = "src/main2.rs"
+
+[[bin]]
+name = "test-simple3"
+path = "src/main3.rs"
+
+[[bin]]
+name = "test-simple4"
+path = "src/main4.rs"
+
+[[bin]]
+name = "test-simple5"
+path = "src/main5.rs"
+
+[[bin]]
+name = "test-simple6"
+path = "src/main6.rs"
+
+[dependencies]

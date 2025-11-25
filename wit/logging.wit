@@ -1,0 +1,16 @@
+// Custom logging interface to avoid wasi:cli dependencies
+// This is part of halycon:vfs package
+
+interface log {
+    // Log levels
+    enum level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    // Log a message with specified level
+    log: func(lvl: level, message: string);
+}

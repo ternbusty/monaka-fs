@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-fs-core = { path = "../fs-core", features = ["logging"] }
+fs-core = { path = "../fs-core" }
 wit-bindgen = "0.36"
 
 [build-dependencies]

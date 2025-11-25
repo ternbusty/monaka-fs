@@ -9,6 +9,7 @@ pub struct Metadata {
     pub created: u64,
     pub modified: u64,
     pub permissions: u16,
+    pub is_dir: bool,
 }
 
 /// File content: either file data or directory entries
@@ -33,6 +34,7 @@ impl Inode {
                 created: 0,
                 modified: 0,
                 permissions: 0o644,
+                is_dir: false,
             },
             content: FileContent::File(BlockStorage::new()),
         }
@@ -46,6 +48,7 @@ impl Inode {
                 created: 0,
                 modified: 0,
                 permissions: 0o755,
+                is_dir: true,
             },
             content: FileContent::Dir(BTreeMap::new()),
         }

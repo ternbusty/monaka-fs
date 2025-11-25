@@ -1,0 +1,13 @@
+// Compose component-rust with vfs-provider
+// Explicitly wire wasi:io interfaces to ensure single instance
+
+let vfs = new "file://vfs-provider.wasm" {};
+let app = new "file://app.wasm" {
+  "wasi:io/streams@0.2.6": vfs."wasi:io/streams@0.2.6",
+  "wasi:io/poll@0.2.6": vfs."wasi:io/poll@0.2.6",
+  "wasi:io/error@0.2.6": vfs."wasi:io/error@0.2.6",
+  "wasi:filesystem/types@0.2.6": vfs."wasi:filesystem/types@0.2.6",
+  "wasi:filesystem/preopens@0.2.6": vfs."wasi:filesystem/preopens@0.2.6",
+};
+
+export app...;

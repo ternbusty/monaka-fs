@@ -251,9 +251,15 @@ void test_error_handling(void) {
     if (mkdir("/dirtest", 0755) == 0) {
         fp = fopen("/dirtest", "r");
         if (fp == NULL) {
-            printf("✓ Correctly handled reading directory as file: %s\n", strerror(errno));
+            printf("✓ Correctly handled opening directory as file: %s\n", strerror(errno));
         } else {
-            printf("✗ Should have failed reading directory as file\n");
+            // Try to actually read from the directory
+            char buf[10];
+            if (fread(buf, 1, sizeof(buf), fp) == 0 && ferror(fp)) {
+                printf("✓ Correctly handled reading directory as file: %s\n", strerror(errno));
+            } else {
+                printf("✗ Should have failed reading directory as file\n");
+            }
             fclose(fp);
         }
         rmdir("/dirtest");

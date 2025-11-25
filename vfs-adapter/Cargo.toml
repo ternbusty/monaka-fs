@@ -1,0 +1,15 @@
+[package]
+name = "vfs-adapter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fs-core = { path = "../fs-core" }
+wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+spin = "0.9"
+
+[build-dependencies]
+wit-bindgen = "0.36"

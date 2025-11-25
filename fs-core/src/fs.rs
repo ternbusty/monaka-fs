@@ -200,11 +200,14 @@ impl<T: TimeProvider> Fs<T> {
             Err(e) => return Err(e),
         };
 
-        // Verify it's a file, not a directory
+        // Allow opening directories, but verify O_TRUNC is not used on them
         {
             let inode = file_inode.borrow();
             if matches!(inode.content, FileContent::Dir(_)) {
-                return Err(FsError::IsADirectory);
+                // Directories can be opened, but not with O_TRUNC
+                if flags & O_TRUNC != 0 {
+                    return Err(FsError::IsADirectory);
+                }
             }
         }
 
@@ -282,11 +285,14 @@ impl<T: TimeProvider> Fs<T> {
             Err(e) => return Err(e),
         };
 
-        // Verify it's a file, not a directory
+        // Allow opening directories, but verify O_TRUNC is not used on them
         {
             let inode = file_inode.borrow();
             if matches!(inode.content, FileContent::Dir(_)) {
-                return Err(FsError::IsADirectory);
+                // Directories can be opened, but not with O_TRUNC
+                if flags & O_TRUNC != 0 {
+                    return Err(FsError::IsADirectory);
+                }
             }
         }
 
@@ -733,6 +739,118 @@ impl<T: TimeProvider> Fs<T> {
             }
             FileContent::File(_) => Err(FsError::NotADirectory),
         }
+    }
+
+    /// Read directory entries from an open file descriptor
+    /// Returns a list of (name, is_dir) tuples
+    pub fn readdir_fd(
+        &self,
+        fd: Fd,
+    ) -> Result<alloc::vec::Vec<(alloc::string::String, bool)>, FsError> {
+        // Get the file handle
+        let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
+
+        // Get the inode
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
+
+        // Check if it's a directory
+        let inode_ref = inode.borrow();
+        match &inode_ref.content {
+            FileContent::Dir(entries) => {
+                let mut result = alloc::vec::Vec::new();
+                for (name, child_inode_id) in entries.iter() {
+                    // Get the child inode to check if it's a directory
+                    if let Some(child_inode) = self.inode_table.get(child_inode_id) {
+                        let is_dir = child_inode.borrow().metadata.is_dir;
+                        result.push((name.clone(), is_dir));
+                    }
+                }
+                Ok(result)
+            }
+            FileContent::File(_) => Err(FsError::NotADirectory),
+        }
+    }
+
+    /// Remove an empty directory
+    pub fn rmdir(&mut self, path: &str) -> Result<(), FsError> {
+        debug!("rmdir: path={}", path);
+
+        if path.is_empty() {
+            error!("rmdir: empty path");
+            return Err(FsError::InvalidArgument);
+        }
+
+        let comps: alloc::vec::Vec<&str> = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if comps.is_empty() {
+            // Cannot remove root directory
+            return Err(FsError::InvalidArgument);
+        }
+
+        let root_inode = self
+            .inode_table
+            .get(&self.root_inode)
+            .ok_or(FsError::NotFound)?
+            .clone();
+        let mut current_inode = root_inode;
+
+        // Navigate to parent directory (all components except last)
+        for comp in comps.iter().take(comps.len() - 1) {
+            current_inode = self.find_inode(&current_inode, comp)?;
+
+            // Verify it's a directory
+            let inode = current_inode.borrow();
+            if matches!(inode.content, FileContent::File(_)) {
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        // Get the directory name to delete
+        let dirname = comps[comps.len() - 1];
+
+        // Check if the directory exists and get its inode
+        let target_inode = self.find_inode(&current_inode, dirname)?;
+
+        // Check if it's a directory
+        {
+            let target = target_inode.borrow();
+            match &target.content {
+                FileContent::File(_) => {
+                    return Err(FsError::NotADirectory);
+                }
+                FileContent::Dir(entries) => {
+                    // Check if directory is empty
+                    if !entries.is_empty() {
+                        error!("rmdir: directory not empty");
+                        return Err(FsError::NotEmpty);
+                    }
+                }
+            }
+        }
+
+        // Remove from parent directory
+        let mut parent = current_inode.borrow_mut();
+        match &mut parent.content {
+            FileContent::Dir(entries) => {
+                entries.remove(dirname);
+
+                // Update parent directory's modification time
+                let timestamp = self.time_provider.now();
+                parent.metadata.modified = timestamp;
+
+                debug!("rmdir: removed {}", path);
+                Ok(())
+            }
+            FileContent::File(_) => Err(FsError::NotADirectory),
+        }
+        // Note: The inode will be automatically cleaned up when the Rc ref count reaches 0
     }
 }
 

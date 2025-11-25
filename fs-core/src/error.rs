@@ -7,6 +7,7 @@ pub enum FsError {
     BadFileDescriptor,
     PermissionDenied,
     AlreadyExists,
+    NotEmpty,
 }
 
 impl FsError {
@@ -20,6 +21,7 @@ impl FsError {
             FsError::BadFileDescriptor => -9, // EBADF
             FsError::PermissionDenied => -13, // EACCES
             FsError::AlreadyExists => -17,    // EEXIST
+            FsError::NotEmpty => -39,         // ENOTEMPTY
         }
     }
 
@@ -35,6 +37,7 @@ impl FsError {
             FsError::BadFileDescriptor => 8, // badf
             FsError::PermissionDenied => 2,  // access
             FsError::AlreadyExists => 20,    // exist
+            FsError::NotEmpty => 55,         // notempty
         }
     }
 }
