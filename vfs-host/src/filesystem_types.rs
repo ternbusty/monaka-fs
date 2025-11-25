@@ -15,7 +15,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::Host for VfsHostState {
         err: Resource<anyhow::Error>,
     ) -> Result<Option<ErrorCode>, anyhow::Error> {
         // Get the error from the resource table
-        let error = self.table.get(&err)?;
+        let _error = self.table.get(&err)?;
 
         // Try to downcast to filesystem ErrorCode
         // For now, return None as we don't have specific error mapping
@@ -98,19 +98,26 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         len: u64,
         offset: u64,
-    ) -> Result<(Vec<u8>, bool), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<
+        (Vec<u8>, bool),
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
         // Get VFS descriptor
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         // Lock shared VFS core
-        let mut core = self.shared_vfs.lock().unwrap();
+        let core = self.shared_vfs.lock().unwrap();
 
         // Call VFS adapter's read method
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_read(&mut *core.vfs_store.lock().unwrap(), vfs_desc, offset, len)
-            .map_err(|e| TrappableError::trap(e))?;
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_read(&mut *core.vfs_store.lock().unwrap(), vfs_desc, offset, len)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok((data, end)) => Ok((data, end)),
@@ -127,16 +134,24 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         buffer: Vec<u8>,
         offset: u64,
     ) -> Result<u64, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         // Lock shared VFS core
-        let mut core = self.shared_vfs.lock().unwrap();
+        let core = self.shared_vfs.lock().unwrap();
 
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_write(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &buffer, offset)
-            .map_err(|e| TrappableError::trap(e))?;
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_write(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                &buffer,
+                offset,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(written) => Ok(written),
@@ -165,7 +180,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         offset: u64,
-    ) -> Result<Resource<Box<dyn wasmtime_wasi::HostInputStream>>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
         // Stream-based operations would require creating wrapper types that implement
         // HostInputStream trait and forward to VFS adapter streams.
         // This is complex and requires async stream handling.
@@ -178,7 +196,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         offset: u64,
-    ) -> Result<Resource<Box<dyn wasmtime_wasi::HostOutputStream>>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
         // Stream-based operations would require creating wrapper types that implement
         // HostOutputStream trait and forward to VFS adapter streams.
         // This is complex and requires async stream handling.
@@ -190,7 +211,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn append_via_stream(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<Resource<Box<dyn wasmtime_wasi::HostOutputStream>>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
         // Stream-based operations would require creating wrapper types that implement
         // HostOutputStream trait and forward to VFS adapter streams.
         // This is complex and requires async stream handling.
@@ -221,15 +245,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn get_flags(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_get_flags(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_get_flags(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_flags) => {
@@ -247,15 +278,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn get_type(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_get_type(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_get_type(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_type) => {
@@ -275,14 +313,18 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         size: u64,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_set_size(&mut *core.vfs_store.lock().unwrap(), vfs_desc, size)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_set_size(&mut *core.vfs_store.lock().unwrap(), vfs_desc, size)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -299,17 +341,26 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         data_access_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
         data_modification_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         let vfs_atime = convert_new_timestamp_to_vfs(data_access_timestamp);
         let vfs_mtime = convert_new_timestamp_to_vfs(data_modification_timestamp);
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_set_times(&mut *core.vfs_store.lock().unwrap(), vfs_desc, vfs_atime, vfs_mtime)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_set_times(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_atime,
+                vfs_mtime,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -328,24 +379,29 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         data_access_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
         data_modification_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         let vfs_path_flags = convert_path_flags_to_vfs(path_flags);
         let vfs_atime = convert_new_timestamp_to_vfs(data_access_timestamp);
         let vfs_mtime = convert_new_timestamp_to_vfs(data_modification_timestamp);
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_set_times_at(
-            &mut *core.vfs_store.lock().unwrap(),
-            vfs_desc,
-            vfs_path_flags,
-            &path,
-            vfs_atime,
-            vfs_mtime
-        ).map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_set_times_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_path_flags,
+                &path,
+                vfs_atime,
+                vfs_mtime,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -359,23 +415,33 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn read_directory(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         // Call VFS adapter's read_directory
         let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_read_directory(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
-            .map_err(|e| TrappableError::trap(e))?;
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_read_directory(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_stream) => {
                 // Create host directory entry stream resource and map it
                 let temp_resource = self.table.push(())?;
                 let host_stream = unsafe {
-                    std::mem::transmute::<Resource<()>, Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>>(temp_resource)
+                    std::mem::transmute::<
+                        Resource<()>,
+                        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+                    >(temp_resource)
                 };
                 core.dir_stream_map.insert(host_stream.rep(), vfs_stream);
                 Ok(host_stream)
@@ -399,14 +465,18 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_create_directory_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_create_directory_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -420,21 +490,26 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn stat(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         // Call VFS adapter's stat
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_stat(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_stat(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
 
         match result {
-            Ok(vfs_stat) => {
-                Ok(convert_descriptor_stat_from_vfs(vfs_stat))
-            }
+            Ok(vfs_stat) => Ok(convert_descriptor_stat_from_vfs(vfs_stat)),
             Err(vfs_error) => {
                 let host_error = super::convert_vfs_error(vfs_error);
                 Err(convert_sync_to_nonsync_error(host_error))
@@ -447,23 +522,33 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
         path: String,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         let vfs_path_flags = convert_path_flags_to_vfs(path_flags);
 
         // Call VFS adapter's stat_at
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_stat_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, vfs_path_flags, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_stat_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_path_flags,
+                &path,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
-            Ok(vfs_stat) => {
-                Ok(convert_descriptor_stat_from_vfs(vfs_stat))
-            }
+            Ok(vfs_stat) => Ok(convert_descriptor_stat_from_vfs(vfs_stat)),
             Err(vfs_error) => {
                 let host_error = super::convert_vfs_error(vfs_error);
                 Err(convert_sync_to_nonsync_error(host_error))
@@ -479,23 +564,29 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         new_path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
-        let vfs_new_desc = self.get_vfs_descriptor(&new_descriptor)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+        let vfs_new_desc = self
+            .get_vfs_descriptor(&new_descriptor)
+            .map_err(TrappableError::trap)?;
         let vfs_path_flags = convert_path_flags_to_vfs(old_path_flags);
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_link_at(
-            &mut *core.vfs_store.lock().unwrap(),
-            vfs_desc,
-            vfs_path_flags,
-            &old_path,
-            vfs_new_desc,
-            &new_path,
-        ).map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_link_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_path_flags,
+                &old_path,
+                vfs_new_desc,
+                &new_path,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -513,9 +604,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         path: String,
         open_flags: wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags,
         flags: wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags,
-    ) -> Result<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         // Convert host types to VFS types
         let vfs_path_flags = convert_path_flags_to_vfs(path_flags);
@@ -524,25 +619,33 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         // Call VFS adapter's open_at
         let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_open_at(
-            &mut *core.vfs_store.lock().unwrap(),
-            vfs_desc,
-            vfs_path_flags,
-            &path,
-            vfs_open_flags,
-            vfs_flags,
-        ).map_err(|e| TrappableError::trap(e))?;
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_open_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_path_flags,
+                &path,
+                vfs_open_flags,
+                vfs_flags,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_new_desc) => {
                 // Create host descriptor and map it
                 let temp_resource = self.table.push(())?;
                 let host_descriptor = unsafe {
-                    std::mem::transmute::<Resource<()>, Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(temp_resource)
+                    std::mem::transmute::<
+                        Resource<()>,
+                        Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+                    >(temp_resource)
                 };
-                core.descriptor_map.insert(host_descriptor.rep(), vfs_new_desc);
+                core.descriptor_map
+                    .insert(host_descriptor.rep(), vfs_new_desc);
                 Ok(host_descriptor)
             }
             Err(vfs_error) => {
@@ -557,14 +660,18 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path: String,
     ) -> Result<String, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_readlink_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_readlink_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(link_path) => Ok(link_path),
@@ -580,14 +687,18 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_remove_directory_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_remove_directory_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -605,21 +716,27 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         new_path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
-        let vfs_new_desc = self.get_vfs_descriptor(&new_descriptor)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+        let vfs_new_desc = self
+            .get_vfs_descriptor(&new_descriptor)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_rename_at(
-            &mut *core.vfs_store.lock().unwrap(),
-            vfs_desc,
-            &old_path,
-            vfs_new_desc,
-            &new_path,
-        ).map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_rename_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                &old_path,
+                vfs_new_desc,
+                &new_path,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -636,14 +753,23 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         old_path: String,
         new_path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_symlink_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &old_path, &new_path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_symlink_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                &old_path,
+                &new_path,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -659,14 +785,18 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_unlink_file_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_unlink_file_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, &path)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(()) => Ok(()),
@@ -685,10 +815,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let vfs_desc = self.get_vfs_descriptor(&self_)?;
         let vfs_other = self.get_vfs_descriptor(&other)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_is_same_object(&mut *core.vfs_store.lock().unwrap(), vfs_desc, vfs_other)?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_is_same_object(&mut *core.vfs_store.lock().unwrap(), vfs_desc, vfs_other)?;
 
         Ok(result)
     }
@@ -696,23 +829,31 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
     fn metadata_hash(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_metadata_hash(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_metadata_hash(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_hash) => {
                 // Convert VFS MetadataHashValue to host MetadataHashValue
-                let host_hash = wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue {
-                    lower: vfs_hash.lower,
-                    upper: vfs_hash.upper,
-                };
+                let host_hash =
+                    wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue {
+                        lower: vfs_hash.lower,
+                        upper: vfs_hash.upper,
+                    };
                 Ok(host_hash)
             }
             Err(vfs_error) => {
@@ -727,25 +868,38 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
         path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
         path: String,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        let vfs_desc = self.get_vfs_descriptor(&self_)
-            .map_err(|e| TrappableError::trap(e))?;
+    ) -> Result<
+        wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
 
         let vfs_path_flags = convert_path_flags_to_vfs(path_flags);
 
-        let mut core = self.shared_vfs.lock().unwrap();
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().descriptor().call_metadata_hash_at(&mut *core.vfs_store.lock().unwrap(), vfs_desc, vfs_path_flags, &path)
-            .map_err(|e| TrappableError::trap(e))?;
+        let core = self.shared_vfs.lock().unwrap();
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_metadata_hash_at(
+                &mut *core.vfs_store.lock().unwrap(),
+                vfs_desc,
+                vfs_path_flags,
+                &path,
+            )
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(vfs_hash) => {
                 // Convert VFS MetadataHashValue to host MetadataHashValue
-                let host_hash = wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue {
-                    lower: vfs_hash.lower,
-                    upper: vfs_hash.upper,
-                };
+                let host_hash =
+                    wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue {
+                        lower: vfs_hash.lower,
+                        upper: vfs_hash.upper,
+                    };
                 Ok(host_hash)
             }
             Err(vfs_error) => {
@@ -760,29 +914,38 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
     fn read_directory_entry(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
-    ) -> Result<Option<wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry>, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<
+        Option<wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
         // Lock shared VFS core
-        let mut core = self.shared_vfs.lock().unwrap();
+        let core = self.shared_vfs.lock().unwrap();
 
         // Get VFS stream from mapping
-        let vfs_stream = core.dir_stream_map
+        let vfs_stream = core
+            .dir_stream_map
             .get(&self_.rep())
             .copied()
             .ok_or_else(|| TrappableError::trap(anyhow::anyhow!("Invalid stream")))?;
 
         // Call VFS adapter's read_directory_entry
-        
-        
-        let result = core.vfs_instance.wasi_filesystem_types().directory_entry_stream().call_read_directory_entry(&mut *core.vfs_store.lock().unwrap(), vfs_stream)
-            .map_err(|e| TrappableError::trap(e))?;
+
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .directory_entry_stream()
+            .call_read_directory_entry(&mut *core.vfs_store.lock().unwrap(), vfs_stream)
+            .map_err(TrappableError::trap)?;
 
         match result {
             Ok(Some(vfs_entry)) => {
                 // Convert VFS DirectoryEntry to host DirectoryEntry
-                Ok(Some(wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry {
-                    type_: convert_descriptor_type(vfs_entry.type_),
-                    name: vfs_entry.name,
-                }))
+                Ok(Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry {
+                        type_: convert_descriptor_type(vfs_entry.type_),
+                        name: vfs_entry.name,
+                    },
+                ))
             }
             Ok(None) => Ok(None),
             Err(vfs_error) => {

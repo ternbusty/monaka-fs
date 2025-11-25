@@ -1,0 +1,14 @@
+[package]
+name = "vfs-host"
+version = "0.1.0"
+edition = "2021"
+description = "Host trait implementation for VFS adapter - enables multiple applications to share a single VFS instance"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+wasmtime = "27.0.0"
+wasmtime-wasi = "27.0.0"
+anyhow = "1.0"
+
+[lib]
+crate-type = ["rlib"]

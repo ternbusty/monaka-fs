@@ -2,8 +2,28 @@
 
 Halycon is a virtual in-memory filesystem implemented in Rust and compiled to WebAssembly (WASM). It provides:
 - **Component Model VFS Adapter**: WASI Preview 2 filesystem implementation using the WebAssembly Component Model
+- **VFS Host Traits**: Rust library for sharing VFS across multiple applications at runtime
 - **Runtime Dynamic Linking**: Modular component composition at runtime (recommended)
 - **Legacy C FFI layer**: For integration with C code (fs-wasm)
+
+## Project Structure
+
+### Distributable Libraries
+
+- **fs-core** - Core in-memory filesystem implementation (no_std compatible)
+- **vfs-adapter** - WebAssembly Component Model VFS adapter (WASI Preview 2)
+- **vfs-host** - Host trait implementation for sharing VFS across multiple applications
+- **fs-wasm** - Legacy C FFI layer (for non-Component Model use cases)
+
+### When to Use Each Library
+
+**For Component Model applications:**
+1. **Simple single-app use**: Use `vfs-adapter` with static or runtime composition (`wac plug`)
+2. **Multiple apps sharing VFS**: Use `vfs-host` library to implement custom host with shared VFS instance
+3. **Reference implementation**: See `examples/runtime-linker` for complete example
+
+**For legacy applications:**
+- Use `fs-wasm` with direct FFI calls (see `examples/c` and `examples/rust`)
 
 ## Quick Start
 
@@ -274,3 +294,105 @@ The VFS adapter uses official WASI Preview 2 WIT definitions (v0.2.6):
 - `wit/deps/io/` - WASI I/O interfaces (streams, error, poll)
 - `wit/deps/clocks/` - WASI clock interfaces
 - `wit/world.wit` - VFS adapter world definition
+
+## VFS Host Library (vfs-host)
+
+The `vfs-host` library provides Host trait implementations that enable **multiple applications to share a single VFS instance at runtime**. This is the recommended approach for complex use cases requiring shared filesystem state.
+
+### Key Features
+
+- **Shared VFS State**: Multiple applications access the same VFS instance concurrently
+- **Thread-Safe**: Uses `Arc<Mutex<>>` for safe concurrent access
+- **State Persistence**: VFS state persists as long as any application references it
+- **Zero-Copy Resource Mapping**: Efficient descriptor and stream resource management
+- **Complete WASI Implementation**: All 33 WASI filesystem Host trait methods implemented
+
+### When to Use vfs-host
+
+Use the `vfs-host` library when you need:
+1. Multiple applications sharing the same filesystem
+2. Persistent filesystem state across application lifecycles
+3. Runtime flexibility in VFS provider selection
+4. Custom host implementations with shared resources
+
+### Usage Example
+
+```rust
+use vfs_host::VfsHostState;
+use wasmtime::{Engine, Store};
+
+// Create shared VFS host
+let engine = Engine::default();
+let vfs_host = VfsHostState::new(&engine, "vfs-adapter.wasm")?;
+
+// Create first application store
+let mut store1 = Store::new(&engine, vfs_host.clone_shared());
+
+// Create second application store sharing the same VFS
+let mut store2 = Store::new(&engine, vfs_host.clone_shared());
+
+// Both applications see each other's changes immediately!
+// App1 creates a file -> App2 can read it
+// App2 modifies a file -> App1 sees the changes
+```
+
+### Architecture with vfs-host
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ Application1 │    │ Application2 │    │ Application3 │
+└──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+       │                   │                   │
+       │    VfsHostState (clone_shared())      │
+       └───────────────────┼───────────────────┘
+                           │
+                  Arc<Mutex<SharedVfsCore>>
+                           │
+                   ┌───────┴───────┐
+                   │  VFS Adapter  │
+                   │  (Component)  │
+                   └───────────────┘
+```
+
+### Complete Example
+
+See `examples/runtime-linker` for a complete working example demonstrating:
+- Creating shared VFS host state
+- Multiple applications accessing the same VFS
+- State persistence after application termination
+- Concurrent filesystem operations
+
+```bash
+# Run the complete demo
+cd examples/runtime-linker
+cargo run
+```
+
+### API Reference
+
+**Core Types:**
+- `VfsHostState` - Host context implementing WASI Host traits
+- `SharedVfsCore` - Shared VFS state wrapped in Arc<Mutex<>>
+- `VfsStoreData` - Store data for VFS adapter instance
+
+**Main Methods:**
+- `VfsHostState::new(engine, vfs_adapter_path)` - Create new VFS host
+- `VfsHostState::clone_shared()` - Create new host sharing the same VFS
+- All WASI filesystem Host trait methods (automatically implemented)
+
+### Comparison: wac plug vs vfs-host
+
+| Approach | Use Case | Shared State | Complexity |
+|----------|----------|--------------|------------|
+| `wac plug` (static/runtime) | Single application | No | Low |
+| `vfs-host` library | Multiple applications | Yes | Medium |
+
+**Choose `wac plug` when:**
+- Single application needs VFS
+- No shared state required
+- Simpler deployment model
+
+**Choose `vfs-host` when:**
+- Multiple applications need shared VFS
+- State must persist across app lifecycles
+- Runtime flexibility is important

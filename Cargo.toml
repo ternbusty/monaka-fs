@@ -3,6 +3,7 @@ members = [
   "fs-core",
   "fs-wasm",
   "vfs-adapter",
+  "vfs-host",
   "examples/rust",
 ]
 exclude = [

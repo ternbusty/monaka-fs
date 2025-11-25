@@ -1,21 +1,25 @@
 // VFS Host Trait Implementation
 //
-// This module implements wasmtime Host traits that wrap a VfsAdapter component instance.
+// This library implements wasmtime Host traits that wrap a VfsAdapter component instance.
 // This enables true dynamic linking where multiple applications can share a single
 // VFS instance at runtime, unlike wasi-virt which creates isolated VFS per app.
-
-pub mod filesystem_types;
-pub mod filesystem_preopens;
 
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use wasmtime::component::{Resource, ResourceTable};
+use wasmtime::component::{bindgen, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
-// Import the generated VfsAdapter bindings
-use crate::VfsAdapter;
+// Generate bindings for the VFS adapter world
+bindgen!({
+    path: "../wit",
+    world: "vfs-adapter",
+    async: false,
+});
+
+pub mod filesystem_preopens;
+pub mod filesystem_types;
 
 /// Core VFS state that is shared across multiple applications
 /// This is wrapped in Arc<Mutex<>> to enable concurrent access
@@ -31,6 +35,12 @@ pub struct SharedVfsCore {
 
     /// Maps host DirectoryEntryStream resources (rep) to VFS DirectoryEntryStream resources
     pub dir_stream_map: HashMap<u32, crate::exports::wasi::filesystem::types::DirectoryEntryStream>,
+
+    /// Maps host InputStream resources (rep) to VFS InputStream resources
+    pub input_stream_map: HashMap<u32, crate::exports::wasi::io::streams::InputStream>,
+
+    /// Maps host OutputStream resources (rep) to VFS OutputStream resources
+    pub output_stream_map: HashMap<u32, crate::exports::wasi::io::streams::OutputStream>,
 }
 
 /// Host state that wraps a VfsAdapter component instance
@@ -93,6 +103,8 @@ impl VfsHostState {
             vfs_store: Arc::new(Mutex::new(vfs_store)),
             descriptor_map: HashMap::new(),
             dir_stream_map: HashMap::new(),
+            input_stream_map: HashMap::new(),
+            output_stream_map: HashMap::new(),
         };
 
         // Create host WASI context
@@ -135,7 +147,9 @@ impl WasiView for VfsHostState {
 }
 
 /// Helper function to convert VFS error codes to WASI error codes
-pub fn convert_vfs_error(error: crate::exports::wasi::filesystem::types::ErrorCode) -> wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode {
+pub fn convert_vfs_error(
+    error: crate::exports::wasi::filesystem::types::ErrorCode,
+) -> wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode {
     use crate::exports::wasi::filesystem::types::ErrorCode as VfsError;
     use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode as WasiError;
 
@@ -180,6 +194,5 @@ pub fn convert_vfs_error(error: crate::exports::wasi::filesystem::types::ErrorCo
     }
 }
 
-// Re-export submodules
-pub use filesystem_types::*;
-pub use filesystem_preopens::*;
+// Public API exports
+// Users can import VfsHostState and related types from vfs_host crate root
