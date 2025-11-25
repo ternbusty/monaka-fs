@@ -1,22 +1,32 @@
 # Examples
 
-This directory contains example applications demonstrating two different approaches to using the VFS filesystem:
+This directory contains example applications demonstrating three different approaches to using the VFS filesystem:
 
-1. **Legacy Examples** - Direct library usage (single WASM module)
-2. **Component Model Examples** - WASI composition (multiple components)
+1. **Component Model - Dynamic Linking (Recommended)** - Runtime composition for maximum modularity
+2. **Component Model - Static Composition** - Build-time linking for simpler deployment
+3. **Legacy Examples** - Direct library usage (single WASM module)
 
 ## Structure
 
-### Component Model Examples
+### Runtime Dynamic Linking (Recommended)
+- `runtime-linker/` - **Main demo** showing runtime component loading and composition
+- Loads VFS adapter and application components separately
+- Composes at runtime using `wac plug`
+- Shows performance comparison with static composition
+- Demonstrates independent component updates
+
+### Component Model Examples (Static Composition)
 - `component-rust/` - Rust example using std::fs API
 - `component-c/` - C example using standard C I/O functions
-- `build-components.sh` - Build script for both examples
-- `compose-demo.sh` - Composition script to connect apps with VFS provider
-- `run-demo.sh` - Execution script for composed components
 
 ### Legacy Examples
 - `c/` - C code using fs-wasm FFI directly
 - `rust/` - Rust code using fs-wasm library directly
+
+### Shell Scripts (Removed)
+All shell scripts have been removed. Use Makefile commands instead:
+- See [SCRIPTS.md](SCRIPTS.md) for complete migration guide
+- Use `make help` to see all available commands
 
 ## Prerequisites
 
@@ -63,29 +73,48 @@ This directory contains example applications demonstrating two different approac
 
 ## Quick Start
 
-### Component Model Examples (Recommended)
+### Runtime Dynamic Linking (Recommended)
 
-1. **Build the VFS provider** (if not already built):
-   ```bash
-   cd ..
-   cargo build -p vfs-provider --target wasm32-wasip2
-   cd examples
-   ```
+The simplest way to see the VFS in action with maximum modularity:
 
-2. **Build the example applications**:
-   ```bash
-   ./build-components.sh
-   ```
+```bash
+# Works from repository root or examples directory:
+make demo
 
-3. **Compose with VFS provider**:
-   ```bash
-   ./compose-demo.sh
-   ```
+# Or more explicitly:
+make demo-dynamic
+```
 
-4. **Run the demos**:
-   ```bash
-   ./run-demo.sh
-   ```
+**Note**: All `make` commands work from both the repository root and the `examples/` directory.
+
+This demonstrates:
+- **Loading components separately**: VFS adapter (4.24 MB) + Application (2.46 MB)
+- **Runtime composition**: Using `wac plug` at runtime (~14ms overhead)
+- **Performance comparison**: Static vs dynamic composition analysis
+- **Full filesystem demo**: All 20 tests passing with in-memory VFS
+
+**Why this is recommended**:
+- ✓ Shows the most flexible approach
+- ✓ Demonstrates component modularity
+- ✓ Minimal runtime overhead (< 0.1%)
+- ✓ Enables independent updates
+
+### Component Model - Static Composition
+
+For single-file deployment, use build-time composition:
+
+```bash
+# From repository root:
+make demo-static
+
+# Or individually:
+make run-static-rust  # Run composed component-rust
+make run-static-c     # Run composed component-c
+
+# Build only (without running):
+make compose-static-rust  # Produces examples/component-rust.composed.wasm
+make compose-static-c     # Produces examples/component-c.composed.wasm
+```
 
 ### Legacy Examples
 
@@ -174,9 +203,45 @@ Both c/ and rust/ examples perform the following operations:
 
 ## Architecture Comparison
 
-### Component Model Approach
+### Component Model - Runtime Dynamic Linking (Recommended)
 
-The component model examples use the WASI Preview 2 filesystem interface:
+The **recommended approach** uses runtime composition for maximum flexibility:
+
+```
+┌─────────────────────┐     ┌─────────────────────┐
+│  vfs_adapter.wasm   │     │  application.wasm   │
+│  (4.24 MB)          │     │  (2.46 MB)          │
+└──────────┬──────────┘     └──────────┬──────────┘
+           │                           │
+           └──────────┬────────────────┘
+                      │ wac plug (runtime)
+                      │ ~14ms composition
+                      ▼
+           ┌──────────────────────┐
+           │  composed.wasm       │
+           │  (6.70 MB)           │
+           └──────────────────────┘
+```
+
+**Runtime composition process:**
+1. Load both components separately
+2. Compose at runtime using `wac plug` (~14ms)
+3. Execute composed component
+
+**Advantages:**
+- Independent component updates
+- Swap implementations at runtime
+- Better modularity
+
+**Disadvantages:**
+- Multiple files to manage
+- Runtime composition overhead (~14ms, negligible for most use cases)
+
+**See `runtime-linker/` for live demo**
+
+### Component Model - Static Composition
+
+Alternative approach using **build-time composition**:
 
 ```
 ┌─────────────────────┐
@@ -188,17 +253,31 @@ The component model examples use the WASI Preview 2 filesystem interface:
            │ imports wasi:filesystem
            │
 ┌──────────▼──────────┐
-│  VFS Provider       │
+│  VFS Adapter        │
 │  Component          │
 │  (in-memory FS)     │
 └─────────────────────┘
+    ↓ wac plug (build time)
+┌─────────────────────┐
+│  composed.wasm      │
+│  (6.70 MB)          │
+└─────────────────────┘
 ```
 
-The composition process:
+**Build-time composition process:**
 1. Application imports `wasi:filesystem/types@0.2.6` and `wasi:filesystem/preopens@0.2.6`
-2. VFS provider exports these interfaces
-3. `wac plug` links them together by connecting imports to exports
-4. The result is a self-contained component with in-memory filesystem
+2. VFS adapter exports these interfaces
+3. `wac plug` links them at **build time**
+4. Result: single `.composed.wasm` file (6.70 MB)
+
+**Advantages:**
+- Single file distribution
+- No runtime overhead
+- Simpler deployment
+
+**Disadvantages:**
+- Must rebuild for VFS adapter updates
+- Components tightly coupled
 
 ### Legacy Approach
 
@@ -220,11 +299,20 @@ The legacy examples link directly with the fs-wasm library:
   Single WASM Module
 ```
 
-The build process:
+**Build process:**
 1. C or Rust code is compiled to WASM object files
 2. Linked with fs-wasm and fs-core libraries
 3. Produces a single WASM module
 4. No component composition required
+
+**Advantages:**
+- Direct library access
+- No component model overhead
+- Simple build process
+
+**Disadvantages:**
+- Custom FFI required for C
+- Not using standard WASI interfaces
 
 ## Individual Builds
 
@@ -349,19 +437,29 @@ wasmtime run rust/target/wasm32-wasip1/debug/rust-example.wasm
 
 ## Next Steps
 
-### For Component Model Development
+### For Runtime Dynamic Linking (Recommended)
+- **Start here**: Run the `runtime-linker` demo to see dynamic composition in action
+- Explore `runtime-linker/src/main.rs` to understand the implementation
+- Experiment with swapping different VFS adapter implementations
+- Build plugin systems or multi-tenant applications
+- Use this approach for maximum modularity and flexibility
+
+### For Component Model Development (Static Composition)
 - Explore the source code in `component-rust/src/main.rs` and `component-c/main.c`
-- Learn how standard POSIX/C I/O APIs work with the VFS provider
+- Learn how standard POSIX/C I/O APIs work with the VFS adapter
 - Create your own WASI Preview 2 applications
 - Experiment with component composition using `wac`
+- Use this approach when you need single-file deployment
 
 ### For Legacy Library Usage
 - Explore the source code in `rust/src/main.rs` and `c/main.c`
 - Learn how to use fs-wasm FFI directly from C
 - Learn how to use fs-core library from Rust
 - Build custom applications that need direct filesystem control
+- Use this approach when you need direct library access
 
 ### General
 - Read the [CLAUDE.md](../CLAUDE.md) for detailed architecture information
 - Run tests: `cargo test` to understand the filesystem behavior
 - Modify examples to test additional filesystem operations
+- **Recommended**: Start with runtime dynamic linking, then explore alternatives based on your needs

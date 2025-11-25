@@ -9,6 +9,7 @@ exclude = [
   ".tmp",  # Temporary work-in-progress code
   "test-app",  # Test application for composition testing
   "test-simple",  # Simple test without console I/O
+  "examples/runtime-linker",  # Runtime dynamic linking demo (native host program)
 ]
 resolver="3"
 
