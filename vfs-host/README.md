@@ -12,8 +12,9 @@ Host trait implementation for VFS adapter - enables multiple WebAssembly applica
 - **Thread-Safe**: Uses `Arc<Mutex<>>` for safe concurrent access
 - **State Persistence**: VFS state persists as long as any application references it
 - **Complete WASI Implementation**: All 33 WASI filesystem Host trait methods implemented
-  - 23 real implementations (file I/O, directories, metadata, etc.)
-  - 10 stub implementations (advisory hints, sync operations)
+  - 26 real implementations (file I/O, directories, metadata, stream API, etc.)
+  - 7 stub implementations (advisory hints, sync operations)
+- **Full Stream API Support**: Complete implementation of `read_via_stream`, `write_via_stream`, `append_via_stream`
 - **Zero-Copy Resource Mapping**: Efficient descriptor and stream resource management
 
 ## When to Use
@@ -178,7 +179,7 @@ The library implements all WASI Preview 2 filesystem Host traits:
 **wasi:filesystem/preopens@0.2.6:**
 - `Host` trait (1 method) - Preopened directory listing
 
-### Real Implementations (23 methods)
+### Real Implementations (26 methods)
 
 - **File I/O**: `read`, `write`
 - **Path operations**: `open_at`, `stat`, `stat_at`, `read_directory`
@@ -186,13 +187,13 @@ The library implements all WASI Preview 2 filesystem Host traits:
 - **Link ops**: `rename_at`, `link_at`, `symlink_at`, `readlink_at`
 - **Metadata ops**: `set_size`, `set_times`, `set_times_at`, `get_flags`, `get_type`
 - **Comparison ops**: `is_same_object`, `metadata_hash`, `metadata_hash_at`
-- **Stream ops**: `read_directory_entry`, `drop` (DirectoryEntryStream)
+- **Stream API**: `read_via_stream`, `write_via_stream`, `append_via_stream` - Full implementation
+- **Directory streaming**: `read_directory_entry`, `drop` (DirectoryEntryStream)
 
-### Stub Implementations (10 methods)
+### Stub Implementations (7 methods)
 
 These methods return `Unsupported` error as they're not required for in-memory VFS:
-- `advise`, `sync_data`, `sync` - Advisory/sync operations
-- `read_via_stream`, `write_via_stream`, `append_via_stream` - Stream APIs (direct read/write used instead)
+- `advise`, `sync_data`, `sync` - Advisory/sync operations (no-op for in-memory FS)
 
 ## Comparison with Alternatives
 

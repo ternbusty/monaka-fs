@@ -304,8 +304,11 @@ The `vfs-host` library provides Host trait implementations that enable **multipl
 - **Shared VFS State**: Multiple applications access the same VFS instance concurrently
 - **Thread-Safe**: Uses `Arc<Mutex<>>` for safe concurrent access
 - **State Persistence**: VFS state persists as long as any application references it
-- **Zero-Copy Resource Mapping**: Efficient descriptor and stream resource management
 - **Complete WASI Implementation**: All 33 WASI filesystem Host trait methods implemented
+  - 26 real implementations (file I/O, directories, metadata, stream API, etc.)
+  - 7 stub implementations (advisory hints, sync operations)
+- **Full Stream API Support**: Complete implementation of `read_via_stream`, `write_via_stream`, `append_via_stream`
+- **Zero-Copy Resource Mapping**: Efficient descriptor and stream resource management
 
 ### When to Use vfs-host
 

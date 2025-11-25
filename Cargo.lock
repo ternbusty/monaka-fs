@@ -1872,6 +1872,8 @@ name = "vfs-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "wasmtime",
  "wasmtime-wasi",
 ]

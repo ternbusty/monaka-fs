@@ -4,10 +4,54 @@
 //
 // Phase 1: Empty implementation to discover required methods from compiler
 
-use super::VfsHostState;
+use super::{SharedVfsCore, VfsHostState};
+use bytes::Bytes;
+use std::sync::{Arc, Mutex};
 use wasmtime::component::Resource;
 use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
-use wasmtime_wasi::TrappableError;
+use wasmtime_wasi::{
+    HostInputStream, HostOutputStream, StreamError, StreamResult, Subscribe, TrappableError,
+};
+
+/// Wrapper for VFS InputStream that implements HostInputStream
+pub struct VfsInputStreamWrapper {
+    /// Reference to shared VFS core
+    shared_vfs: Arc<Mutex<SharedVfsCore>>,
+    /// The VFS InputStream resource
+    vfs_stream: crate::exports::wasi::io::streams::InputStream,
+}
+
+impl VfsInputStreamWrapper {
+    pub fn new(
+        shared_vfs: Arc<Mutex<SharedVfsCore>>,
+        vfs_stream: crate::exports::wasi::io::streams::InputStream,
+    ) -> Self {
+        Self {
+            shared_vfs,
+            vfs_stream,
+        }
+    }
+}
+
+/// Wrapper for VFS OutputStream that implements HostOutputStream
+pub struct VfsOutputStreamWrapper {
+    /// Reference to shared VFS core
+    shared_vfs: Arc<Mutex<SharedVfsCore>>,
+    /// The VFS OutputStream resource
+    vfs_stream: crate::exports::wasi::io::streams::OutputStream,
+}
+
+impl VfsOutputStreamWrapper {
+    pub fn new(
+        shared_vfs: Arc<Mutex<SharedVfsCore>>,
+        vfs_stream: crate::exports::wasi::io::streams::OutputStream,
+    ) -> Self {
+        Self {
+            shared_vfs,
+            vfs_stream,
+        }
+    }
+}
 
 impl wasmtime_wasi::bindings::sync::filesystem::types::Host for VfsHostState {
     fn filesystem_error_code(
@@ -92,6 +136,134 @@ impl VfsHostState {
     }
 }
 
+/// Helper function to convert VFS StreamError to Host StreamError
+fn convert_stream_error(error: crate::exports::wasi::io::streams::StreamError) -> StreamError {
+    use crate::exports::wasi::io::streams::StreamError as VfsError;
+
+    match error {
+        VfsError::LastOperationFailed(err) => {
+            // Convert the error to string since we can't directly map the resource
+            StreamError::LastOperationFailed(anyhow::anyhow!("VFS error: {:?}", err))
+        }
+        VfsError::Closed => StreamError::Closed,
+    }
+}
+
+#[async_trait::async_trait]
+impl Subscribe for VfsInputStreamWrapper {
+    async fn ready(&mut self) {
+        // For in-memory VFS, streams are always ready
+        // No need to wait for I/O
+    }
+}
+
+impl HostInputStream for VfsInputStreamWrapper {
+    fn read(&mut self, size: usize) -> StreamResult<Bytes> {
+        // Lock VFS core and call VFS stream read
+        let core = self.shared_vfs.lock().unwrap();
+        let mut vfs_store = core.vfs_store.lock().unwrap();
+
+        // Call VFS InputStream read method
+        let result = core
+            .vfs_instance
+            .wasi_io_streams()
+            .input_stream()
+            .call_read(&mut *vfs_store, self.vfs_stream, size as u64);
+
+        match result {
+            Ok(Ok(data)) => Ok(Bytes::from(data)),
+            Ok(Err(err)) => Err(convert_stream_error(err)),
+            Err(e) => Err(StreamError::LastOperationFailed(e)),
+        }
+    }
+
+    fn skip(&mut self, nelem: usize) -> StreamResult<usize> {
+        // Lock VFS core and call VFS stream skip
+        let core = self.shared_vfs.lock().unwrap();
+        let mut vfs_store = core.vfs_store.lock().unwrap();
+
+        // Call VFS InputStream skip method
+        let result = core
+            .vfs_instance
+            .wasi_io_streams()
+            .input_stream()
+            .call_skip(&mut *vfs_store, self.vfs_stream, nelem as u64);
+
+        match result {
+            Ok(Ok(skipped)) => Ok(skipped as usize),
+            Ok(Err(err)) => Err(convert_stream_error(err)),
+            Err(e) => Err(StreamError::LastOperationFailed(e)),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Subscribe for VfsOutputStreamWrapper {
+    async fn ready(&mut self) {
+        // For in-memory VFS, streams are always ready
+        // No need to wait for I/O
+    }
+}
+
+impl HostOutputStream for VfsOutputStreamWrapper {
+    fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
+        // Lock VFS core and call VFS stream write
+        let core = self.shared_vfs.lock().unwrap();
+        let mut vfs_store = core.vfs_store.lock().unwrap();
+
+        // Call VFS OutputStream write method
+        let result = core
+            .vfs_instance
+            .wasi_io_streams()
+            .output_stream()
+            .call_write(&mut *vfs_store, self.vfs_stream, &bytes);
+
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) => Err(convert_stream_error(err)),
+            Err(e) => Err(StreamError::LastOperationFailed(e)),
+        }
+    }
+
+    fn flush(&mut self) -> StreamResult<()> {
+        // Lock VFS core and call VFS stream flush
+        let core = self.shared_vfs.lock().unwrap();
+        let mut vfs_store = core.vfs_store.lock().unwrap();
+
+        // Call VFS OutputStream flush method
+        let result = core
+            .vfs_instance
+            .wasi_io_streams()
+            .output_stream()
+            .call_flush(&mut *vfs_store, self.vfs_stream);
+
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) => Err(convert_stream_error(err)),
+            Err(e) => Err(StreamError::LastOperationFailed(e)),
+        }
+    }
+
+    fn check_write(&mut self) -> StreamResult<usize> {
+        // Lock VFS core and call VFS stream check_write
+        let core = self.shared_vfs.lock().unwrap();
+        let mut vfs_store = core.vfs_store.lock().unwrap();
+
+        // Call VFS OutputStream check_write method
+        let result = core
+            .vfs_instance
+            .wasi_io_streams()
+            .output_stream()
+            .call_check_write(&mut *vfs_store, self.vfs_stream);
+
+        match result {
+            Ok(Ok(size)) => Ok(size as usize),
+            Ok(Err(err)) => Err(convert_stream_error(err)),
+            Err(e) => Err(StreamError::LastOperationFailed(e)),
+        }
+    }
+}
+
 impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHostState {
     fn read(
         &mut self,
@@ -111,12 +283,12 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let core = self.shared_vfs.lock().unwrap();
 
         // Call VFS adapter's read method
-
+        // Note: WASI descriptor.read signature is (length, offset) not (offset, length)
         let result = core
             .vfs_instance
             .wasi_filesystem_types()
             .descriptor()
-            .call_read(&mut *core.vfs_store.lock().unwrap(), vfs_desc, offset, len)
+            .call_read(&mut *core.vfs_store.lock().unwrap(), vfs_desc, len, offset)
             .map_err(TrappableError::trap)?;
 
         match result {
@@ -184,12 +356,40 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        // Stream-based operations would require creating wrapper types that implement
-        // HostInputStream trait and forward to VFS adapter streams.
-        // This is complex and requires async stream handling.
-        // For this phase, we keep it as unsupported since direct read/write is already implemented.
-        let _ = (self_, offset);
-        Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
+        // Get VFS descriptor
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+
+        // Lock shared VFS core
+        let core = self.shared_vfs.lock().unwrap();
+
+        // Call VFS adapter's read_via_stream
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_read_via_stream(&mut *core.vfs_store.lock().unwrap(), vfs_desc, offset)
+            .map_err(TrappableError::trap)?;
+
+        match result {
+            Ok(vfs_stream) => {
+                // Create wrapper for the VFS stream
+                let wrapper = VfsInputStreamWrapper::new(Arc::clone(&self.shared_vfs), vfs_stream);
+
+                // Add to resource table
+                let resource = self
+                    .table
+                    .push(Box::new(wrapper) as Box<dyn HostInputStream>)
+                    .map_err(TrappableError::trap)?;
+
+                Ok(resource)
+            }
+            Err(vfs_error) => {
+                let host_error = super::convert_vfs_error(vfs_error);
+                Err(convert_sync_to_nonsync_error(host_error))
+            }
+        }
     }
 
     fn write_via_stream(
@@ -200,12 +400,40 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        // Stream-based operations would require creating wrapper types that implement
-        // HostOutputStream trait and forward to VFS adapter streams.
-        // This is complex and requires async stream handling.
-        // For this phase, we keep it as unsupported since direct read/write is already implemented.
-        let _ = (self_, offset);
-        Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
+        // Get VFS descriptor
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+
+        // Lock shared VFS core
+        let core = self.shared_vfs.lock().unwrap();
+
+        // Call VFS adapter's write_via_stream
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_write_via_stream(&mut *core.vfs_store.lock().unwrap(), vfs_desc, offset)
+            .map_err(TrappableError::trap)?;
+
+        match result {
+            Ok(vfs_stream) => {
+                // Create wrapper for the VFS stream
+                let wrapper = VfsOutputStreamWrapper::new(Arc::clone(&self.shared_vfs), vfs_stream);
+
+                // Add to resource table
+                let resource = self
+                    .table
+                    .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+                    .map_err(TrappableError::trap)?;
+
+                Ok(resource)
+            }
+            Err(vfs_error) => {
+                let host_error = super::convert_vfs_error(vfs_error);
+                Err(convert_sync_to_nonsync_error(host_error))
+            }
+        }
     }
 
     fn append_via_stream(
@@ -215,12 +443,40 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        // Stream-based operations would require creating wrapper types that implement
-        // HostOutputStream trait and forward to VFS adapter streams.
-        // This is complex and requires async stream handling.
-        // For this phase, we keep it as unsupported since direct read/write is already implemented.
-        let _ = self_;
-        Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
+        // Get VFS descriptor
+        let vfs_desc = self
+            .get_vfs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+
+        // Lock shared VFS core
+        let core = self.shared_vfs.lock().unwrap();
+
+        // Call VFS adapter's append_via_stream
+        let result = core
+            .vfs_instance
+            .wasi_filesystem_types()
+            .descriptor()
+            .call_append_via_stream(&mut *core.vfs_store.lock().unwrap(), vfs_desc)
+            .map_err(TrappableError::trap)?;
+
+        match result {
+            Ok(vfs_stream) => {
+                // Create wrapper for the VFS stream
+                let wrapper = VfsOutputStreamWrapper::new(Arc::clone(&self.shared_vfs), vfs_stream);
+
+                // Add to resource table
+                let resource = self
+                    .table
+                    .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+                    .map_err(TrappableError::trap)?;
+
+                Ok(resource)
+            }
+            Err(vfs_error) => {
+                let host_error = super::convert_vfs_error(vfs_error);
+                Err(convert_sync_to_nonsync_error(host_error))
+            }
+        }
     }
 
     fn advise(
