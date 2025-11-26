@@ -1,0 +1,616 @@
+// WASI filesystem types Host trait implementation for RPC client
+
+use anyhow::anyhow;
+use vfs_rpc_protocol::{ErrorCode, Request, Response};
+use wasmtime::component::Resource;
+use wasmtime_wasi::bindings::sync::filesystem::types::{
+    Advice, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry,
+    MetadataHashValue, NewTimestamp, OpenFlags, PathFlags,
+};
+use wasmtime_wasi::TrappableError;
+
+use crate::VfsRpcHostState;
+
+// Convert RPC ErrorCode to WASI non-sync ErrorCode for TrappableError
+fn rpc_error_to_wasi(
+    code: ErrorCode,
+) -> TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode> {
+    use wasmtime_wasi::bindings::filesystem::types::ErrorCode as NonSyncErrorCode;
+
+    let error_code = match code {
+        ErrorCode::NotFound => NonSyncErrorCode::NoEntry,
+        ErrorCode::NotADirectory => NonSyncErrorCode::NotDirectory,
+        ErrorCode::IsADirectory => NonSyncErrorCode::IsDirectory,
+        ErrorCode::InvalidArgument => NonSyncErrorCode::Invalid,
+        ErrorCode::BadFileDescriptor => NonSyncErrorCode::BadDescriptor,
+        ErrorCode::PermissionDenied => NonSyncErrorCode::Access,
+        ErrorCode::AlreadyExists => NonSyncErrorCode::Exist,
+        ErrorCode::NotEmpty => NonSyncErrorCode::NotEmpty,
+        ErrorCode::NetworkError => NonSyncErrorCode::Io,
+        ErrorCode::ProtocolError => NonSyncErrorCode::Io,
+        ErrorCode::SerializationError => NonSyncErrorCode::Io,
+    };
+
+    TrappableError::from(error_code)
+}
+
+impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpcHostState {
+    fn read(
+        &mut self,
+        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        len: u64,
+        offset: u64,
+    ) -> Result<
+        (Vec<u8>, bool),
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let fd_rep = self_.rep();
+        let server_fd = self
+            .fd_map
+            .get(&fd_rep)
+            .ok_or_else(|| TrappableError::trap(anyhow!("File descriptor not found")))?;
+
+        // Seek to offset if needed
+        if offset > 0 {
+            let seek_req = Request::Seek {
+                fd: *server_fd,
+                offset: offset as i64,
+                whence: 0, // SEEK_SET
+            };
+            match self
+                .rpc_client
+                .send_request(&seek_req)
+                .map_err(TrappableError::trap)?
+            {
+                Response::Position { .. } => {}
+                Response::Error { code, .. } => {
+                    return Err(rpc_error_to_wasi(code));
+                }
+                _ => return Err(TrappableError::trap(anyhow!("Unexpected response to Seek"))),
+            }
+        }
+
+        let request = Request::Read {
+            fd: *server_fd,
+            length: len as usize,
+        };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Data { bytes } => {
+                let end_of_stream = bytes.len() < len as usize;
+                Ok((bytes, end_of_stream))
+            }
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Read"))),
+        }
+    }
+
+    fn write(
+        &mut self,
+        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        buffer: Vec<u8>,
+        offset: u64,
+    ) -> Result<u64, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        let fd_rep = self
+            .table
+            .get::<wasmtime_wasi::bindings::filesystem::types::Descriptor>(&self_)
+            .map_err(TrappableError::trap)?
+            .rep();
+        let server_fd = self
+            .fd_map
+            .get(&fd_rep)
+            .ok_or_else(|| TrappableError::trap(anyhow!("File descriptor not found")))?;
+
+        // Seek to offset if needed
+        if offset > 0 {
+            let seek_req = Request::Seek {
+                fd: *server_fd,
+                offset: offset as i64,
+                whence: 0, // SEEK_SET
+            };
+            match self
+                .rpc_client
+                .send_request(&seek_req)
+                .map_err(TrappableError::trap)?
+            {
+                Response::Position { .. } => {}
+                Response::Error { code, .. } => {
+                    return Err(TrappableError::from(rpc_error_to_wasi(code)));
+                }
+                _ => return Err(TrappableError::trap(anyhow!("Unexpected response to Seek"))),
+            }
+        }
+
+        let request = Request::Write {
+            fd: *server_fd,
+            data: buffer,
+        };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Written { count } => Ok(count as u64),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Write"))),
+        }
+    }
+
+    fn drop(
+        &mut self,
+        rep: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), anyhow::Error> {
+        let fd_rep = self
+            .table
+            .get::<wasmtime_wasi::bindings::filesystem::types::Descriptor>(&rep)?
+            .rep();
+        if let Some(server_fd) = self.fd_map.remove(&fd_rep) {
+            let request = Request::Close { fd: server_fd };
+            // Ignore response - best effort close
+            let _ = self.rpc_client.send_request(&request);
+        }
+        self.table.delete(rep)?;
+        Ok(())
+    }
+
+    fn read_via_stream(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _offset: u64,
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Err(TrappableError::trap(anyhow!(
+            "read_via_stream not yet implemented"
+        )))
+    }
+
+    fn write_via_stream(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _offset: u64,
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Err(TrappableError::trap(anyhow!(
+            "write_via_stream not yet implemented"
+        )))
+    }
+
+    fn append_via_stream(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Err(TrappableError::trap(anyhow!(
+            "append_via_stream not yet implemented"
+        )))
+    }
+
+    fn advise(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _offset: u64,
+        _len: u64,
+        _advice: Advice,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Ok(()) // Advisory hints - can safely ignore
+    }
+
+    fn sync_data(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Ok(()) // No-op for RPC
+    }
+
+    fn get_flags(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        DescriptorFlags,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Ok(DescriptorFlags::READ | DescriptorFlags::WRITE)
+    }
+
+    fn get_type(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        DescriptorType,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Ok(DescriptorType::RegularFile)
+    }
+
+    fn set_size(
+        &mut self,
+        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        size: u64,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        let fd_rep = self
+            .table
+            .get::<wasmtime_wasi::bindings::filesystem::types::Descriptor>(&self_)
+            .map_err(TrappableError::trap)?
+            .rep();
+        let server_fd = self
+            .fd_map
+            .get(&fd_rep)
+            .ok_or_else(|| TrappableError::trap(anyhow!("File descriptor not found")))?;
+
+        let request = Request::Ftruncate {
+            fd: *server_fd,
+            size,
+        };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!(
+                "Unexpected response to Ftruncate"
+            ))),
+        }
+    }
+
+    fn set_times(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _data_access_timestamp: NewTimestamp,
+        _data_modification_timestamp: NewTimestamp,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Ok(()) // Not supported
+    }
+
+    fn set_times_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _path_flags: PathFlags,
+        _path: String,
+        _data_access_timestamp: NewTimestamp,
+        _data_modification_timestamp: NewTimestamp,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Ok(()) // Not supported
+    }
+
+    fn read_directory(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Err(TrappableError::trap(anyhow!(
+            "read_directory not yet implemented"
+        )))
+    }
+
+    fn sync(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Ok(()) // No-op
+    }
+
+    fn create_directory_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        let request = Request::Mkdir { path };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Mkdir"))),
+        }
+    }
+
+    fn stat(
+        &mut self,
+        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        DescriptorStat,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let fd_rep = self
+            .table
+            .get::<wasmtime_wasi::bindings::filesystem::types::Descriptor>(&self_)
+            .map_err(TrappableError::trap)?
+            .rep();
+        let server_fd = self
+            .fd_map
+            .get(&fd_rep)
+            .ok_or_else(|| TrappableError::trap(anyhow!("File descriptor not found")))?;
+
+        let request = Request::Fstat { fd: *server_fd };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Metadata { metadata } => Ok(DescriptorStat {
+                type_: if metadata.is_dir {
+                    DescriptorType::Directory
+                } else {
+                    DescriptorType::RegularFile
+                },
+                link_count: 1,
+                size: metadata.size,
+                data_access_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+                data_modification_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+                status_change_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+            }),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Fstat"))),
+        }
+    }
+
+    fn stat_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _path_flags: PathFlags,
+        path: String,
+    ) -> Result<
+        DescriptorStat,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        let request = Request::Stat { path };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Metadata { metadata } => Ok(DescriptorStat {
+                type_: if metadata.is_dir {
+                    DescriptorType::Directory
+                } else {
+                    DescriptorType::RegularFile
+                },
+                link_count: 1,
+                size: metadata.size,
+                data_access_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+                data_modification_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+                status_change_timestamp: Some(
+                    wasmtime_wasi::bindings::sync::filesystem::types::Datetime {
+                        seconds: metadata.modified,
+                        nanoseconds: 0,
+                    },
+                ),
+            }),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Stat"))),
+        }
+    }
+
+    fn link_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _old_path_flags: PathFlags,
+        _old_path: String,
+        _new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _new_path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Err(TrappableError::trap(anyhow!("link_at not supported")))
+    }
+
+    fn open_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _path_flags: PathFlags,
+        path: String,
+        open_flags: OpenFlags,
+        flags: DescriptorFlags,
+    ) -> Result<
+        Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        // Convert WASI open flags to fs-core flags
+        let mut fs_flags = 0u32;
+        if open_flags.contains(OpenFlags::CREATE) {
+            fs_flags |= 0x40; // O_CREAT
+        }
+        if open_flags.contains(OpenFlags::TRUNCATE) {
+            fs_flags |= 0x200; // O_TRUNC
+        }
+        if flags.contains(DescriptorFlags::WRITE) {
+            fs_flags |= 0x02; // O_RDWR
+        } else {
+            fs_flags |= 0x00; // O_RDONLY
+        }
+
+        let request = Request::OpenPath {
+            path,
+            flags: fs_flags,
+        };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Fd { fd: server_fd } => {
+                // Create a local Descriptor resource
+                let local_fd_id = self.alloc_fd_id();
+                let descriptor = wasmtime_wasi::bindings::filesystem::types::Descriptor::from(local_fd_id);
+                let resource = self.table.push(descriptor).map_err(TrappableError::trap)?;
+
+                // Map local ID to server FD
+                self.fd_map.insert(local_fd_id, server_fd);
+
+                Ok(resource)
+            }
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!(
+                "Unexpected response to OpenPath"
+            ))),
+        }
+    }
+
+    fn readlink_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _path: String,
+    ) -> Result<String, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Err(TrappableError::trap(anyhow!("readlink_at not supported")))
+    }
+
+    fn remove_directory_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        let request = Request::Rmdir { path };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Rmdir"))),
+        }
+    }
+
+    fn rename_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _old_path: String,
+        _new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _new_path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Err(TrappableError::trap(anyhow!(
+            "rename_at not yet implemented"
+        )))
+    }
+
+    fn symlink_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _old_path: String,
+        _new_path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        Err(TrappableError::trap(anyhow!("symlink_at not supported")))
+    }
+
+    fn unlink_file_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        path: String,
+    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        let request = Request::Unlink { path };
+
+        match self
+            .rpc_client
+            .send_request(&request)
+            .map_err(TrappableError::trap)?
+        {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(TrappableError::from(rpc_error_to_wasi(code))),
+            _ => Err(TrappableError::trap(anyhow!("Unexpected response to Unlink"))),
+        }
+    }
+
+    fn is_same_object(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _other: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<bool, anyhow::Error> {
+        Ok(false)
+    }
+
+    fn metadata_hash(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+    ) -> Result<
+        MetadataHashValue,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Ok(MetadataHashValue {
+            lower: 0,
+            upper: 0,
+        })
+    }
+
+    fn metadata_hash_at(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _path_flags: PathFlags,
+        _path: String,
+    ) -> Result<
+        MetadataHashValue,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Ok(MetadataHashValue {
+            lower: 0,
+            upper: 0,
+        })
+    }
+}
+
+impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream for VfsRpcHostState {
+    fn read_directory_entry(
+        &mut self,
+        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+    ) -> Result<
+        Option<DirectoryEntry>,
+        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+    > {
+        Err(TrappableError::trap(anyhow!(
+            "read_directory_entry not yet implemented"
+        )))
+    }
+
+    fn drop(
+        &mut self,
+        rep: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+    ) -> Result<(), anyhow::Error> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}

@@ -4,22 +4,24 @@ This directory contains examples demonstrating different approaches to using the
 
 ## Structure
 
-### Runtime Dynamic Linking
-- `runtime-linker/` - Runtime component loading and composition
+### Component Model Examples
 
-### Component Model Examples (Static Composition)
-- `component-rust/` - Rust example using std::fs API
-- `component-c/` - C example using standard C I/O functions
+#### Dynamic Linking
+- `component-model/dynamic/runtime-linker/` - Runtime component loading and composition
+
+#### Static Composition
+- `component-model/static/rust/` - Rust example using std::fs API
+- `component-model/static/c/` - C example using standard C I/O functions
 
 ### RPC Examples
 - `vfs-rpc-server/` (in parent) - TCP server exposing VFS on port 9000
-- `vfs-demo-app1/` - Writer application
-- `vfs-demo-app2/` - Reader application
-- `wasm-runner/` - Host program with network permissions
+- `rpc/demo-app1/` - Writer application
+- `rpc/demo-app2/` - Reader application
+- `rpc/wasm-runner/` - Host program with network permissions
 
 ### Legacy Examples
-- `c/` - C code using fs-wasm FFI directly
-- `rust/` - Rust code using fs-wasm library directly
+- `legacy/c/` - C code using fs-wasm FFI directly
+- `legacy/rust/` - Rust code using fs-wasm library directly
 
 ## Prerequisites
 
@@ -102,12 +104,12 @@ Or directly:
 
 ```bash
 # C example
-cd examples/c
+cd examples/legacy/c
 make
-wasmtime run ../../target/wasm32-wasip1/debug/c_example.wasm
+wasmtime run ../../../target/wasm32-wasip1/debug/c_example.wasm
 
 # Rust example
-cd examples/rust
+cd examples/legacy/rust
 cargo build --target wasm32-wasip1
 wasmtime run target/wasm32-wasip1/debug/rust-example.wasm
 ```
@@ -156,7 +158,7 @@ Both component-rust and component-c perform:
 
 ### Legacy Examples
 
-Both c/ and rust/ examples perform:
+Both legacy/c/ and legacy/rust/ examples perform:
 
 #### Test 1: Basic File Operations
 - Create files and write content
@@ -190,7 +192,7 @@ Both c/ and rust/ examples perform:
 
 #### Rust Component
 ```bash
-cd component-rust
+cd component-model/static/rust
 cargo build --target wasm32-wasip2
 ```
 
@@ -198,7 +200,7 @@ Output: `target/wasm32-wasip2/debug/component-rust.wasm`
 
 #### C Component
 ```bash
-cd component-c
+cd component-model/static/c
 cargo build --target wasm32-wasip2
 ```
 
@@ -222,11 +224,11 @@ cargo build -p vfs-demo-app2 --target wasm32-wasip2
 
 #### C Example
 ```bash
-cd c
+cd legacy/c
 make
 ```
 
-Output: `../../target/wasm32-wasip1/debug/c_example.wasm`
+Output: `../../../target/wasm32-wasip1/debug/c_example.wasm`
 
 Or from repository root:
 ```bash
@@ -235,7 +237,7 @@ make build-c-example
 
 #### Rust Example
 ```bash
-cd rust
+cd legacy/rust
 cargo build --target wasm32-wasip1
 ```
 
@@ -254,13 +256,13 @@ Using `wac plug` to connect the VFS provider to your application:
 # Rust component
 wac plug \
     --plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-    component-rust/target/wasm32-wasip2/debug/component-rust.wasm \
+    component-model/static/rust/target/wasm32-wasip2/debug/component-rust.wasm \
     -o component-rust.composed.wasm
 
 # C component
 wac plug \
     --plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-    component-c/target/wasm32-wasip2/debug/component-c.wasm \
+    component-model/static/c/target/wasm32-wasip2/debug/component-c.wasm \
     -o component-c.composed.wasm
 ```
 
@@ -285,7 +287,7 @@ wasmtime run component-c.composed.wasm
 ```bash
 # Run standalone WASM modules
 wasmtime run ../target/wasm32-wasip1/debug/c_example.wasm
-wasmtime run rust/target/wasm32-wasip1/debug/rust-example.wasm
+wasmtime run legacy/rust/target/wasm32-wasip1/debug/rust-example.wasm
 ```
 
 ## Troubleshooting

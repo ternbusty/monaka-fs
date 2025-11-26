@@ -66,7 +66,7 @@ make demo
 make demo-dynamic
 ```
 
-**Location**: `examples/runtime-linker/`
+**Location**: `examples/component-model/dynamic/runtime-linker/`
 
 ### 2. Component Model - Static Composition
 
@@ -110,7 +110,7 @@ make build-c-example
 make run-c-example
 ```
 
-**Location**: `examples/c/`
+**Location**: `examples/legacy/c/`
 
 ### 5. Legacy Rust Example
 
@@ -121,7 +121,7 @@ make build-rust-example
 make run-rust-example
 ```
 
-**Location**: `examples/rust/`
+**Location**: `examples/legacy/rust/`
 
 ## Component Model VFS Adapter
 
@@ -176,4 +176,4 @@ let mut store2 = Store::new(&engine, vfs_host.clone_shared());
 - `VfsHostState::clone_shared()` - Create host sharing same VFS
 - All WASI filesystem Host trait methods implemented
 
-See `vfs-host/README.md` and `examples/runtime-linker` for details.
+See `vfs-host/README.md` and `examples/component-model/dynamic/runtime-linker` for details.

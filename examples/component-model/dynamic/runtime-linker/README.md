@@ -69,7 +69,7 @@ make build-component-rust    # Build application
 make build-runtime-linker    # Build runtime linker host
 
 # Run the demo
-cd examples/runtime-linker
+cd examples/component-model/dynamic/runtime-linker
 cargo run --release
 ```
 
@@ -77,11 +77,11 @@ cargo run --release
 
 ### Component Files
 
-- **VFS Adapter**: `../../target/wasm32-wasip2/debug/vfs_adapter.wasm`
+- **VFS Adapter**: `../../../../target/wasm32-wasip2/debug/vfs_adapter.wasm`
   - Exports `wasi:filesystem/types@0.2.6` and other WASI interfaces
   - Provides in-memory filesystem implementation
 
-- **Application**: `../component-rust/target/wasm32-wasip2/debug/component-rust.wasm`
+- **Application**: `../../static/rust/target/wasm32-wasip2/debug/component-rust.wasm`
   - Imports `wasi:filesystem/types@0.2.6` and other WASI interfaces
   - Uses standard Rust `std::fs` API
 

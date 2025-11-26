@@ -53,8 +53,8 @@ fn get_root_descriptor(
 }
 
 fn get_file_size(path: &str) -> Result<u64> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("Failed to get metadata for {}", path))?;
+    let metadata =
+        fs::metadata(path).with_context(|| format!("Failed to get metadata for {}", path))?;
     Ok(metadata.len())
 }
 
@@ -79,8 +79,7 @@ fn test_vfs_adapter_independently(engine: &Engine, vfs_adapter_path: &str) -> Re
 
     // Create linker and add WASI host imports
     let mut linker = Linker::new(engine);
-    wasmtime_wasi::add_to_linker_sync(&mut linker)
-        .context("Failed to add WASI to linker")?;
+    wasmtime_wasi::add_to_linker_sync(&mut linker).context("Failed to add WASI to linker")?;
 
     // Create store with WASI context
     let mut store = Store::new(engine, HostState::new());
@@ -91,7 +90,8 @@ fn test_vfs_adapter_independently(engine: &Engine, vfs_adapter_path: &str) -> Re
 
     // Test 1: Get preopened directories
     let preopens = bindings.wasi_filesystem_preopens();
-    let dirs = preopens.call_get_directories(&mut store)
+    let dirs = preopens
+        .call_get_directories(&mut store)
         .context("Failed to get preopened directories")?;
 
     println!("  ✓ Preopened directories: {} found", dirs.len());
@@ -158,7 +158,7 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let start = Instant::now();
 
     // Get root directory
-    
+
     use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
     let root_desc = get_root_descriptor(&mut store1)?;
@@ -166,7 +166,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // Create directories
     let path_flags = wasmtime_wasi::bindings::sync::filesystem::types::PathFlags::empty();
 
-    store1.data_mut().create_directory_at(root_desc, "app1_data".to_string())
+    store1
+        .data_mut()
+        .create_directory_at(root_desc, "app1_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to create directory: {:?}", e))?;
 
     println!("  ✓ Application 1 created directory: /app1_data");
@@ -177,19 +179,27 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
 
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    let file_desc = store1.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-        open_flags,
-        descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file: {:?}", e))?;
+    let file_desc = store1
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app1_data/shared.txt".to_string(),
+            open_flags,
+            descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file: {:?}", e))?;
 
     let content = b"Hello from Application 1\n";
-    let written = store1.data_mut().write(file_desc, content.to_vec(), 0)
+    let written = store1
+        .data_mut()
+        .write(file_desc, content.to_vec(), 0)
         .map_err(|e| anyhow::anyhow!("Failed to write to file: {:?}", e))?;
 
-    println!("  ✓ Created /app1_data/shared.txt and wrote {} bytes", written);
+    println!(
+        "  ✓ Created /app1_data/shared.txt and wrote {} bytes",
+        written
+    );
 
     println!("  ✓ Operation completed in {:?}", start.elapsed());
 
@@ -202,30 +212,35 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let root_desc = get_root_descriptor(&mut store2)?;
 
     // Verify app1_data exists
-    let _stat1 = store2.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app1_data".to_string(),
-    ).map_err(|e| anyhow::anyhow!("Failed to stat app1_data: {:?}", e))?;
+    let _stat1 = store2
+        .data_mut()
+        .stat_at(root_desc, path_flags, "app1_data".to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to stat app1_data: {:?}", e))?;
 
     println!("  ✓ Application 2 sees: /app1_data (created by App1)");
     println!("  ✓ TRUE CONCURRENT ACCESS - Both stores active!");
 
     // Also read the file created by App1
     let read_flags = wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags::empty();
-    let read_descriptor_flags = wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags::READ;
+    let read_descriptor_flags =
+        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags::READ;
 
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    let file_desc = store2.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-        read_flags,
-        read_descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
+    let file_desc = store2
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app1_data/shared.txt".to_string(),
+            read_flags,
+            read_descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
 
-    let (data, _end_of_stream) = store2.data_mut().read(file_desc, 1024, 0)
+    let (data, _end_of_stream) = store2
+        .data_mut()
+        .read(file_desc, 1024, 0)
         .map_err(|e| anyhow::anyhow!("Failed to read file: {:?}", e))?;
 
     let content = String::from_utf8_lossy(&data);
@@ -242,7 +257,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
 
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    store2.data_mut().create_directory_at(root_desc, "app2_data".to_string())
+    store2
+        .data_mut()
+        .create_directory_at(root_desc, "app2_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to create directory: {:?}", e))?;
 
     println!("  ✓ Application 2 created directory: /app2_data");
@@ -250,19 +267,27 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // Also create and write to a file
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    let file_desc = store2.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app2_data/message.txt".to_string(),
-        open_flags,
-        descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file: {:?}", e))?;
+    let file_desc = store2
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app2_data/message.txt".to_string(),
+            open_flags,
+            descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file: {:?}", e))?;
 
     let content = b"Hello from Application 2\n";
-    let written = store2.data_mut().write(file_desc, content.to_vec(), 0)
+    let written = store2
+        .data_mut()
+        .write(file_desc, content.to_vec(), 0)
         .map_err(|e| anyhow::anyhow!("Failed to write to file: {:?}", e))?;
 
-    println!("  ✓ Created /app2_data/message.txt and wrote {} bytes", written);
+    println!(
+        "  ✓ Created /app2_data/message.txt and wrote {} bytes",
+        written
+    );
     println!("  ✓ Operation completed in {:?}", start.elapsed());
 
     // Step 7: Application 1 immediately sees App2's directory (while App2 is still running!)
@@ -274,11 +299,10 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     let root_desc = get_root_descriptor(&mut store1)?;
 
     // Verify app2_data exists
-    let _stat = store1.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app2_data".to_string(),
-    ).map_err(|e| anyhow::anyhow!("Failed to stat app2_data: {:?}", e))?;
+    let _stat = store1
+        .data_mut()
+        .stat_at(root_desc, path_flags, "app2_data".to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to stat app2_data: {:?}", e))?;
 
     println!("  ✓ Application 1 sees: /app2_data (created by App2)");
     println!("  ✓ TRUE CONCURRENT ACCESS - Both stores still active!");
@@ -286,15 +310,20 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // Also read the file created by App2
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    let file_desc = store1.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app2_data/message.txt".to_string(),
-        read_flags,
-        read_descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
+    let file_desc = store1
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app2_data/message.txt".to_string(),
+            read_flags,
+            read_descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
 
-    let (data, _end_of_stream) = store1.data_mut().read(file_desc, 1024, 0)
+    let (data, _end_of_stream) = store1
+        .data_mut()
+        .read(file_desc, 1024, 0)
         .map_err(|e| anyhow::anyhow!("Failed to read file: {:?}", e))?;
 
     let content = String::from_utf8_lossy(&data);
@@ -315,40 +344,52 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
 
     // Open file for appending (need to read current size first)
 
-    let stat = store2.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-    ).map_err(|e| anyhow::anyhow!("Failed to stat file: {:?}", e))?;
+    let stat = store2
+        .data_mut()
+        .stat_at(root_desc, path_flags, "app1_data/shared.txt".to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to stat file: {:?}", e))?;
 
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    let file_desc = store2.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-        read_flags,
-        descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file for appending: {:?}", e))?;
+    let file_desc = store2
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app1_data/shared.txt".to_string(),
+            read_flags,
+            descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file for appending: {:?}", e))?;
 
     let append_content = b"Updated by Application 2\n";
-    let written = store2.data_mut().write(file_desc, append_content.to_vec(), stat.size)
+    let written = store2
+        .data_mut()
+        .write(file_desc, append_content.to_vec(), stat.size)
         .map_err(|e| anyhow::anyhow!("Failed to append to file: {:?}", e))?;
 
-    println!("  ✓ Application 2 appended {} bytes to /app1_data/shared.txt", written);
+    println!(
+        "  ✓ Application 2 appended {} bytes to /app1_data/shared.txt",
+        written
+    );
 
     // App1 reads the updated file
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    let file_desc = store1.data_mut().open_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-        read_flags,
-        read_descriptor_flags,
-    ).map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
+    let file_desc = store1
+        .data_mut()
+        .open_at(
+            root_desc,
+            path_flags,
+            "app1_data/shared.txt".to_string(),
+            read_flags,
+            read_descriptor_flags,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to open file for reading: {:?}", e))?;
 
-    let (data, _end_of_stream) = store1.data_mut().read(file_desc, 1024, 0)
+    let (data, _end_of_stream) = store1
+        .data_mut()
+        .read(file_desc, 1024, 0)
         .map_err(|e| anyhow::anyhow!("Failed to read file: {:?}", e))?;
 
     let content = String::from_utf8_lossy(&data);
@@ -369,7 +410,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // App1 deletes App2's file
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    store1.data_mut().unlink_file_at(root_desc, "app2_data/message.txt".to_string())
+    store1
+        .data_mut()
+        .unlink_file_at(root_desc, "app2_data/message.txt".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete file: {:?}", e))?;
 
     println!("  ✓ Application 1 deleted /app2_data/message.txt");
@@ -377,11 +420,10 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // App2 verifies the file is gone
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    let stat_result = store2.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app2_data/message.txt".to_string(),
-    );
+    let stat_result =
+        store2
+            .data_mut()
+            .stat_at(root_desc, path_flags, "app2_data/message.txt".to_string());
 
     match stat_result {
         Ok(_) => println!("  ✗ ERROR: File should not exist!"),
@@ -391,7 +433,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // App2 deletes App1's file
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    store2.data_mut().unlink_file_at(root_desc, "app1_data/shared.txt".to_string())
+    store2
+        .data_mut()
+        .unlink_file_at(root_desc, "app1_data/shared.txt".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete file: {:?}", e))?;
 
     println!("  ✓ Application 2 deleted /app1_data/shared.txt");
@@ -399,11 +443,10 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // App1 verifies the file is gone
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    let stat_result = store1.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app1_data/shared.txt".to_string(),
-    );
+    let stat_result =
+        store1
+            .data_mut()
+            .stat_at(root_desc, path_flags, "app1_data/shared.txt".to_string());
 
     match stat_result {
         Ok(_) => println!("  ✗ ERROR: File should not exist!"),
@@ -413,7 +456,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // Now delete the directories (must be empty first)
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    store1.data_mut().remove_directory_at(root_desc, "app2_data".to_string())
+    store1
+        .data_mut()
+        .remove_directory_at(root_desc, "app2_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete directory: {:?}", e))?;
 
     println!("  ✓ Application 1 deleted /app2_data directory");
@@ -421,7 +466,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // App2 deletes App1's directory
     let root_desc = get_root_descriptor(&mut store2)?;
 
-    store2.data_mut().remove_directory_at(root_desc, "app1_data".to_string())
+    store2
+        .data_mut()
+        .remove_directory_at(root_desc, "app1_data".to_string())
         .map_err(|e| anyhow::anyhow!("Failed to delete directory: {:?}", e))?;
 
     println!("  ✓ Application 2 deleted /app1_data directory");
@@ -429,11 +476,9 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     // Verify both directories are gone
     let root_desc = get_root_descriptor(&mut store1)?;
 
-    let stat_result = store1.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "app1_data".to_string(),
-    );
+    let stat_result = store1
+        .data_mut()
+        .stat_at(root_desc, path_flags, "app1_data".to_string());
 
     match stat_result {
         Ok(_) => println!("  ✗ ERROR: Directory should not exist!"),
@@ -464,7 +509,10 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     Ok(())
 }
 
-fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
+fn test_vfs_persistence_after_app_termination(
+    engine: &Engine,
+    vfs_adapter_path: &str,
+) -> Result<()> {
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Part 1D: VFS State Persistence After App Termination");
@@ -498,13 +546,14 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
         // Store1 exists only in this scope
         let mut store1 = Store::new(engine, vfs_host_state);
 
-        
         use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
         let root_desc = get_root_descriptor(&mut store1)?;
 
         // App1 creates a directory
-        store1.data_mut().create_directory_at(root_desc, "persistent_data".to_string())
+        store1
+            .data_mut()
+            .create_directory_at(root_desc, "persistent_data".to_string())
             .map_err(|e| anyhow::anyhow!("Failed to create directory: {:?}", e))?;
 
         println!("  ✓ Application 1 created directory: /persistent_data");
@@ -535,7 +584,6 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
     println!("Step 5: Application 2 - Checking if App1's data still exists...");
     let start = Instant::now();
 
-    
     use wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor;
 
     let root_desc = get_root_descriptor(&mut store2)?;
@@ -543,11 +591,10 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
     let path_flags = wasmtime_wasi::bindings::sync::filesystem::types::PathFlags::empty();
 
     // Try to stat the directory created by App1
-    match store2.data_mut().stat_at(
-        root_desc,
-        path_flags,
-        "persistent_data".to_string(),
-    ) {
+    match store2
+        .data_mut()
+        .stat_at(root_desc, path_flags, "persistent_data".to_string())
+    {
         Ok(stat) => {
             println!("  ✓ SUCCESS! Application 2 sees: /persistent_data");
             println!("  ✓ Data created by App1 is still accessible!");
@@ -598,9 +645,9 @@ fn test_real_component_with_std_fs(engine: &Engine, vfs_adapter_path: &str) -> R
     // Load component-rust
     println!();
     println!("Step 2: Loading component-rust...");
-    let component_path = "../component-rust/target/wasm32-wasip2/debug/component-rust.wasm";
-    let component = Component::from_file(engine, component_path)
-        .context("Failed to load component-rust")?;
+    let component_path = "../../static/rust/target/wasm32-wasip2/debug/component-rust.wasm";
+    let component =
+        Component::from_file(engine, component_path).context("Failed to load component-rust")?;
     println!("  ✓ Component loaded");
 
     // Create linker with VFS host
@@ -640,7 +687,9 @@ fn test_real_component_with_std_fs(engine: &Engine, vfs_adapter_path: &str) -> R
                             // Check if error is related to stream API
                             let err_str = format!("{:?}", e);
                             if err_str.contains("Unsupported") || err_str.contains("stream") {
-                                println!("  ✗ Component execution failed with stream-related error!");
+                                println!(
+                                    "  ✗ Component execution failed with stream-related error!"
+                                );
                                 println!("  Error: {}", err_str);
                                 println!();
                                 println!("Result UPDATED: std::fs MAY require stream API during execution");
@@ -728,7 +777,9 @@ fn test_true_dynamic_linking(
 
     // Get preopened directories
     use wasmtime_wasi::bindings::sync::filesystem::preopens::Host as PreopensHost;
-    let dirs = store.data_mut().get_directories()
+    let dirs = store
+        .data_mut()
+        .get_directories()
         .context("Failed to get directories")?;
 
     println!("  ✓ get_directories(): {} directories", dirs.len());
@@ -780,9 +831,9 @@ fn main() -> Result<()> {
     println!();
 
     // File paths
-    let vfs_adapter_path = "../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
-    let app_path = "../component-rust/target/wasm32-wasip2/debug/component-rust.wasm";
-    let composed_path = "../component-rust.composed.wasm";
+    let vfs_adapter_path = "../../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
+    let app_path = "../../static/rust/target/wasm32-wasip2/debug/component-rust.wasm";
+    let composed_path = "../../../component-rust.composed.wasm";
 
     // Part 1: Show that components can be loaded separately
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -796,8 +847,8 @@ fn main() -> Result<()> {
 
     println!("Loading VFS Adapter component...");
     let start = Instant::now();
-    let _vfs_adapter = Component::from_file(&engine, vfs_adapter_path)
-        .context("Failed to load VFS adapter")?;
+    let _vfs_adapter =
+        Component::from_file(&engine, vfs_adapter_path).context("Failed to load VFS adapter")?;
     let vfs_load_time = start.elapsed();
     let vfs_size = get_file_size(vfs_adapter_path)?;
     println!("  ✓ Loaded in {:?}", vfs_load_time);
@@ -806,8 +857,8 @@ fn main() -> Result<()> {
     println!();
     println!("Loading Application component...");
     let start = Instant::now();
-    let _app_component = Component::from_file(&engine, app_path)
-        .context("Failed to load application")?;
+    let _app_component =
+        Component::from_file(&engine, app_path).context("Failed to load application")?;
     let app_load_time = start.elapsed();
     let app_size = get_file_size(app_path)?;
     println!("  ✓ Loaded in {:?}", app_load_time);
@@ -816,8 +867,16 @@ fn main() -> Result<()> {
     println!();
     println!("Result:");
     println!("  • Components loaded independently");
-    println!("  • VFS Adapter: {} ({:.3}s)", format_size(vfs_size), vfs_load_time.as_secs_f64());
-    println!("  • Application:  {} ({:.3}s)", format_size(app_size), app_load_time.as_secs_f64());
+    println!(
+        "  • VFS Adapter: {} ({:.3}s)",
+        format_size(vfs_size),
+        vfs_load_time.as_secs_f64()
+    );
+    println!(
+        "  • Application:  {} ({:.3}s)",
+        format_size(app_size),
+        app_load_time.as_secs_f64()
+    );
     println!("  • Total:        {}", format_size(vfs_size + app_size));
 
     // Test VFS adapter independently before composition
@@ -857,7 +916,10 @@ fn main() -> Result<()> {
     let compose_time = start.elapsed();
 
     if !output.status.success() {
-        eprintln!("wac plug failed: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!(
+            "wac plug failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         return Err(anyhow::anyhow!("wac plug failed"));
     }
 
@@ -882,7 +944,10 @@ fn main() -> Result<()> {
         println!("Output:");
         println!("{}", String::from_utf8_lossy(&output.stdout));
     } else {
-        eprintln!("Execution failed: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!(
+            "Execution failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     // Part 3: Comparison with static composition
@@ -896,19 +961,29 @@ fn main() -> Result<()> {
         let static_composed_size = get_file_size(composed_path)?;
 
         println!("File Sizes:");
-        println!("  Static Composition (build time):  {}", format_size(static_composed_size));
-        println!("  Dynamic Composition (runtime):     {}", format_size(composed_size));
+        println!(
+            "  Static Composition (build time):  {}",
+            format_size(static_composed_size)
+        );
+        println!(
+            "  Dynamic Composition (runtime):     {}",
+            format_size(composed_size)
+        );
         println!();
 
         let overhead = composed_size as i64 - static_composed_size as i64;
         if overhead > 0 {
-            println!("  Runtime overhead: +{} ({:.1}%)",
+            println!(
+                "  Runtime overhead: +{} ({:.1}%)",
                 format_size(overhead as u64),
-                (overhead as f64 / static_composed_size as f64) * 100.0);
+                (overhead as f64 / static_composed_size as f64) * 100.0
+            );
         } else {
-            println!("  Runtime overhead: {} ({:.1}%)",
+            println!(
+                "  Runtime overhead: {} ({:.1}%)",
                 format_size((-overhead) as u64),
-                (overhead as f64 / static_composed_size as f64) * 100.0);
+                (overhead as f64 / static_composed_size as f64) * 100.0
+            );
         }
     }
 

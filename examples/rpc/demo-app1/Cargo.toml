@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-vfs-rpc-protocol = { path = "../../vfs-rpc-protocol" }
+vfs-rpc-protocol = { path = "../../../vfs-rpc-protocol" }
 serde_json = "1.0"
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 

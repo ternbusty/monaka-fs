@@ -1,70 +1,90 @@
-# Halycon VFS RPC - MVP Status
+# RPC Adapter Implementation Plan
 
-## 🎉 MVP SUCCESS - VFS SHARING PROVEN! 🎉
+## Summary
+Created RPC adapter architecture to enable std::fs to work transparently over RPC, following the vfs-host pattern.
 
-**Achievement**: Successfully demonstrated two separate WASM processes sharing a single VFS instance over RPC!
+## What I've Done
+1. Created `wit/rpc-adapter.wit` - World definition for RPC adapter component
+2. Created `rpc-adapter/Cargo.toml` - Package configuration
+3. Implemented rpc-adapter/src/lib.rs with RPC client structure
+4. Fixed WIT package name and doc comment issues
 
-### Test Results
-- **App1 (Writer)**: Created `/shared/message.txt`, wrote 49 bytes ✅
-- **App2 (Reader)**: Opened same file, read metadata (49 bytes) ✅
-- **VFS Sharing**: File created by App1 was accessible to App2 ✅
+## The Problem
+wasmtime-wasi's `add_to_linker_sync` bypasses custom Host trait implementations for preopens, directly accessing `WasiCtx.preopens` instead of calling our `get_directories()` method.
 
-## Completed ✅
+## The Solution
+Follow vfs-host's architecture:
+1. **rpc-adapter.wasm** - WASM component that exports wasi:filesystem and makes RPC calls
+2. **vfs-rpc-host** - Wraps rpc-adapter component with Host traits (like vfs-host wraps vfs-adapter)
 
-### Phase 1: Basic RPC Infrastructure
-- [x] vfs-rpc-protocol crate (JSON serialization, message types)
-- [x] vfs-rpc-server WASM component (TCP server on port 9000)
-- [x] vfs-demo-app1/app2 (client applications)
-- [x] wasm-runner (async wasmtime host with network permissions)
+## Architecture
 
-### Technical Achievements
-- [x] WASI P2 socket API integration (non-blocking I/O with poll())
-- [x] TCP connection establishment between WASM components
-- [x] Length-prefixed message protocol working
-- [x] Partial read handling (critical fix for streaming I/O)
-- [x] Empty read retry logic (poll-based waiting for data)
-- [x] Connect/OpenPath RPC requests working end-to-end
-- [x] Error responses transmitted correctly
-
-## Resolved Issues ✅
-
-### File Open "Not Found" Error
-- **Solution**: Client now creates `/shared` directory before creating file
-- **Status**: Fixed and tested
-
-### Connection Cleanup Issue
-- **Solution**: Server detects `StreamError::Closed` and exits read loop cleanly
-- **Status**: Fixed
-
-## Optional Improvements
-
-1. Remove debug output for cleaner production use
-2. Fix minor read content display issue in App2 (metadata works perfectly)
-3. Add more comprehensive error handling
-4. Performance optimization for production use
-5. Support for multiple concurrent clients
-
-## Demo Flow (Target)
-```bash
-# Terminal 1: VFS Server
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-
-# Terminal 2: Writer (creates /shared/message.txt)
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app1.wasm
-
-# Terminal 3: Reader (reads /shared/message.txt)
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app2.wasm
+```
+std::fs → WASI → vfs-rpc-host → rpc-adapter.wasm → TCP RPC → vfs-rpc-server → fs-core
 ```
 
-## Key Technical Insights
+## Current Status - ARCHITECTURAL ISSUE DISCOVERED
 
-### WASI P2 Socket Behavior
-- `blocking_read()` can return 0 bytes even when data exists (not EOF)
-- Must poll and retry on empty reads
-- Partial reads are common - must accumulate data in loop
-- `StreamError::Closed` indicates peer disconnected
+### Completed Steps
+1. **rpc-adapter WASM component** - Successfully built (5.1MB)
+   - Exports wasi:filesystem/preopens and wasi:filesystem/types
+   - get_directories() returns root directory "/"
+   - Connects to vfs-rpc-server via TCP on localhost:9000
+   - Build succeeds without errors
 
-### Message Protocol
-- 4-byte big-endian length prefix
-- JSON-serialized request/response body
-- Both sides handle partial reads correctly now
+2. **vfs-rpc-host library** - Successfully built
+   - Wraps rpc-adapter component with Host traits
+   - Implements filesystem_preopens::Host and filesystem_types::Host
+   - Maps resources between host and component
+   - Build succeeds with 1 warning (unused variable)
+
+3. **rpc-fs-runner** - Successfully built
+   - Host program that loads rpc-adapter and runs WASM apps
+   - Uses VfsRpcHostState as store data
+   - Builds and runs successfully
+
+### Discovered Problem: wasmtime-wasi 27 Preopens Architecture
+
+When testing demo-std-fs with rpc-fs-runner:
+- **Error**: "failed to find a pre-opened file descriptor through which "test.txt" could be opened"
+- **Debug output**: VfsRpcHostState::get_directories() is NEVER called
+- **Root cause**: wasmtime-wasi 27 bypasses custom Host trait implementations for preopens
+- **Why**: wasmtime-wasi directly reads WasiCtx.preopens field instead of calling Host::get_directories()
+
+### Architecture Limitation
+
+The current approach has a fundamental limitation:
+- demo-std-fs expects wasmtime-wasi's standard preopens mechanism
+- wasmtime-wasi 27 requires preopens to be set in WasiCtx.preopens field via WasiCtxBuilder
+- Custom Host trait implementations are called AFTER WasiCtx.preopens lookup fails
+- Our VfsRpcHostState.wasi_ctx has no preopens configured (intentionally, to delegate to rpc-adapter)
+- Therefore, file operations fail before reaching our Host trait code
+
+### Remaining Work (Architectural Decision Required)
+- **Option A**: Use WASM Component Composition
+  - Compose demo-std-fs with rpc-adapter using `wasm-tools compose`
+  - This makes demo-std-fs directly import from rpc-adapter
+  - More aligned with WASI Preview 2 component model
+
+- **Option B**: Manually populate WasiCtx.preopens
+  - Use WasiCtxBuilder to add a virtual directory
+  - Requires creating Dir objects that forward to rpc-adapter
+  - More complex but works within wasmtime-wasi architecture
+
+- **Option C**: Continue with direct RPC applications
+  - Apps like demo-app1/demo-app2 directly use RPC protocol
+  - Don't try to make std::fs work transparently
+  - This already works successfully
+
+### Alternative Approaches to Consider
+If TCP networking proves too complex for a component:
+1. Use WASI Preview 1 (wasm32-wasi) target instead of Preview 2
+2. Implement at host level only (skip component layer)
+3. Use component composition with networking provided by host
+
+## Next Steps
+1. Resolve TCP socket API issues
+2. Complete rpc-adapter implementation
+3. Build as WASM: `cargo build -p rpc-adapter --target wasm32-wasip2`
+4. Update vfs-rpc-host to wrap rpc-adapter (like vfs-host does)
+5. Test end-to-end with demo-std-fs

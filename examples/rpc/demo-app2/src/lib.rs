@@ -1,6 +1,6 @@
-//! VFS Demo App 1 - File Writer
+//! VFS Demo App 2 - File Reader
 //!
-//! Connects to VFS RPC server and creates a file with some content.
+//! Connects to VFS RPC server and reads the file created by App1.
 
 #![no_main]
 
@@ -9,7 +9,7 @@ use vfs_rpc_protocol::{Request, Response, PROTOCOL_VERSION};
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
     world: "vfs-rpc-client",
-    path: "../../wit",
+    path: "../../../wit",
     generate_all,
 });
 
@@ -22,7 +22,7 @@ use wasi::sockets::tcp_create_socket::create_tcp_socket;
 /// Entry point
 #[no_mangle]
 pub extern "C" fn _start() {
-    println!("=== VFS Demo App 1: File Writer ===");
+    println!("=== VFS Demo App 2: File Reader ===");
 
     // Connect to VFS server
     println!("Connecting to VFS server at localhost:9000...");
@@ -52,14 +52,11 @@ pub extern "C" fn _start() {
     println!("Connected!");
 
     // Send Connect request
-    println!("Sending Connect request...");
     let connect_req = Request::Connect {
         version: PROTOCOL_VERSION,
     };
     send_request(&output, &connect_req);
-    println!("Connect request sent, waiting for response...");
     let response: Response = receive_response(&input);
-    println!("Received response!");
 
     match response {
         Response::Connected { session_id, .. } => {
@@ -71,23 +68,11 @@ pub extern "C" fn _start() {
         }
     }
 
-    // Create /shared directory first
-    println!("\nCreating directory: /shared");
-    let mkdir_req = Request::Mkdir {
-        path: "/shared".to_string(),
-    };
-    send_request(&output, &mkdir_req);
-    match receive_response(&input) {
-        Response::Ok => println!("Directory created successfully"),
-        Response::Error { message, .. } => println!("Directory creation: {}", message),
-        _ => eprintln!("Unexpected response"),
-    }
-
-    // Create and write file
-    println!("\nCreating file: /shared/message.txt");
+    // Open the file created by App1
+    println!("\nOpening file: /shared/message.txt");
     let open_req = Request::OpenPath {
         path: "/shared/message.txt".to_string(),
-        flags: 0x42,
+        flags: 0x01, // Read only
     };
     send_request(&output, &open_req);
     let fd = match receive_response(&input) {
@@ -97,6 +82,7 @@ pub extern "C" fn _start() {
         }
         Response::Error { message, .. } => {
             eprintln!("Failed to open: {}", message);
+            eprintln!("Make sure App1 has been run first!");
             return;
         }
         _ => {
@@ -105,17 +91,30 @@ pub extern "C" fn _start() {
         }
     };
 
-    // Write content
-    let message = b"Hello from App1! This file is shared via VFS RPC.";
-    println!("Writing {} bytes...", message.len());
-    let write_req = Request::Write {
-        fd,
-        data: message.to_vec(),
-    };
-    send_request(&output, &write_req);
+    // Get file metadata
+    println!("\nGetting file metadata...");
+    let fstat_req = Request::Fstat { fd };
+    send_request(&output, &fstat_req);
     match receive_response(&input) {
-        Response::Written { count } => println!("Wrote {} bytes", count),
-        _ => eprintln!("Write failed"),
+        Response::Metadata { metadata } => {
+            println!("File size: {} bytes", metadata.size);
+            println!("Created: {}", metadata.created);
+            println!("Modified: {}", metadata.modified);
+        }
+        _ => eprintln!("Failed to get metadata"),
+    }
+
+    // Read the content
+    println!("\nReading file content...");
+    let read_req = Request::Read { fd, length: 1024 };
+    send_request(&output, &read_req);
+    match receive_response(&input) {
+        Response::Data { bytes } => {
+            let content = String::from_utf8_lossy(&bytes);
+            println!("Content ({} bytes):", bytes.len());
+            println!("\"{}\"", content);
+        }
+        _ => eprintln!("Read failed"),
     }
 
     // Close file
@@ -123,7 +122,7 @@ pub extern "C" fn _start() {
     send_request(&output, &close_req);
     let _ = receive_response(&input);
 
-    println!("\n=== App1 completed successfully ===");
+    println!("\n=== App2 completed ===");
 }
 
 fn send_request(output: &OutputStream, request: &Request) {

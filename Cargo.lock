@@ -418,6 +418,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "demo-std-fs"
+version = "0.1.0"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1349,6 +1353,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpc-adapter"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vfs-rpc-protocol",
+ "wit-bindgen 0.36.0",
+]
+
+[[package]]
+name = "rpc-fs-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vfs-rpc-host",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
+name = "runtime-linker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vfs-host",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
 name = "rust-example"
 version = "0.1.0"
 dependencies = [
@@ -1899,6 +1932,17 @@ dependencies = [
 
 [[package]]
 name = "vfs-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
+name = "vfs-rpc-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",

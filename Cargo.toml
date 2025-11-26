@@ -6,18 +6,23 @@ members = [
   "vfs-host",
   "vfs-rpc-protocol",
   "vfs-rpc-server",
-  "examples/rust",
-  "examples/wasm-runner",
-  "examples/vfs-demo-app1",
-  "examples/vfs-demo-app2",
+  "vfs-rpc-host",
+  "rpc-adapter",
+  "examples/legacy/rust",
+  "examples/rpc/wasm-runner",
+  "examples/rpc/rpc-fs-runner",
+  "examples/rpc/demo-app1",
+  "examples/rpc/demo-app2",
+  "examples/rpc/demo-std-fs",
+  "examples/component-model/dynamic/runtime-linker",
 ]
 exclude = [
   ".tmp",  # Temporary work-in-progress code
   "test-app",  # Test application for composition testing
   "test-simple",  # Simple test without console I/O
-  "examples/runtime-linker",  # Runtime dynamic linking demo (native host program)
   "vfs-rpc-client",  # Unused stub library
   "vfs-tcp-server",  # Unused native server
+  "examples/rpc/rpc-fs-host",  # Old native RPC host implementation (replaced by rpc-fs-runner)
 ]
 resolver="3"
 

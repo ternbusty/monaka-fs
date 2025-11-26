@@ -25,7 +25,7 @@ examples: build-c-example build-rust-example
 # Build the C example WASM module (using Makefile, no cargo)
 build-c-example:
 	@echo "Building C integration example (Makefile)..."
-	@$(MAKE) -C examples/c
+	@$(MAKE) -C examples/legacy/c
 
 # Build the Rust example WASM module
 build-rust-example:
@@ -37,12 +37,12 @@ build-rust-example:
 clean:
 	@echo "Cleaning build artifacts..."
 	@cargo clean
-	@$(MAKE) -C examples/c clean
+	@$(MAKE) -C examples/legacy/c clean
 	@echo "Clean complete"
 
 # Test/Run C example
 test-c-example:
-	@$(MAKE) -C examples/c run
+	@$(MAKE) -C examples/legacy/c run
 
 run-c-example: test-c-example
 
@@ -62,7 +62,7 @@ release: release-c-example release-rust-example
 
 release-c-example:
 	@echo "Building C example (release)..."
-	@$(MAKE) -C examples/c BUILD_MODE=release
+	@$(MAKE) -C examples/legacy/c BUILD_MODE=release
 	@echo "Release build complete: target/wasm32-wasip1/release/c_example.wasm"
 	@ls -lh target/wasm32-wasip1/release/c_example.wasm
 
@@ -136,14 +136,14 @@ build-vfs-adapter:
 # Build component-rust
 build-component-rust:
 	@echo "Building component-rust..."
-	@cd examples/component-rust && cargo build --target wasm32-wasip2
-	@echo "Built: examples/component-rust/target/wasm32-wasip2/debug/component-rust.wasm"
+	@cd examples/component-model/static/rust && cargo build --target wasm32-wasip2
+	@echo "Built: examples/component-model/static/rust/target/wasm32-wasip2/debug/component-rust.wasm"
 
 # Build component-c
 build-component-c:
 	@echo "Building component-c..."
-	@cd examples/component-c && cargo build --target wasm32-wasip2
-	@echo "Built: examples/component-c/target/wasm32-wasip2/debug/component-c.wasm"
+	@cd examples/component-model/static/c && cargo build --target wasm32-wasip2
+	@echo "Built: examples/component-model/static/c/target/wasm32-wasip2/debug/component-c.wasm"
 
 # Build all components
 build-components: build-vfs-adapter build-component-rust build-component-c
@@ -151,8 +151,8 @@ build-components: build-vfs-adapter build-component-rust build-component-c
 # Build runtime linker host program
 build-runtime-linker:
 	@echo "Building runtime linker host program..."
-	@cd examples/runtime-linker && cargo build --release
-	@echo "Built: examples/runtime-linker/target/release/runtime-linker"
+	@cd examples/component-model/dynamic/runtime-linker && cargo build --release
+	@echo "Built: examples/component-model/dynamic/runtime-linker/target/release/runtime-linker"
 
 # Run dynamic linking demo (RECOMMENDED)
 demo-dynamic: build-components build-runtime-linker
@@ -161,7 +161,7 @@ demo-dynamic: build-components build-runtime-linker
 	@echo "║   Runtime Dynamic Linking Demo (Recommended)     ║"
 	@echo "╚═══════════════════════════════════════════════════╝"
 	@echo ""
-	@cd examples/runtime-linker && cargo run --release
+	@cd examples/component-model/dynamic/runtime-linker && cargo run --release
 
 #
 # Component Model - Static Composition (Alternative)
@@ -172,7 +172,7 @@ compose-static-rust: build-vfs-adapter build-component-rust
 	@echo "Composing component-rust with VFS adapter (build-time)..."
 	@cd examples && wac plug \
 		--plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-		component-rust/target/wasm32-wasip2/debug/component-rust.wasm \
+		component-model/static/rust/target/wasm32-wasip2/debug/component-rust.wasm \
 		-o component-rust.composed.wasm
 	@echo "Composed: examples/component-rust.composed.wasm"
 
@@ -181,7 +181,7 @@ compose-static-c: build-vfs-adapter build-component-c
 	@echo "Composing component-c with VFS adapter (build-time)..."
 	@cd examples && wac plug \
 		--plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-		component-c/target/wasm32-wasip2/debug/component-c.wasm \
+		component-model/static/c/target/wasm32-wasip2/debug/component-c.wasm \
 		-o component-c.composed.wasm
 	@echo "Composed: examples/component-c.composed.wasm"
 
@@ -248,7 +248,7 @@ help:
 	@echo "  make help                 - Show this help message"
 	@echo ""
 	@echo "Documentation:"
-	@echo "  README.md                        - Project overview"
-	@echo "  CLAUDE.md                        - Development guide"
-	@echo "  examples/README.md               - All examples overview"
-	@echo "  examples/runtime-linker/README.md- Dynamic linking details"
+	@echo "  README.md                                               - Project overview"
+	@echo "  CLAUDE.md                                               - Development guide"
+	@echo "  examples/README.md                                      - All examples overview"
+	@echo "  examples/component-model/dynamic/runtime-linker/README.md - Dynamic linking details"
