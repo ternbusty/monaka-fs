@@ -460,19 +460,6 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
     println!();
     println!("Final VFS state:");
     println!("  (empty) - All files and directories were successfully deleted");
-    println!();
-    println!("Key Achievement:");
-    println!("  ✓ This demonstrates TRUE CONCURRENT dynamic linking with shared state");
-    println!("  ✓ Multiple applications accessed the same VFS instance simultaneously");
-    println!("  ✓ File operations (create, write, read, append, delete) work across applications");
-    println!("  ✓ Directory operations (create, delete) work across applications");
-    println!("  ✓ Unlike wasi-virt (isolated VFS per app), this enables real-time sharing");
-    println!("  ✓ Arc<Mutex<SharedVfsCore>> enables thread-safe concurrent access");
-    println!("  ✓ clone_shared() creates multiple host contexts sharing one VFS");
-    println!();
-    println!("This is fundamentally different from the previous demo:");
-    println!("  Previous: Sequential access (store1 → extract → store2)");
-    println!("  Now:      Concurrent access (store1 and store2 exist together)");
 
     Ok(())
 }
@@ -578,26 +565,11 @@ fn test_vfs_persistence_after_app_termination(engine: &Engine, vfs_adapter_path:
     println!("Total time: {:?}", start_total.elapsed());
     println!();
     println!("Result:");
-    println!("  ✓ VFS STATE PERSISTS AFTER APP TERMINATION!");
+    println!("  ✓ VFS state persists after application termination");
     println!("  ✓ Application 1 created /persistent_data");
     println!("  ✓ Application 1 terminated (Store1 dropped)");
     println!("  ✓ Application 2 started");
     println!("  ✓ Application 2 successfully accessed /persistent_data");
-    println!();
-    println!("Why does this work?");
-    println!("  • VFS state is stored in Arc<Mutex<SharedVfsCore>>");
-    println!("  • Arc = Atomic Reference Counted (shared ownership)");
-    println!("  • When Store1 drops:");
-    println!("    - Arc reference count: 2 → 1 (Store2 still holds reference)");
-    println!("    - VFS state remains alive because count > 0");
-    println!("  • When Store2 drops:");
-    println!("    - Arc reference count: 1 → 0");
-    println!("    - Only then is VFS state deallocated");
-    println!();
-    println!("Key Insight:");
-    println!("  ✓ VFS lifetime is independent of individual application lifetimes");
-    println!("  ✓ State persists as long as ANY application references it");
-    println!("  ✓ This enables true shared filesystem semantics");
 
     Ok(())
 }
@@ -946,26 +918,6 @@ fn main() -> Result<()> {
     println!("  Application:   {}", format_size(app_size));
     println!("  Combined:      {}", format_size(vfs_size + app_size));
     println!();
-
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Key Insights");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
-    println!("Static Composition (wac plug at build time):");
-    println!("  ✓ Single file distribution");
-    println!("  ✓ Simpler deployment");
-    println!("  ✗ Must rebuild for VFS provider updates");
-    println!();
-    println!("Dynamic Linking (separate components + runtime composition):");
-    println!("  ✓ Independent component updates");
-    println!("  ✓ Swap VFS adapter implementations at runtime");
-    println!("  ✓ Better modularity");
-    println!("  ✗ Multiple files to manage");
-    println!("  ✗ Runtime composition overhead");
-    println!();
-    println!("This project RECOMMENDS dynamic linking for maximum modularity.");
-    println!("Static composition available as alternative when single-file");
-    println!("deployment is critical. Use 'make demo-static' to try it.");
 
     Ok(())
 }

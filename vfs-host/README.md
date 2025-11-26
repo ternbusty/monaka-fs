@@ -4,38 +4,18 @@ Host trait implementation for VFS adapter - enables multiple WebAssembly applica
 
 ## Overview
 
-`vfs-host` is a Rust library that implements wasmtime Host traits for the VFS adapter component. Unlike traditional approaches where each application gets an isolated filesystem (like `wasi-virt`), this library enables **true shared filesystem semantics** where multiple applications can concurrently access and modify the same VFS instance.
+`vfs-host` is a Rust library that implements wasmtime Host traits for the VFS adapter component. This library enables multiple applications to concurrently access and modify the same VFS instance.
 
-## Key Features
+## Features
 
-- **Shared VFS State**: Multiple applications access the same VFS instance concurrently
-- **Thread-Safe**: Uses `Arc<Mutex<>>` for safe concurrent access
-- **State Persistence**: VFS state persists as long as any application references it
-- **Complete WASI Implementation**: All 33 WASI filesystem Host trait methods implemented
+- Shared VFS State: Multiple applications access the same VFS instance concurrently
+- Thread-Safe: Uses `Arc<Mutex<>>` for safe concurrent access
+- State Persistence: VFS state persists as long as any application references it
+- Complete WASI Implementation: All 33 WASI filesystem Host trait methods implemented
   - 26 real implementations (file I/O, directories, metadata, stream API, etc.)
   - 7 stub implementations (advisory hints, sync operations)
-- **Full Stream API Support**: Complete implementation of `read_via_stream`, `write_via_stream`, `append_via_stream`
-- **Zero-Copy Resource Mapping**: Efficient descriptor and stream resource management
-
-## When to Use
-
-Use `vfs-host` when you need:
-
-1. **Multiple applications sharing the same filesystem**
-   - App1 creates a file → App2 can read it immediately
-   - Changes are visible across all applications in real-time
-
-2. **Persistent filesystem state**
-   - VFS state persists even after individual applications terminate
-   - State is kept alive as long as any application holds a reference
-
-3. **Runtime flexibility**
-   - Swap VFS implementations at runtime
-   - Independent component updates without rebuilding
-
-4. **Custom host implementations**
-   - Build your own WebAssembly host with integrated VFS
-   - Full control over resource management
+- Full Stream API Support: Complete implementation of `read_via_stream`, `write_via_stream`, `append_via_stream`
+- Zero-Copy Resource Mapping: Efficient descriptor and stream resource management
 
 ## Usage
 
@@ -55,9 +35,6 @@ let vfs_host = VfsHostState::new(&engine, "path/to/vfs-adapter.wasm")?;
 
 // Create application store
 let mut store = Store::new(&engine, vfs_host);
-
-// Now your store implements all WASI filesystem Host traits!
-// Applications loaded in this store can use the filesystem
 ```
 
 ### Sharing VFS Across Multiple Applications
@@ -78,8 +55,7 @@ let mut store1 = Store::new(&engine, vfs_host);
 let mut store2 = Store::new(&engine, vfs_host2);
 let mut store3 = Store::new(&engine, vfs_host3);
 
-// All three stores share the same VFS instance!
-// Changes made by App1 are immediately visible to App2 and App3
+// All three stores share the same VFS instance
 ```
 
 ### State Persistence Example
@@ -100,7 +76,7 @@ let vfs_host2 = vfs_host.clone_shared();
 
 // App2 starts AFTER App1 terminated
 let mut store2 = Store::new(&engine, vfs_host2);
-// App2 can still access files created by App1!
+// App2 can still access files created by App1
 // VFS state persisted because vfs_host2 still held a reference
 ```
 
@@ -181,27 +157,19 @@ The library implements all WASI Preview 2 filesystem Host traits:
 
 ### Real Implementations (26 methods)
 
-- **File I/O**: `read`, `write`
-- **Path operations**: `open_at`, `stat`, `stat_at`, `read_directory`
-- **Directory ops**: `create_directory_at`, `remove_directory_at`, `unlink_file_at`
-- **Link ops**: `rename_at`, `link_at`, `symlink_at`, `readlink_at`
-- **Metadata ops**: `set_size`, `set_times`, `set_times_at`, `get_flags`, `get_type`
-- **Comparison ops**: `is_same_object`, `metadata_hash`, `metadata_hash_at`
-- **Stream API**: `read_via_stream`, `write_via_stream`, `append_via_stream` - Full implementation
-- **Directory streaming**: `read_directory_entry`, `drop` (DirectoryEntryStream)
+- File I/O: `read`, `write`
+- Path operations: `open_at`, `stat`, `stat_at`, `read_directory`
+- Directory ops: `create_directory_at`, `remove_directory_at`, `unlink_file_at`
+- Link ops: `rename_at`, `link_at`, `symlink_at`, `readlink_at`
+- Metadata ops: `set_size`, `set_times`, `set_times_at`, `get_flags`, `get_type`
+- Comparison ops: `is_same_object`, `metadata_hash`, `metadata_hash_at`
+- Stream API: `read_via_stream`, `write_via_stream`, `append_via_stream`
+- Directory streaming: `read_directory_entry`, `drop` (DirectoryEntryStream)
 
 ### Stub Implementations (7 methods)
 
 These methods return `Unsupported` error as they're not required for in-memory VFS:
 - `advise`, `sync_data`, `sync` - Advisory/sync operations (no-op for in-memory FS)
-
-## Comparison with Alternatives
-
-| Approach | Shared State | Use Case | Complexity |
-|----------|--------------|----------|------------|
-| **vfs-host** (this library) | ✅ Yes | Multiple apps sharing VFS | Medium |
-| **wac plug** (runtime composition) | ❌ No | Single app with VFS | Low |
-| **wasi-virt** | ❌ No | Isolated VFS per app | Low |
 
 ## Complete Example
 
@@ -211,12 +179,6 @@ See the `examples/runtime-linker` directory in the parent repository for a compl
 cd examples/runtime-linker
 cargo run
 ```
-
-The example demonstrates:
-- Creating shared VFS host state
-- Multiple applications accessing the same VFS concurrently
-- State persistence after application termination
-- All filesystem operations working correctly
 
 ## Dependencies
 

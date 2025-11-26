@@ -122,8 +122,7 @@ pub extern "C" fn _start() {
     send_request(&output, &close_req);
     let _ = receive_response(&input);
 
-    println!("\n=== App2 completed successfully ===");
-    println!("SUCCESS: File sharing between separate WASM processes works!");
+    println!("\n=== App2 completed ===");
 }
 
 fn send_request(output: &OutputStream, request: &Request) {
