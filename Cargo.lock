@@ -1725,7 +1725,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af407857209536a95c8e56f8231ef2c2e2aff839b22e07a1ffcbc617e9db9fa5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1868,6 +1880,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vfs-demo-app1"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vfs-rpc-protocol",
+ "wit-bindgen 0.36.0",
+]
+
+[[package]]
+name = "vfs-demo-app2"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vfs-rpc-protocol",
+ "wit-bindgen 0.36.0",
+]
+
+[[package]]
 name = "vfs-host"
 version = "0.1.0"
 dependencies = [
@@ -1876,6 +1906,25 @@ dependencies = [
  "bytes",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "vfs-rpc-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "vfs-rpc-server"
+version = "0.1.0"
+dependencies = [
+ "fs-core",
+ "serde_json",
+ "vfs-rpc-protocol",
+ "wit-bindgen 0.36.0",
 ]
 
 [[package]]
@@ -1982,6 +2031,16 @@ dependencies = [
  "spdx",
  "wasm-encoder 0.220.1",
  "wasmparser 0.220.1",
+]
+
+[[package]]
+name = "wasm-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
 ]
 
 [[package]]

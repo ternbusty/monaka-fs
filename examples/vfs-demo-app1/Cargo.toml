@@ -1,0 +1,15 @@
+[package]
+name = "vfs-demo-app1"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vfs-rpc-protocol = { path = "../../vfs-rpc-protocol" }
+serde_json = "1.0"
+wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+
+[build-dependencies]
+wit-bindgen = "0.36"

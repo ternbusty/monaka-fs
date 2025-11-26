@@ -4,13 +4,20 @@ members = [
   "fs-wasm",
   "vfs-adapter",
   "vfs-host",
+  "vfs-rpc-protocol",
+  "vfs-rpc-server",
   "examples/rust",
+  "examples/wasm-runner",
+  "examples/vfs-demo-app1",
+  "examples/vfs-demo-app2",
 ]
 exclude = [
   ".tmp",  # Temporary work-in-progress code
   "test-app",  # Test application for composition testing
   "test-simple",  # Simple test without console I/O
   "examples/runtime-linker",  # Runtime dynamic linking demo (native host program)
+  "vfs-rpc-client",  # Unused stub library
+  "vfs-tcp-server",  # Unused native server
 ]
 resolver="3"
 
