@@ -267,12 +267,34 @@ struct RpcAdapter;
 
 impl exports::wasi::filesystem::preopens::Guest for RpcAdapter {
     fn get_directories() -> Vec<(Descriptor, String)> {
-        // Initialize state if needed
-        let _ = with_rpc_state(|_| ());
+        eprintln!("[RPC-ADAPTER] get_directories() called");
 
-        // Return root directory descriptor
-        let desc = Descriptor::new(DescriptorImpl { handle: 0 });
-        vec![(desc, "/".to_string())]
+        // Initialize state and verify connection
+        // This ensures RPC connection is established before returning descriptor
+        match with_rpc_state(|state| {
+            // Verify that descriptor 0 is mapped
+            state.descriptor_to_fd.borrow().get(&0).copied()
+        }) {
+            Ok(Some(fd)) => {
+                eprintln!("[RPC-ADAPTER] State verified: descriptor 0 -> fd {}", fd);
+                // Connection established and descriptor 0 is mapped
+                let desc = Descriptor::new(DescriptorImpl { handle: 0 });
+                eprintln!("[RPC-ADAPTER] Returning descriptor 0 for path /");
+                vec![(desc, "/".to_string())]
+            }
+            Ok(None) => {
+                eprintln!("[RPC-ADAPTER] ERROR: descriptor 0 not mapped");
+                // State exists but descriptor 0 not mapped - this shouldn't happen
+                // but return empty to signal error
+                vec![]
+            }
+            Err(e) => {
+                eprintln!("[RPC-ADAPTER] ERROR: Failed to initialize state: {:?}", e);
+                // Failed to initialize RPC state (connection failed)
+                // Return empty vector to signal no preopens available
+                vec![]
+            }
+        }
     }
 }
 
@@ -617,6 +639,11 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         open_flags: OpenFlags,
         flags: DescriptorFlags,
     ) -> Result<Descriptor, ErrorCode> {
+        eprintln!(
+            "[RPC-ADAPTER] open_at called: handle={}, path={}",
+            self.handle, path
+        );
+
         with_rpc_state(|state| {
             let full_path = if self.handle == 0 {
                 format!("/{}", path.trim_start_matches('/'))
@@ -624,6 +651,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 path
             };
 
+            eprintln!("[RPC-ADAPTER] open_at: full_path={}", full_path);
             let fs_flags = convert_flags(open_flags, flags);
 
             let request = Request::OpenPath {

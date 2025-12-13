@@ -1,6 +1,6 @@
 // WASI Filesystem Preopens Host Implementation
 //
-// Implements wasi:filesystem/preopens interface by forwarding to RPC adapter component
+// Implements wasi:filesystem/preopens interface by forwarding to RPC adapter
 //
 
 use super::VfsRpcHostState;
@@ -16,31 +16,34 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
         )>,
         anyhow::Error,
     > {
-        eprintln!("[DEBUG] VfsRpcHostState::get_directories() called");
-        // Get RPC adapter directories
+        eprintln!("[VFS-RPC-HOST] get_directories() called");
+
+        // Get RPC directories
         let rpc_dirs = {
-            // Lock shared RPC adapter core
-            let core = self
-                .shared_rpc
-                .lock()
-                .map_err(|e| anyhow::anyhow!("RPC adapter core lock poisoned: {}", e))?;
+            // Lock shared RPC core
+            let core = self.lock_rpc_core()?;
+            eprintln!("[VFS-RPC-HOST] Locked RPC core");
 
             // Call RPC adapter's get_directories
             let rpc_store_arc = core.rpc_store.clone();
-            let mut rpc_store = rpc_store_arc
-                .lock()
-                .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))?;
+            let mut rpc_store = super::lock_rpc_store(&rpc_store_arc)?;
 
-            core.rpc_instance
+            let result = core
+                .rpc_instance
                 .wasi_filesystem_preopens()
-                .call_get_directories(&mut *rpc_store)?
+                .call_get_directories(&mut *rpc_store)?;
+            eprintln!(
+                "[VFS-RPC-HOST] RPC adapter returned {} directories",
+                result.len()
+            );
+            result
         };
+
         eprintln!(
-            "[DEBUG] RPC adapter returned {} directories",
+            "[VFS-RPC-HOST] Mapping {} RPC descriptors to host descriptors",
             rpc_dirs.len()
         );
-
-        // Map RPC adapter descriptors to host descriptors
+        // Map RPC descriptors to host descriptors
         let mut host_dirs = Vec::new();
         for (rpc_descriptor, path) in rpc_dirs {
             // Create a host descriptor resource
@@ -75,17 +78,12 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
             };
 
             // Re-lock core to insert into descriptor map
-            let mut core = self
-                .shared_rpc
-                .lock()
-                .map_err(|e| anyhow::anyhow!("RPC adapter core lock poisoned: {}", e))?;
+            let mut core = self.lock_rpc_core()?;
             core.descriptor_map.insert(rep_value, rpc_descriptor);
 
-            eprintln!("[DEBUG] Mapped preopen: {}", path);
             host_dirs.push((host_descriptor, path));
         }
 
-        eprintln!("[DEBUG] Returning {} host directories", host_dirs.len());
         Ok(host_dirs)
     }
 }

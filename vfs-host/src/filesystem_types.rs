@@ -4,7 +4,7 @@
 //
 // Phase 1: Empty implementation to discover required methods from compiler
 
-use super::{SharedVfsCore, VfsHostState};
+use super::{SharedVfsCore, VfsDescriptorWrapper, VfsDirectoryEntryStreamWrapper, VfsHostState};
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 use wasmtime::component::Resource;
@@ -137,21 +137,23 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::Host for VfsHostState {
 }
 
 impl VfsHostState {
-    /// Helper: Get VFS descriptor from host descriptor resource
+    /// Helper: Get VFS descriptor from host descriptor resource.
+    /// Retrieves VfsDescriptorWrapper from ResourceTable and returns the inner VFS descriptor.
     fn get_vfs_descriptor(
         &self,
         host_desc: &Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<crate::exports::wasi::filesystem::types::Descriptor, anyhow::Error> {
-        let core = self.lock_vfs_core()?;
-        core.descriptor_map
-            .get(&host_desc.rep())
-            .copied()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Invalid descriptor: {} not found in descriptor_map",
-                    host_desc.rep()
-                )
-            })
+        // Create a borrow resource with the same rep value but typed as VfsDescriptorWrapper
+        let rep = host_desc.rep();
+        let wrapper_resource: Resource<VfsDescriptorWrapper> = Resource::new_borrow(rep);
+
+        // Get wrapper from ResourceTable
+        let wrapper = self
+            .table
+            .get(&wrapper_resource)
+            .map_err(|e| anyhow::anyhow!("Failed to get descriptor from table: {}", e))?;
+
+        Ok(wrapper.0)
     }
 }
 
@@ -404,14 +406,9 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         &mut self,
         rep: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), anyhow::Error> {
-        // Remove from mapping (VFS descriptor will be cleaned up by VFS store)
-        {
-            let mut core = self.lock_vfs_core()?;
-            core.descriptor_map.remove(&rep.rep());
-        }
-
-        // Remove from host table
-        self.table.delete(rep)?;
+        // Delete from ResourceTable using wrapper type
+        let wrapper_resource: Resource<VfsDescriptorWrapper> = Resource::new_own(rep.rep());
+        self.table.delete(wrapper_resource)?;
         Ok(())
     }
 
@@ -774,32 +771,30 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         match result {
             Ok(vfs_stream) => {
-                // Create host directory entry stream resource and map it
-                // NOTE: Resource leak is not a concern here because transmute and insert
-                // operations below cannot fail/panic
-                let temp_resource = self.table.push(())?;
-                // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
-                // Compile-time checks ensure size and alignment match
+                // Create host directory entry stream with VfsDirectoryEntryStreamWrapper
+                let wrapper = VfsDirectoryEntryStreamWrapper(vfs_stream);
+                let wrapper_resource: Resource<VfsDirectoryEntryStreamWrapper> =
+                    self.table.push(wrapper)?;
+
+                // Transmute to expected return type
+                // SAFETY: Resource<T> is a transparent u32 wrapper
                 const _: () = {
                     use std::mem::{align_of, size_of};
                     assert!(
-                        size_of::<Resource<()>>()
+                        size_of::<Resource<VfsDirectoryEntryStreamWrapper>>()
                             == size_of::<Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>>()
                     );
                     assert!(
-                        align_of::<Resource<()>>()
+                        align_of::<Resource<VfsDirectoryEntryStreamWrapper>>()
                             == align_of::<Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>>()
                     );
                 };
                 let host_stream = unsafe {
                     std::mem::transmute::<
-                        Resource<()>,
+                        Resource<VfsDirectoryEntryStreamWrapper>,
                         Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
-                    >(temp_resource)
+                    >(wrapper_resource)
                 };
-                // Re-lock core to insert into map
-                let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-                core.dir_stream_map.insert(host_stream.rep(), vfs_stream);
                 Ok(host_stream)
             }
             Err(vfs_error) => {
@@ -1001,22 +996,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         match result {
             Ok(vfs_new_desc) => {
-                // Create host descriptor and map it
-                // NOTE: Resource leak is not a concern here because transmute and insert
-                // operations below cannot fail/panic
-                let temp_resource = self.table.push(())?;
-                // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
-                // Compile-time checks ensure size and alignment match
+                // Create host descriptor with VfsDescriptorWrapper
+                let wrapper = VfsDescriptorWrapper(vfs_new_desc);
+                let wrapper_resource: Resource<VfsDescriptorWrapper> = self.table.push(wrapper)?;
+
+                // Transmute to expected return type
+                // SAFETY: Resource<T> is a transparent u32 wrapper
                 const _: () = {
                     use std::mem::{align_of, size_of};
                     assert!(
-                        size_of::<Resource<()>>()
+                        size_of::<Resource<VfsDescriptorWrapper>>()
                             == size_of::<
                                 Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                             >()
                     );
                     assert!(
-                        align_of::<Resource<()>>()
+                        align_of::<Resource<VfsDescriptorWrapper>>()
                             == align_of::<
                                 Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                             >()
@@ -1024,14 +1019,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
                 };
                 let host_descriptor = unsafe {
                     std::mem::transmute::<
-                        Resource<()>,
+                        Resource<VfsDescriptorWrapper>,
                         Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                    >(temp_resource)
+                    >(wrapper_resource)
                 };
-                // Re-lock core to insert into map
-                let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-                core.descriptor_map
-                    .insert(host_descriptor.rep(), vfs_new_desc);
                 Ok(host_descriptor)
             }
             Err(vfs_error) => {
@@ -1319,23 +1310,24 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
         Option<wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
+        // Get VFS stream from ResourceTable using wrapper type
+        let rep = self_.rep();
+        let wrapper_resource: Resource<VfsDirectoryEntryStreamWrapper> = Resource::new_borrow(rep);
+        let vfs_stream = self
+            .table
+            .get(&wrapper_resource)
+            .map_err(|e| {
+                TrappableError::trap(anyhow::anyhow!(
+                    "Failed to get directory stream from table: {}",
+                    e
+                ))
+            })?
+            .0;
+
         // Lock shared VFS core
         let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
-        // Get VFS stream from mapping
-        let vfs_stream = core
-            .dir_stream_map
-            .get(&self_.rep())
-            .copied()
-            .ok_or_else(|| {
-                TrappableError::trap(anyhow::anyhow!(
-                    "Invalid stream: {} not found in dir_stream_map",
-                    self_.rep()
-                ))
-            })?;
-
         // Call VFS adapter's read_directory_entry
-
         let result = core
             .vfs_instance
             .wasi_filesystem_types()
@@ -1368,14 +1360,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
         &mut self,
         rep: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
     ) -> Result<(), anyhow::Error> {
-        // Remove from mapping (VFS stream will be cleaned up by VFS store)
-        {
-            let mut core = self.lock_vfs_core()?;
-            core.dir_stream_map.remove(&rep.rep());
-        }
-
-        // Remove from host table
-        self.table.delete(rep)?;
+        // Delete from ResourceTable using wrapper type
+        let wrapper_resource: Resource<VfsDirectoryEntryStreamWrapper> =
+            Resource::new_own(rep.rep());
+        self.table.delete(wrapper_resource)?;
         Ok(())
     }
 }

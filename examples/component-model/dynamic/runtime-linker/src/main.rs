@@ -731,6 +731,93 @@ fn test_real_component_with_std_fs(engine: &Engine, vfs_adapter_path: &str) -> R
     Ok(())
 }
 
+fn test_demo_std_fs_with_vfs_host(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Part 1B-3: Testing demo-std-fs with vfs-host");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+    println!("Testing if std::fs works with vfs-host Host trait implementation");
+    println!("Component: demo-std-fs (uses std::fs and has wasi:cli/run)");
+    println!();
+
+    let start_total = Instant::now();
+
+    // Create VfsHostState
+    println!("Step 1: Creating VfsHostState...");
+    let vfs_host_state = vfs_host::VfsHostState::new(engine, vfs_adapter_path)
+        .context("Failed to create VfsHostState")?;
+    println!("  ✓ VfsHostState created");
+
+    // Create store with VfsHostState
+    let mut store = Store::new(engine, vfs_host_state);
+
+    // Load demo-std-fs
+    println!();
+    println!("Step 2: Loading demo-std-fs...");
+    let component_path = "../../../../target/wasm32-wasip2/debug/demo_std_fs.wasm";
+    let component =
+        Component::from_file(engine, component_path).context("Failed to load demo-std-fs")?;
+    println!("  ✓ Component loaded");
+
+    // Create linker with custom VFS filesystem
+    println!();
+    println!("Step 3: Creating linker with custom VFS filesystem...");
+    let mut linker = Linker::new(engine);
+    vfs_host::add_to_linker_with_vfs(&mut linker)?;
+    println!("  ✓ Linker created with VFS filesystem (filesystem::preopens overridden)");
+
+    // Instantiate component
+    println!();
+    println!("Step 4: Instantiating component...");
+    let instance = linker.instantiate(&mut store, &component)?;
+    println!("  ✓ Component instantiated successfully!");
+
+    // Create Command from instance
+    println!();
+    println!("Step 5: Running demo-std-fs via wasi:cli/run...");
+    use wasmtime_wasi::bindings::sync::Command;
+    let command =
+        Command::new(&mut store, &instance).context("Failed to create Command from instance")?;
+
+    // Call wasi:cli/run
+    match command.wasi_cli_run().call_run(&mut store) {
+        Ok(Ok(())) => {
+            println!("  ✓ demo-std-fs executed successfully!");
+            println!();
+            println!("Result: std::fs WORKS with vfs-host Host trait implementation!");
+            println!("  ✓ Host trait get_directories() was called");
+            println!("  ✓ std::fs operations successfully routed to vfs-adapter");
+            println!("  ✓ This proves Host traits CAN support std::fs!");
+        }
+        Ok(Err(())) => {
+            println!("  ✗ demo-std-fs returned error");
+            println!();
+            println!("Result: std::fs FAILED - Application returned error");
+        }
+        Err(e) => {
+            println!("  ✗ demo-std-fs execution failed!");
+            let err_str = format!("{:?}", e);
+            println!("  Error: {}", err_str);
+            println!();
+            if err_str.contains("pre-opened file descriptor") {
+                println!("Result: std::fs DOES NOT WORK with Host traits!");
+                println!("  ✗ wasmtime-wasi bypassed Host::get_directories()");
+                println!("  ✗ Directly checked WasiCtx.preopens (which is empty)");
+                println!("  ✗ This confirms plan.md analysis");
+            } else {
+                println!("Result: Execution failed for other reasons");
+            }
+            return Err(e);
+        }
+    }
+
+    println!();
+    println!("Total time: {:?}", start_total.elapsed());
+
+    Ok(())
+}
+
 fn test_true_dynamic_linking(
     engine: &Engine,
     vfs_adapter_path: &str,
@@ -887,6 +974,9 @@ fn main() -> Result<()> {
 
     // Part 1B-2: Test with real Rust component using std::fs
     test_real_component_with_std_fs(&engine, vfs_adapter_path)?;
+
+    // Part 1B-3: Test demo-std-fs with vfs-host
+    test_demo_std_fs_with_vfs_host(&engine, vfs_adapter_path)?;
 
     // Part 1C: Shared VFS across multiple applications
     test_shared_vfs_across_apps(&engine, vfs_adapter_path)?;

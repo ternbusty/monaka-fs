@@ -134,12 +134,35 @@ impl VfsRpcHostState {
 
 impl WasiView for VfsRpcHostState {
     fn ctx(&mut self) -> &mut WasiCtx {
+        eprintln!("[VFS-RPC-HOST] WasiView::ctx() called");
         &mut self.wasi_ctx
     }
 
     fn table(&mut self) -> &mut ResourceTable {
+        eprintln!("[VFS-RPC-HOST] WasiView::table() called");
         &mut self.table
     }
+}
+
+// Helper methods for VfsRpcHostState to handle lock poisoning
+impl VfsRpcHostState {
+    /// Lock shared RPC adapter core with proper error handling for poisoned locks
+    pub(crate) fn lock_rpc_core(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, SharedRpcAdapterCore>, anyhow::Error> {
+        self.shared_rpc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("RPC adapter core lock poisoned: {}", e))
+    }
+}
+
+// Helper function for locking rpc_store
+fn lock_rpc_store(
+    arc_store: &Arc<Mutex<wasmtime::Store<crate::RpcStoreData>>>,
+) -> Result<std::sync::MutexGuard<'_, wasmtime::Store<crate::RpcStoreData>>, anyhow::Error> {
+    arc_store
+        .lock()
+        .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))
 }
 
 /// Helper function to convert RPC adapter error codes to WASI error codes

@@ -1,10 +1,8 @@
 // WASI Filesystem Preopens Host Implementation
 //
 // Implements wasi:filesystem/preopens interface by forwarding to VFS adapter
-//
-// Phase 1: Empty implementation to discover required methods
 
-use super::VfsHostState;
+use super::{VfsDescriptorWrapper, VfsHostState};
 use wasmtime::component::Resource;
 
 impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState {
@@ -17,10 +15,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
         )>,
         anyhow::Error,
     > {
+        eprintln!("[VFS-HOST] get_directories() called");
+
         // Get VFS directories
         let vfs_dirs = {
             // Lock shared VFS core
             let core = self.lock_vfs_core()?;
+            eprintln!("[VFS-HOST] Locked VFS core");
 
             // Call VFS adapter's get_directories
             let vfs_store_arc = core.vfs_store.clone();
@@ -28,33 +29,42 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
                 .lock()
                 .map_err(|e| anyhow::anyhow!("VFS store lock poisoned: {}", e))?;
 
-            core.vfs_instance
+            let result = core
+                .vfs_instance
                 .wasi_filesystem_preopens()
-                .call_get_directories(&mut *vfs_store)?
+                .call_get_directories(&mut *vfs_store)?;
+            eprintln!(
+                "[VFS-HOST] VFS adapter returned {} directories",
+                result.len()
+            );
+            result
         };
+
+        eprintln!(
+            "[VFS-HOST] Mapping {} VFS descriptors to host descriptors",
+            vfs_dirs.len()
+        );
 
         // Map VFS descriptors to host descriptors
         let mut host_dirs = Vec::new();
         for (vfs_descriptor, path) in vfs_dirs {
-            // Create a host descriptor resource
-            // We push () and then unsafely cast to the right type since Resource<T> is just a u32 wrapper
-            let temp_resource = self.table.push(())?;
-            let rep_value = temp_resource.rep();
+            // Push VfsDescriptorWrapper to ResourceTable (proper typed storage)
+            let wrapper = VfsDescriptorWrapper(vfs_descriptor);
+            let wrapper_resource: Resource<VfsDescriptorWrapper> = self.table.push(wrapper)?;
 
-            // Create properly typed resource from rep
-            // Resource<T> is just a u32 wrapper, so we can reinterpret cast
-            // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
+            // Transmute Resource<VfsDescriptorWrapper> to Resource<Descriptor>
+            // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
             // Compile-time checks ensure size and alignment match
             const _: () = {
                 use std::mem::{align_of, size_of};
                 assert!(
-                    size_of::<Resource<()>>()
+                    size_of::<Resource<VfsDescriptorWrapper>>()
                         == size_of::<
                             Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                         >()
                 );
                 assert!(
-                    align_of::<Resource<()>>()
+                    align_of::<Resource<VfsDescriptorWrapper>>()
                         == align_of::<
                             Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                         >()
@@ -62,14 +72,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
             };
             let host_descriptor = unsafe {
                 std::mem::transmute::<
-                    Resource<()>,
+                    Resource<VfsDescriptorWrapper>,
                     Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                >(temp_resource)
+                >(wrapper_resource)
             };
-
-            // Re-lock core to insert into descriptor map
-            let mut core = self.lock_vfs_core()?;
-            core.descriptor_map.insert(rep_value, vfs_descriptor);
 
             host_dirs.push((host_descriptor, path));
         }
