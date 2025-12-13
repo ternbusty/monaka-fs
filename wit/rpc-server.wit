@@ -1,0 +1,21 @@
+package halycon:vfs@0.1.0;
+
+world vfs-rpc-server {
+    // Import WASI sockets for TCP server
+    import wasi:sockets/tcp@0.2.6;
+    import wasi:sockets/tcp-create-socket@0.2.6;
+    import wasi:sockets/network@0.2.6;
+    import wasi:sockets/instance-network@0.2.6;
+
+    // Import WASI I/O for streams
+    import wasi:io/streams@0.2.6;
+    import wasi:io/poll@0.2.6;
+
+    // Import WASI CLI for stdio
+    import wasi:cli/stdout@0.2.6;
+    import wasi:cli/stderr@0.2.6;
+
+    // Import clocks for timestamps
+    import wasi:clocks/wall-clock@0.2.6;
+    import wasi:clocks/monotonic-clock@0.2.6;
+}

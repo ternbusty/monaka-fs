@@ -1,0 +1,33 @@
+// VFS Adapter World Definition
+// Adapter that imports and re-exports WASI I/O interfaces (wasi-virt style)
+// to maintain Resource ID consistency while providing custom filesystem implementation
+
+package halycon:vfs@0.1.0;
+
+world vfs-adapter {
+    // Import wall clock for timestamps
+    import wasi:clocks/wall-clock@0.2.6;
+
+    // Import and re-export wasi:io interfaces
+    // This maintains Resource ID consistency across the component boundary
+    import wasi:io/error@0.2.6;
+    export wasi:io/error@0.2.6;
+    import wasi:io/streams@0.2.6;
+    export wasi:io/streams@0.2.6;
+    import wasi:io/poll@0.2.6;
+    export wasi:io/poll@0.2.6;
+
+    // Import and re-export wasi:cli interfaces (passthrough)
+    // Required because guest apps use wasi:cli which also uses wasi:io/streams
+    import wasi:cli/stdin@0.2.6;
+    export wasi:cli/stdin@0.2.6;
+    import wasi:cli/stdout@0.2.6;
+    export wasi:cli/stdout@0.2.6;
+    import wasi:cli/stderr@0.2.6;
+    export wasi:cli/stderr@0.2.6;
+
+    // Export custom filesystem implementation
+    // (uses the re-exported wasi:io types above)
+    export wasi:filesystem/types@0.2.6;
+    export wasi:filesystem/preopens@0.2.6;
+}

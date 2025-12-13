@@ -1,66 +1,182 @@
 # Halycon
 
-Halycon is a virtual in-memory filesystem implemented in Rust and compiled to WebAssembly (WASM). It provides a C FFI layer for integration with C code.
+An ephemeral in-memory filesystem implementation for WebAssembly, featuring transparent `std::fs` access through RPC communication.
+
+## Overview
+
+Halycon provides a shared virtual filesystem that multiple WASM applications can access transparently using standard Rust `std::fs` APIs. Applications don't need to know they're using a virtual filesystem. The RPC adapter handles all communication with the VFS server behind the scenes.
+
+## Prerequisites
+
+- Rust toolchain (1.75+)
+- wasm32-wasip2 target: `rustup target add wasm32-wasip2`
+- wasmtime CLI: `cargo install wasmtime-cli`
+
+## Project Structure
+
+```
+halycon/
+├── crates/
+│   ├── core/fs-core/           # Core filesystem implementation (no_std compatible)
+│   ├── adapters/
+│   │   ├── vfs-adapter/        # WASI Component Model adapter
+│   │   └── rpc-adapter/        # RPC communication adapter
+│   ├── hosts/
+│   │   ├── vfs-host/           # Host implementation for vfs-adapter
+│   │   └── vfs-rpc-host/       # Host implementation for rpc-adapter
+│   ├── rpc/
+│   │   ├── vfs-rpc-protocol/   # RPC protocol definitions
+│   │   └── vfs-rpc-server/     # RPC server (WASM component)
+│   └── runners/
+│       └── rpc-fs-runner/      # Native runner for RPC-based apps
+├── examples/
+│   ├── rpc/                    # RPC-based examples
+│   │   ├── demo-writer/        # Writer application
+│   │   ├── demo-reader/        # Reader application
+│   │   ├── demo-std-fs/        # std::fs demonstration
+│   │   └── demo-direct-rpc/    # Direct RPC communication demo
+│   └── component-model/
+│       ├── runtime-linker/     # Dynamic component loader
+│       └── static/             # Static composition examples
+├── wit/                        # WIT interface definitions
+└── deprecated/                 # Legacy code (for reference)
+```
+
+## Building
+
+### Build Native Crates
+
+```bash
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+```
+
+### Build WASM Components
+
+```bash
+cargo build --target wasm32-wasip2 \
+  -p vfs-adapter \
+  -p rpc-adapter \
+  -p vfs-rpc-server \
+  -p demo-writer \
+  -p demo-reader \
+  -p demo-std-fs \
+  -p direct-rpc-demo
+```
+
+### Build Everything
+
+```bash
+# Native crates
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+
+# WASM components
+cargo build --target wasm32-wasip2 \
+  -p vfs-adapter -p rpc-adapter -p vfs-rpc-server \
+  -p demo-writer -p demo-reader -p demo-std-fs -p direct-rpc-demo
+```
+
+## Running Examples
+
+### RPC Examples
+
+#### Multi-Client Test (Writer + Reader)
+
+This example demonstrates multiple applications sharing a single VFS instance:
+
+```bash
+# Use the provided script
+./examples/rpc/run-multi-client-test.sh
+```
+
+Or manually:
+
+```bash
+# Terminal 1: Start VFS RPC Server
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# Terminal 2: Run Writer App (creates files)
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm
+
+# Terminal 3: Run Reader App (reads files created by Writer)
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm
+```
+
+#### Direct RPC Demo
+
+This example shows direct WASI socket communication with the VFS server (without using rpc-fs-runner):
+
+```bash
+# Use the provided script
+./examples/rpc/run-direct-rpc-demo.sh
+```
+
+Or manually:
+
+```bash
+# Terminal 1: Start VFS RPC Server
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# Terminal 2: Run Direct RPC Demo
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/direct_rpc_demo.wasm
+```
+
+### Component Model Examples
+
+#### Runtime Linker
+
+The runtime-linker example demonstrates dynamic component loading with shared VFS:
+
+```bash
+# Build
+cargo build -p runtime-linker
+cargo build -p vfs-adapter --target wasm32-wasip2
+
+# Run
+./target/debug/runtime-linker ./target/wasm32-wasip2/debug/vfs_adapter.wasm <app.wasm>
+```
+
+## Testing
+
+```bash
+# Run fs-core tests
+cargo test -p fs-core
+
+# Run all tests
+cargo test
+```
+
+## How It Works
+
+1. VFS RPC Server: A WASM component running `fs-core` that listens on TCP port 9000. It manages an in-memory filesystem and handles requests from multiple clients.
+
+2. RPC Adapter: A WASM component that implements WASI filesystem interfaces. When an application calls `std::fs::write()`, the rpc-adapter intercepts the call and forwards it to the VFS server via TCP.
+
+3. RPC FS Runner: A native Rust application that:
+   - Loads the rpc-adapter WASM component
+   - Loads the application WASM component
+   - Composes them so the application's filesystem calls go through the rpc-adapter
+
+4. Application: Any WASM application using standard `std::fs` APIs. It doesn't need to know about the VFS; everything is transparent.
+
+## Key Features
+
+- Transparent VFS: Applications use standard `std::fs` APIs
+- Multi-Client Support: Multiple applications can share the same VFS
+- In-Memory: Fast, ephemeral storage (no persistence)
+- WASI Compatible: Uses WASI Component Model
+- no_std Core: The filesystem implementation is `no_std` compatible
 
 ## Development Setup
 
 ### Git Hooks (lefthook)
 
-This project uses [lefthook](https://github.com/evilmartians/lefthook) to run code formatting and linting checks before commits.
+This project uses [lefthook](https://github.com/evilmartians/lefthook) for pre-commit checks.
 
 ```bash
 lefthook install
 ```
 
-Once installed, the following checks run automatically on `git commit`.
+Once installed, the following checks run automatically on `git commit`:
 - `cargo fmt` - Auto-formats Rust code
 - `cargo clippy` - Runs linter with warnings as errors
 
-## How to Build
-
-```bash
-# Build libraries only (fs-core, fs-wasm)
-make build
-
-# Or build libraries with release mode
-make build-release
-```
-
-## How to Test
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests for specific package
-cargo test -p fs-core          # Core filesystem
-cargo test -p fs-wasm          # FFI layer
-```
-
-**Note:** fs-wasm tests use the `serial_test` crate to ensure tests run sequentially, avoiding conflicts with the shared global filesystem state.
-
-## Examples
-
-### How to Build Examples
-
-```bash
-# Build all examples (C + Rust)
-make examples
-
-# Or build specific examples
-make build-c-example          # C integration example
-make build-rust-example       # Rust example
-```
-
-### How to Run Examples
-
-```bash
-# Run C integration example
-make run-c-example
-
-# Run Rust example
-make run-rust-example
-
-# Or run all examples
-make run-example
-```

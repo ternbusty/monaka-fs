@@ -64,6 +64,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -83,11 +85,17 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build workspace
+      - name: Build native packages
         run: cargo build --all-features --verbose
 
-      - name: Build release
+      - name: Build WASM packages
+        run: make build-wasm
+
+      - name: Build release (native)
         run: cargo build --release --all-features --verbose
+
+      - name: Build release (WASM)
+        run: make build-wasm-release
 
   test:
     name: Test
