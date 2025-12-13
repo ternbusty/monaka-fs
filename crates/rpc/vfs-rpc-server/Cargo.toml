@@ -7,10 +7,24 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-fs-core = { path = "../../core/fs-core" }
+fs-core = { path = "../../core/fs-core", features = ["serde"] }
 vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
 serde_json = "1.0"
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
+
+# AWS SDK for S3
+aws-sdk-s3 = { version = "1", default-features = false }
+aws-config = { version = "1", default-features = false }
+aws-smithy-wasm = "0.1"
+aws-smithy-async = { version = "1", features = ["rt-tokio"] }
+
 [build-dependencies]
 wit-bindgen = "0.36"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

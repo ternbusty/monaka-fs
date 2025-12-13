@@ -16,11 +16,11 @@ use crate::{debug, error, trace};
 
 /// Main filesystem structure
 pub struct Fs<T: TimeProvider = MonotonicCounter> {
-    next_inode: InodeId,
-    fd_table: BTreeMap<Fd, FileHandle>,
-    inode_table: BTreeMap<InodeId, Rc<RefCell<Inode>>>,
-    root_inode: InodeId,
-    time_provider: T,
+    pub(crate) next_inode: InodeId,
+    pub(crate) fd_table: BTreeMap<Fd, FileHandle>,
+    pub(crate) inode_table: BTreeMap<InodeId, Rc<RefCell<Inode>>>,
+    pub(crate) root_inode: InodeId,
+    pub(crate) time_provider: T,
 }
 
 impl<T: TimeProvider> Fs<T> {
@@ -142,6 +142,7 @@ impl<T: TimeProvider> Fs<T> {
         }
 
         // Get the directory file descriptor
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         let dir_handle = self.fd_table.get(&dir_fd).ok_or_else(|| {
             error!("open_at: bad directory file descriptor {}", dir_fd);
             FsError::BadFileDescriptor
@@ -340,6 +341,7 @@ impl<T: TimeProvider> Fs<T> {
     pub fn write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
         trace!("write: fd={}, len={}", fd, buf.len());
 
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
             error!("write: bad file descriptor {}", fd);
             FsError::BadFileDescriptor
@@ -385,6 +387,7 @@ impl<T: TimeProvider> Fs<T> {
     pub fn read(&mut self, fd: Fd, out: &mut [u8]) -> Result<usize, FsError> {
         trace!("read: fd={}, buf_len={}", fd, out.len());
 
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
             error!("read: bad file descriptor {}", fd);
             FsError::BadFileDescriptor
@@ -446,6 +449,7 @@ impl<T: TimeProvider> Fs<T> {
     pub fn close(&mut self, fd: Fd) -> Result<(), FsError> {
         trace!("close: fd={}", fd);
 
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         self.fd_table.remove(&fd).ok_or_else(|| {
             error!("close: bad file descriptor {}", fd);
             FsError::BadFileDescriptor
@@ -506,6 +510,7 @@ impl<T: TimeProvider> Fs<T> {
         const SEEK_CUR: i32 = 1;
         const SEEK_END: i32 = 2;
 
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
             error!("seek: bad file descriptor {}", fd);
             FsError::BadFileDescriptor

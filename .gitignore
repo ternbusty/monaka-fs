@@ -3,3 +3,4 @@
 *.wasm
 .tmp/
 *.bin
+/localstack-data/**

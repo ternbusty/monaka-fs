@@ -40,6 +40,7 @@ mod error;
 mod fs;
 mod handle;
 mod inode;
+pub mod snapshot;
 mod storage;
 mod time;
 mod types;
