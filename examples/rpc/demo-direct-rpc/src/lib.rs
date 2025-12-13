@@ -47,7 +47,7 @@ fn receive_message(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 /// Send a request and receive a response
 fn call(
     stream: &mut TcpStream,
-    session_id: Option<u64>,
+    session_id: Option<String>,
     request: &Request,
 ) -> std::io::Result<Response> {
     let rpc_request = RpcRequest {
@@ -111,14 +111,14 @@ pub extern "C" fn _start() {
     };
 
     // Use session_id for all subsequent requests
-    let sid = Some(session_id);
+    let sid = session_id;
 
     // Create directory
     println!("\nCreating directory /demo...");
     let mkdir_request = Request::Mkdir {
         path: "/demo".to_string(),
     };
-    match call(&mut stream, sid, &mkdir_request) {
+    match call(&mut stream, Some(sid.clone()), &mkdir_request) {
         Ok(Response::Ok) => println!("  Directory created!"),
         Ok(Response::Error { code, message }) => {
             println!("  Directory creation result: {:?} - {}", code, message);
@@ -136,7 +136,7 @@ pub extern "C" fn _start() {
         path: "/demo/hello.txt".to_string(),
         flags: 0x241, // O_CREAT | O_WRONLY | O_TRUNC
     };
-    let fd = match call(&mut stream, sid, &open_request) {
+    let fd = match call(&mut stream, Some(sid.clone()), &open_request) {
         Ok(Response::Fd { fd }) => {
             println!("  Opened file, fd={}", fd);
             fd
@@ -160,7 +160,7 @@ pub extern "C" fn _start() {
         fd,
         data: content.to_vec(),
     };
-    match call(&mut stream, sid, &write_request) {
+    match call(&mut stream, Some(sid.clone()), &write_request) {
         Ok(Response::Written { count }) => {
             println!("  Wrote {} bytes", count);
         }
@@ -174,7 +174,7 @@ pub extern "C" fn _start() {
 
     // Close file
     let close_request = Request::Close { fd };
-    let _ = call(&mut stream, sid, &close_request);
+    let _ = call(&mut stream, Some(sid.clone()), &close_request);
 
     // Read file back
     println!("\nReading file /demo/hello.txt...");
@@ -184,7 +184,7 @@ pub extern "C" fn _start() {
         path: "/demo/hello.txt".to_string(),
         flags: 0x00, // O_RDONLY
     };
-    let fd = match call(&mut stream, sid, &open_request) {
+    let fd = match call(&mut stream, Some(sid.clone()), &open_request) {
         Ok(Response::Fd { fd }) => {
             println!("  Opened file, fd={}", fd);
             fd
@@ -205,7 +205,7 @@ pub extern "C" fn _start() {
 
     // Read data
     let read_request = Request::Read { fd, length: 1024 };
-    match call(&mut stream, sid, &read_request) {
+    match call(&mut stream, Some(sid.clone()), &read_request) {
         Ok(Response::Data { bytes }) => {
             let text = String::from_utf8_lossy(&bytes);
             println!("  Read {} bytes: \"{}\"", bytes.len(), text);
@@ -219,14 +219,14 @@ pub extern "C" fn _start() {
 
     // Close file
     let close_request = Request::Close { fd };
-    let _ = call(&mut stream, sid, &close_request);
+    let _ = call(&mut stream, Some(sid.clone()), &close_request);
 
     // Get file stats
     println!("\nGetting file stats for /demo/hello.txt...");
     let stat_request = Request::Stat {
         path: "/demo/hello.txt".to_string(),
     };
-    match call(&mut stream, sid, &stat_request) {
+    match call(&mut stream, Some(sid.clone()), &stat_request) {
         Ok(Response::Metadata { metadata }) => {
             println!("  Size: {} bytes", metadata.size);
             println!("  Is directory: {}", metadata.is_dir);
@@ -243,7 +243,7 @@ pub extern "C" fn _start() {
     let readdir_request = Request::Readdir {
         path: "/demo".to_string(),
     };
-    match call(&mut stream, sid, &readdir_request) {
+    match call(&mut stream, Some(sid.clone()), &readdir_request) {
         Ok(Response::DirEntries { entries }) => {
             println!("  Found {} entries:", entries.len());
             for entry in entries {

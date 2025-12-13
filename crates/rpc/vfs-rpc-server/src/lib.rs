@@ -7,6 +7,9 @@
 #![allow(warnings)]
 
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_core::{Fs, FsError};
 use vfs_rpc_protocol::{
@@ -29,14 +32,34 @@ use wasi::sockets::tcp_create_socket::create_tcp_socket;
 // Global filesystem instance
 static mut VFS: Option<RefCell<Fs>> = None;
 
-// Session counter for unique session IDs
+// Session counter (used as part of hash input for uniqueness)
 static mut SESSION_COUNTER: u64 = 0;
 
-/// Generate a unique session ID
-fn generate_session_id() -> u64 {
+/// Generate a unique 6-character alphanumeric session ID
+fn generate_session_id() -> String {
+    const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
     unsafe {
-        SESSION_COUNTER += 1;
-        SESSION_COUNTER
+        SESSION_COUNTER = SESSION_COUNTER.wrapping_add(1);
+
+        let mut hasher = DefaultHasher::new();
+        SESSION_COUNTER.hash(&mut hasher);
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            .hash(&mut hasher);
+
+        let hash = hasher.finish();
+
+        // Convert hash to 6-character alphanumeric string
+        let mut result = String::with_capacity(6);
+        let mut h = hash;
+        for _ in 0..6 {
+            result.push(CHARSET[(h % 36) as usize] as char);
+            h /= 36;
+        }
+        result
     }
 }
 
@@ -51,7 +74,7 @@ fn init_vfs() {
 }
 
 /// Handle a single RPC request
-fn handle_request(request: Request, session_id: Option<u64>) -> Response {
+fn handle_request(request: Request, session_id: Option<String>) -> Response {
     unsafe {
         let vfs_ref = match VFS.as_ref() {
             Some(vfs) => vfs,
@@ -64,7 +87,7 @@ fn handle_request(request: Request, session_id: Option<u64>) -> Response {
         };
 
         // Log the session ID for tracking
-        if let Some(sid) = session_id {
+        if let Some(ref sid) = session_id {
             println!("[session {}] Processing request", sid);
         }
 

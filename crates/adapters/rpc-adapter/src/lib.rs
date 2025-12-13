@@ -49,7 +49,7 @@ struct PersistentConnection {
     socket: TcpSocket,
     input_stream: InputStream,
     output_stream: OutputStream,
-    session_id: u64,
+    session_id: String,
 }
 
 impl PersistentConnection {
@@ -141,7 +141,7 @@ impl PersistentConnection {
 
     fn send_raw(
         output_stream: &mut OutputStream,
-        session_id: Option<u64>,
+        session_id: Option<String>,
         request: &Request,
     ) -> Result<(), ErrorCode> {
         let rpc_request = RpcRequest {
@@ -259,7 +259,11 @@ impl PersistentConnection {
             "[RPC-ADAPTER] send: calling send_raw with session_id={}",
             self.session_id
         );
-        Self::send_raw(&mut self.output_stream, Some(self.session_id), request)
+        Self::send_raw(
+            &mut self.output_stream,
+            Some(self.session_id.clone()),
+            request,
+        )
     }
 
     fn receive(&mut self) -> Result<Response, ErrorCode> {
