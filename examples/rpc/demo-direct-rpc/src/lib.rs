@@ -22,7 +22,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
-use vfs_rpc_protocol::{Request, Response, PROTOCOL_VERSION};
+use vfs_rpc_protocol::{Request, Response, RpcRequest, PROTOCOL_VERSION};
 
 /// Send a length-prefixed message
 fn send_message(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
@@ -45,8 +45,16 @@ fn receive_message(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 }
 
 /// Send a request and receive a response
-fn call(stream: &mut TcpStream, request: &Request) -> std::io::Result<Response> {
-    let request_json = serde_json::to_vec(request)
+fn call(
+    stream: &mut TcpStream,
+    session_id: Option<u64>,
+    request: &Request,
+) -> std::io::Result<Response> {
+    let rpc_request = RpcRequest {
+        session_id,
+        request: request.clone(),
+    };
+    let request_json = serde_json::to_vec(&rpc_request)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     send_message(stream, &request_json)?;
 
@@ -76,12 +84,12 @@ pub extern "C" fn _start() {
         }
     };
 
-    // Handshake
+    // Handshake (session_id is None for Connect request)
     println!("\nSending handshake...");
     let connect_request = Request::Connect {
         version: PROTOCOL_VERSION,
     };
-    match call(&mut stream, &connect_request) {
+    let session_id = match call(&mut stream, None, &connect_request) {
         Ok(Response::Connected {
             session_id,
             version,
@@ -90,6 +98,7 @@ pub extern "C" fn _start() {
                 "  Connected! Session ID: {}, Protocol version: {}",
                 session_id, version
             );
+            session_id
         }
         Ok(other) => {
             eprintln!("  Unexpected response: {:?}", other);
@@ -99,14 +108,17 @@ pub extern "C" fn _start() {
             eprintln!("  Handshake failed: {}", e);
             return;
         }
-    }
+    };
+
+    // Use session_id for all subsequent requests
+    let sid = Some(session_id);
 
     // Create directory
     println!("\nCreating directory /demo...");
     let mkdir_request = Request::Mkdir {
         path: "/demo".to_string(),
     };
-    match call(&mut stream, &mkdir_request) {
+    match call(&mut stream, sid, &mkdir_request) {
         Ok(Response::Ok) => println!("  Directory created!"),
         Ok(Response::Error { code, message }) => {
             println!("  Directory creation result: {:?} - {}", code, message);
@@ -124,7 +136,7 @@ pub extern "C" fn _start() {
         path: "/demo/hello.txt".to_string(),
         flags: 0x241, // O_CREAT | O_WRONLY | O_TRUNC
     };
-    let fd = match call(&mut stream, &open_request) {
+    let fd = match call(&mut stream, sid, &open_request) {
         Ok(Response::Fd { fd }) => {
             println!("  Opened file, fd={}", fd);
             fd
@@ -148,7 +160,7 @@ pub extern "C" fn _start() {
         fd,
         data: content.to_vec(),
     };
-    match call(&mut stream, &write_request) {
+    match call(&mut stream, sid, &write_request) {
         Ok(Response::Written { count }) => {
             println!("  Wrote {} bytes", count);
         }
@@ -162,7 +174,7 @@ pub extern "C" fn _start() {
 
     // Close file
     let close_request = Request::Close { fd };
-    let _ = call(&mut stream, &close_request);
+    let _ = call(&mut stream, sid, &close_request);
 
     // Read file back
     println!("\nReading file /demo/hello.txt...");
@@ -172,7 +184,7 @@ pub extern "C" fn _start() {
         path: "/demo/hello.txt".to_string(),
         flags: 0x00, // O_RDONLY
     };
-    let fd = match call(&mut stream, &open_request) {
+    let fd = match call(&mut stream, sid, &open_request) {
         Ok(Response::Fd { fd }) => {
             println!("  Opened file, fd={}", fd);
             fd
@@ -193,7 +205,7 @@ pub extern "C" fn _start() {
 
     // Read data
     let read_request = Request::Read { fd, length: 1024 };
-    match call(&mut stream, &read_request) {
+    match call(&mut stream, sid, &read_request) {
         Ok(Response::Data { bytes }) => {
             let text = String::from_utf8_lossy(&bytes);
             println!("  Read {} bytes: \"{}\"", bytes.len(), text);
@@ -207,14 +219,14 @@ pub extern "C" fn _start() {
 
     // Close file
     let close_request = Request::Close { fd };
-    let _ = call(&mut stream, &close_request);
+    let _ = call(&mut stream, sid, &close_request);
 
     // Get file stats
     println!("\nGetting file stats for /demo/hello.txt...");
     let stat_request = Request::Stat {
         path: "/demo/hello.txt".to_string(),
     };
-    match call(&mut stream, &stat_request) {
+    match call(&mut stream, sid, &stat_request) {
         Ok(Response::Metadata { metadata }) => {
             println!("  Size: {} bytes", metadata.size);
             println!("  Is directory: {}", metadata.is_dir);
@@ -231,7 +243,7 @@ pub extern "C" fn _start() {
     let readdir_request = Request::Readdir {
         path: "/demo".to_string(),
     };
-    match call(&mut stream, &readdir_request) {
+    match call(&mut stream, sid, &readdir_request) {
         Ok(Response::DirEntries { entries }) => {
             println!("  Found {} entries:", entries.len());
             for entry in entries {

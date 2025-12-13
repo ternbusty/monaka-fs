@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Once;
 
-use vfs_rpc_protocol::{Request, Response, PROTOCOL_VERSION};
+use vfs_rpc_protocol::{Request, Response, RpcRequest, PROTOCOL_VERSION};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -96,8 +96,10 @@ impl PersistentConnection {
         eprintln!("[RPC-ADAPTER] PersistentConnection::connect: connected, sending handshake");
 
         // Do handshake (using blocking_* methods only, no subscribe)
+        // session_id is None for the Connect request
         Self::send_raw(
             &mut output_stream,
+            None,
             &Request::Connect {
                 version: PROTOCOL_VERSION,
             },
@@ -137,8 +139,16 @@ impl PersistentConnection {
         }
     }
 
-    fn send_raw(output_stream: &mut OutputStream, request: &Request) -> Result<(), ErrorCode> {
-        let data = serde_json::to_vec(request).map_err(|e| {
+    fn send_raw(
+        output_stream: &mut OutputStream,
+        session_id: Option<u64>,
+        request: &Request,
+    ) -> Result<(), ErrorCode> {
+        let rpc_request = RpcRequest {
+            session_id,
+            request: request.clone(),
+        };
+        let data = serde_json::to_vec(&rpc_request).map_err(|e| {
             eprintln!("[RPC-ADAPTER] send_raw: JSON serialize error: {:?}", e);
             ErrorCode::Io
         })?;
@@ -245,8 +255,11 @@ impl PersistentConnection {
     }
 
     fn send(&mut self, request: &Request) -> Result<(), ErrorCode> {
-        eprintln!("[RPC-ADAPTER] send: calling send_raw");
-        Self::send_raw(&mut self.output_stream, request)
+        eprintln!(
+            "[RPC-ADAPTER] send: calling send_raw with session_id={}",
+            self.session_id
+        );
+        Self::send_raw(&mut self.output_stream, Some(self.session_id), request)
     }
 
     fn receive(&mut self) -> Result<Response, ErrorCode> {

@@ -9,7 +9,9 @@
 use std::cell::RefCell;
 
 use fs_core::{Fs, FsError};
-use vfs_rpc_protocol::{DirEntry, ErrorCode, Metadata, Request, Response, PROTOCOL_VERSION};
+use vfs_rpc_protocol::{
+    DirEntry, ErrorCode, Metadata, Request, Response, RpcRequest, PROTOCOL_VERSION,
+};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -27,6 +29,17 @@ use wasi::sockets::tcp_create_socket::create_tcp_socket;
 // Global filesystem instance
 static mut VFS: Option<RefCell<Fs>> = None;
 
+// Session counter for unique session IDs
+static mut SESSION_COUNTER: u64 = 0;
+
+/// Generate a unique session ID
+fn generate_session_id() -> u64 {
+    unsafe {
+        SESSION_COUNTER += 1;
+        SESSION_COUNTER
+    }
+}
+
 /// Initialize the VFS
 fn init_vfs() {
     unsafe {
@@ -38,7 +51,7 @@ fn init_vfs() {
 }
 
 /// Handle a single RPC request
-fn handle_request(request: Request) -> Response {
+fn handle_request(request: Request, session_id: Option<u64>) -> Response {
     unsafe {
         let vfs_ref = match VFS.as_ref() {
             Some(vfs) => vfs,
@@ -49,6 +62,11 @@ fn handle_request(request: Request) -> Response {
                 }
             }
         };
+
+        // Log the session ID for tracking
+        if let Some(sid) = session_id {
+            println!("[session {}] Processing request", sid);
+        }
 
         match request {
             Request::Connect { version } => {
@@ -61,8 +79,10 @@ fn handle_request(request: Request) -> Response {
                         ),
                     }
                 } else {
+                    let new_session_id = generate_session_id();
+                    println!("[session {}] New client connected", new_session_id);
                     Response::Connected {
-                        session_id: 1,
+                        session_id: new_session_id,
                         version: PROTOCOL_VERSION,
                     }
                 }
@@ -352,8 +372,8 @@ fn handle_client(input: InputStream, output: OutputStream) {
             }
         };
 
-        // Parse request JSON
-        let request: Request = match serde_json::from_slice(&request_bytes) {
+        // Parse request JSON (RpcRequest wrapper)
+        let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to parse request: {}", e);
@@ -369,8 +389,8 @@ fn handle_client(input: InputStream, output: OutputStream) {
             }
         };
 
-        // Handle request
-        let response = handle_request(request);
+        // Handle request with session tracking
+        let response = handle_request(rpc_request.request, rpc_request.session_id);
 
         // Serialize response
         let response_bytes = match serde_json::to_vec(&response) {

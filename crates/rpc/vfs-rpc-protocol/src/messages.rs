@@ -2,6 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Wrapper for RPC requests with session tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcRequest {
+    /// Session ID assigned by server on Connect (None for Connect request)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+    /// The actual request
+    pub request: Request,
+}
+
 /// RPC request messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
