@@ -4,7 +4,9 @@
 //
 // Phase 1: Empty implementation to discover required methods from compiler
 
-use super::{SharedRpcAdapterCore, VfsRpcHostState};
+use super::{
+    RpcDescriptorWrapper, RpcDirectoryEntryStreamWrapper, SharedRpcAdapterCore, VfsRpcHostState,
+};
 use bytes::Bytes;
 use std::sync::{Arc, Mutex};
 use wasmtime::component::Resource;
@@ -14,60 +16,54 @@ use wasmtime_wasi::{
 };
 
 /// Wrapper for VFS InputStream that implements HostInputStream
+/// Uses Descriptor::read directly instead of going through wasi:io/streams
+/// to avoid nested runtime issues (WASI exports cannot call WASI imports).
 pub struct VfsInputStreamWrapper {
     /// Reference to shared VFS core
     shared_rpc: Arc<Mutex<SharedRpcAdapterCore>>,
-    /// The VFS InputStream resource
-    vfs_stream: crate::exports::wasi::io::streams::InputStream,
+    /// The VFS Descriptor resource (file handle)
+    descriptor: crate::exports::wasi::filesystem::types::Descriptor,
+    /// Current read offset
+    offset: std::cell::Cell<u64>,
 }
 
 impl VfsInputStreamWrapper {
     pub fn new(
         shared_rpc: Arc<Mutex<SharedRpcAdapterCore>>,
-        vfs_stream: crate::exports::wasi::io::streams::InputStream,
+        descriptor: crate::exports::wasi::filesystem::types::Descriptor,
+        offset: u64,
     ) -> Self {
         Self {
             shared_rpc,
-            vfs_stream,
+            descriptor,
+            offset: std::cell::Cell::new(offset),
         }
-    }
-
-    /// Lock shared VFS core with proper error handling for poisoned locks
-    fn lock_vfs_core(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, SharedRpcAdapterCore>, StreamError> {
-        self.shared_rpc.lock().map_err(|e| {
-            StreamError::LastOperationFailed(anyhow::anyhow!("VFS core lock poisoned: {}", e))
-        })
     }
 }
 
 /// Wrapper for VFS OutputStream that implements HostOutputStream
+/// Uses Descriptor::write directly instead of going through wasi:io/streams
+/// to avoid nested runtime issues (WASI exports cannot call WASI imports).
 pub struct VfsOutputStreamWrapper {
     /// Reference to shared VFS core
     shared_rpc: Arc<Mutex<SharedRpcAdapterCore>>,
-    /// The VFS OutputStream resource
-    vfs_stream: crate::exports::wasi::io::streams::OutputStream,
+    /// The VFS Descriptor resource (file handle)
+    descriptor: crate::exports::wasi::filesystem::types::Descriptor,
+    /// Current write offset
+    offset: std::cell::Cell<u64>,
 }
 
 impl VfsOutputStreamWrapper {
     pub fn new(
         shared_rpc: Arc<Mutex<SharedRpcAdapterCore>>,
-        vfs_stream: crate::exports::wasi::io::streams::OutputStream,
+        descriptor: crate::exports::wasi::filesystem::types::Descriptor,
+        offset: u64,
     ) -> Self {
         Self {
             shared_rpc,
-            vfs_stream,
+            descriptor,
+            offset: std::cell::Cell::new(offset),
         }
-    }
-
-    /// Lock shared VFS core with proper error handling for poisoned locks
-    fn lock_vfs_core(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, SharedRpcAdapterCore>, StreamError> {
-        self.shared_rpc.lock().map_err(|e| {
-            StreamError::LastOperationFailed(anyhow::anyhow!("VFS core lock poisoned: {}", e))
-        })
     }
 }
 
@@ -146,30 +142,22 @@ impl VfsRpcHostState {
         &self,
         host_desc: &Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<crate::exports::wasi::filesystem::types::Descriptor, anyhow::Error> {
-        let core = self.lock_vfs_core()?;
-        core.descriptor_map
-            .get(&host_desc.rep())
-            .copied()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Invalid descriptor: {} not found in descriptor_map",
-                    host_desc.rep()
-                )
-            })
+        // Get descriptor from ResourceTable using wrapper type
+        let rep = host_desc.rep();
+        let wrapper_resource: Resource<RpcDescriptorWrapper> = Resource::new_borrow(rep);
+        let wrapper = self
+            .table
+            .get(&wrapper_resource)
+            .map_err(|e| anyhow::anyhow!("Failed to get descriptor from table: {}", e))?;
+        Ok(wrapper.0)
     }
 }
 
-/// Helper function to convert VFS StreamError to Host StreamError
-fn convert_stream_error(error: crate::exports::wasi::io::streams::StreamError) -> StreamError {
-    use crate::exports::wasi::io::streams::StreamError as VfsError;
-
-    match error {
-        VfsError::LastOperationFailed(err) => {
-            // Convert the error to string since we can't directly map the resource
-            StreamError::LastOperationFailed(anyhow::anyhow!("VFS error: {:?}", err))
-        }
-        VfsError::Closed => StreamError::Closed,
-    }
+/// Helper function to convert VFS filesystem ErrorCode to StreamError
+fn convert_fs_error_to_stream(
+    error: crate::exports::wasi::filesystem::types::ErrorCode,
+) -> StreamError {
+    StreamError::LastOperationFailed(anyhow::anyhow!("Filesystem error: {:?}", error))
 }
 
 #[async_trait::async_trait]
@@ -182,51 +170,54 @@ impl Subscribe for VfsInputStreamWrapper {
 
 impl HostInputStream for VfsInputStreamWrapper {
     fn read(&mut self, size: usize) -> StreamResult<Bytes> {
-        // Lock VFS core and call VFS stream read
-        let core = self.lock_vfs_core()?;
-        let mut rpc_store =
-            lock_rpc_store(&core.rpc_store).map_err(StreamError::LastOperationFailed)?;
+        let shared_rpc = &self.shared_rpc;
+        let descriptor = self.descriptor;
+        let current_offset = self.offset.get();
 
-        // Call VFS InputStream read method
-        let result = core
-            .rpc_instance
-            .wasi_io_streams()
-            .input_stream()
-            .call_read(&mut *rpc_store, self.vfs_stream, size as u64);
+        // Run RPC operation in a separate thread to avoid tokio runtime nesting.
+        // When this method is called from wasmtime-wasi's blocking_read_and_flush,
+        // we're already inside a tokio runtime. Calling into the RPC adapter
+        // (which also uses wasmtime-wasi for sockets) would create a nested runtime.
+        // Using std::thread::scope allows the RPC call to run in a fresh thread
+        // without the parent's tokio context.
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                let core = shared_rpc
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("VFS core lock poisoned: {}", e))?;
+                let rpc_store_arc = core.rpc_store.clone();
+                let mut rpc_store = rpc_store_arc
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))?;
 
+                core.rpc_instance
+                    .wasi_filesystem_types()
+                    .descriptor()
+                    .call_read(&mut *rpc_store, descriptor, size as u64, current_offset)
+            })
+            .join()
+        });
+
+        // Process the nested Result types:
+        // Result<Result<Result<(Vec<u8>, bool), ErrorCode>, anyhow::Error>, JoinError>
         match result {
-            Ok(Ok(data)) => Ok(Bytes::from(data)),
-            Ok(Err(err)) => Err(convert_stream_error(err)),
-            Err(e) => Err(StreamError::LastOperationFailed(e)),
+            Ok(Ok(Ok((data, _end_of_stream)))) => {
+                self.offset.set(current_offset + data.len() as u64);
+                Ok(Bytes::from(data))
+            }
+            Ok(Ok(Err(err))) => Err(convert_fs_error_to_stream(err)),
+            Ok(Err(e)) => Err(StreamError::LastOperationFailed(e)),
+            Err(_) => Err(StreamError::LastOperationFailed(anyhow::anyhow!(
+                "RPC thread panicked"
+            ))),
         }
     }
 
     fn skip(&mut self, nelem: usize) -> StreamResult<usize> {
-        // Lock VFS core and call VFS stream skip
-        let core = self.lock_vfs_core()?;
-        let mut rpc_store =
-            lock_rpc_store(&core.rpc_store).map_err(StreamError::LastOperationFailed)?;
-
-        // Call VFS InputStream skip method
-        let result = core
-            .rpc_instance
-            .wasi_io_streams()
-            .input_stream()
-            .call_skip(&mut *rpc_store, self.vfs_stream, nelem as u64);
-
-        match result {
-            Ok(Ok(skipped)) => {
-                let skipped_usize = skipped.try_into().map_err(|_| {
-                    StreamError::LastOperationFailed(anyhow::anyhow!(
-                        "Skipped size {} exceeds usize::MAX",
-                        skipped
-                    ))
-                })?;
-                Ok(skipped_usize)
-            }
-            Ok(Err(err)) => Err(convert_stream_error(err)),
-            Err(e) => Err(StreamError::LastOperationFailed(e)),
-        }
+        // Simply advance the offset without reading
+        let current_offset = self.offset.get();
+        self.offset.set(current_offset + nelem as u64);
+        Ok(nelem)
     }
 }
 
@@ -240,71 +231,60 @@ impl Subscribe for VfsOutputStreamWrapper {
 
 impl HostOutputStream for VfsOutputStreamWrapper {
     fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
-        // Lock VFS core and call VFS stream write
-        let core = self.lock_vfs_core()?;
-        let mut rpc_store =
-            lock_rpc_store(&core.rpc_store).map_err(StreamError::LastOperationFailed)?;
+        let shared_rpc = &self.shared_rpc;
+        let descriptor = self.descriptor;
+        let current_offset = self.offset.get();
+        // Clone bytes for the thread (Bytes is cheap to clone - reference counted)
+        let bytes_clone = bytes.clone();
 
-        // Call VFS OutputStream write method
-        let result = core
-            .rpc_instance
-            .wasi_io_streams()
-            .output_stream()
-            .call_write(&mut *rpc_store, self.vfs_stream, &bytes);
+        // Run RPC operation in a separate thread to avoid tokio runtime nesting.
+        // When this method is called from wasmtime-wasi's blocking_write_and_flush,
+        // we're already inside a tokio runtime. Calling into the RPC adapter
+        // (which also uses wasmtime-wasi for sockets) would create a nested runtime.
+        // Using std::thread::scope allows the RPC call to run in a fresh thread
+        // without the parent's tokio context.
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                let core = shared_rpc
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("VFS core lock poisoned: {}", e))?;
+                let rpc_store_arc = core.rpc_store.clone();
+                let mut rpc_store = rpc_store_arc
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))?;
 
+                core.rpc_instance
+                    .wasi_filesystem_types()
+                    .descriptor()
+                    .call_write(&mut *rpc_store, descriptor, &bytes_clone, current_offset)
+            })
+            .join()
+        });
+
+        // Process the nested Result types:
+        // Result<Result<Result<u64, ErrorCode>, anyhow::Error>, JoinError>
         match result {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(err)) => Err(convert_stream_error(err)),
-            Err(e) => Err(StreamError::LastOperationFailed(e)),
+            Ok(Ok(Ok(written))) => {
+                self.offset.set(current_offset + written);
+                Ok(())
+            }
+            Ok(Ok(Err(err))) => Err(convert_fs_error_to_stream(err)),
+            Ok(Err(e)) => Err(StreamError::LastOperationFailed(e)),
+            Err(_) => Err(StreamError::LastOperationFailed(anyhow::anyhow!(
+                "RPC thread panicked"
+            ))),
         }
     }
 
     fn flush(&mut self) -> StreamResult<()> {
-        // Lock VFS core and call VFS stream flush
-        let core = self.lock_vfs_core()?;
-        let mut rpc_store =
-            lock_rpc_store(&core.rpc_store).map_err(StreamError::LastOperationFailed)?;
-
-        // Call VFS OutputStream flush method
-        let result = core
-            .rpc_instance
-            .wasi_io_streams()
-            .output_stream()
-            .call_flush(&mut *rpc_store, self.vfs_stream);
-
-        match result {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(err)) => Err(convert_stream_error(err)),
-            Err(e) => Err(StreamError::LastOperationFailed(e)),
-        }
+        // For filesystem writes via Descriptor::write, data is immediately written
+        // No separate flush needed
+        Ok(())
     }
 
     fn check_write(&mut self) -> StreamResult<usize> {
-        // Lock VFS core and call VFS stream check_write
-        let core = self.lock_vfs_core()?;
-        let mut rpc_store =
-            lock_rpc_store(&core.rpc_store).map_err(StreamError::LastOperationFailed)?;
-
-        // Call VFS OutputStream check_write method
-        let result = core
-            .rpc_instance
-            .wasi_io_streams()
-            .output_stream()
-            .call_check_write(&mut *rpc_store, self.vfs_stream);
-
-        match result {
-            Ok(Ok(size)) => {
-                let size_usize = size.try_into().map_err(|_| {
-                    StreamError::LastOperationFailed(anyhow::anyhow!(
-                        "Size {} exceeds usize::MAX",
-                        size
-                    ))
-                })?;
-                Ok(size_usize)
-            }
-            Ok(Err(err)) => Err(convert_stream_error(err)),
-            Err(e) => Err(StreamError::LastOperationFailed(e)),
-        }
+        // Always ready to accept writes up to 64KB
+        Ok(65536)
     }
 }
 
@@ -408,18 +388,12 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
         &mut self,
         rep: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), anyhow::Error> {
-        // Remove from mapping (VFS descriptor will be cleaned up by VFS store)
-        {
-            let mut core = self.lock_vfs_core()?;
-            core.descriptor_map.remove(&rep.rep());
-        }
-
-        // Remove from host table
-        self.table.delete(rep)?;
+        // Delete from ResourceTable using wrapper type
+        let wrapper_resource: Resource<RpcDescriptorWrapper> = Resource::new_own(rep.rep());
+        self.table.delete(wrapper_resource)?;
         Ok(())
     }
 
-    // Stubs for remaining methods - will implement next
     fn read_via_stream(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
@@ -433,36 +407,17 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
             .get_vfs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Lock shared VFS core and call RPC adapter's read_via_stream
-        let result = {
-            let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-            let rpc_store_arc = core.rpc_store.clone();
-            let mut rpc_store = lock_rpc_store(&rpc_store_arc).map_err(TrappableError::trap)?;
-            core.rpc_instance
-                .wasi_filesystem_types()
-                .descriptor()
-                .call_read_via_stream(&mut *rpc_store, vfs_desc, offset)
-                .map_err(TrappableError::trap)?
-        };
+        // Create wrapper directly with descriptor + offset
+        // (bypasses rpc-adapter's wasi:io/streams to avoid nested runtime issues)
+        let wrapper = VfsInputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_desc, offset);
 
-        match result {
-            Ok(vfs_stream) => {
-                // Create wrapper for the VFS stream
-                let wrapper = VfsInputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_stream);
+        // Add to resource table
+        let resource = self
+            .table
+            .push(Box::new(wrapper) as Box<dyn HostInputStream>)
+            .map_err(TrappableError::trap)?;
 
-                // Add to resource table
-                let resource = self
-                    .table
-                    .push(Box::new(wrapper) as Box<dyn HostInputStream>)
-                    .map_err(TrappableError::trap)?;
-
-                Ok(resource)
-            }
-            Err(vfs_error) => {
-                let host_error = super::convert_vfs_error(vfs_error);
-                Err(convert_sync_to_nonsync_error(host_error))
-            }
-        }
+        Ok(resource)
     }
 
     fn write_via_stream(
@@ -478,36 +433,17 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
             .get_vfs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Lock shared VFS core and call RPC adapter's write_via_stream
-        let result = {
-            let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-            let rpc_store_arc = core.rpc_store.clone();
-            let mut rpc_store = lock_rpc_store(&rpc_store_arc).map_err(TrappableError::trap)?;
-            core.rpc_instance
-                .wasi_filesystem_types()
-                .descriptor()
-                .call_write_via_stream(&mut *rpc_store, vfs_desc, offset)
-                .map_err(TrappableError::trap)?
-        };
+        // Create wrapper directly with descriptor + offset
+        // (bypasses rpc-adapter's wasi:io/streams to avoid nested runtime issues)
+        let wrapper = VfsOutputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_desc, offset);
 
-        match result {
-            Ok(vfs_stream) => {
-                // Create wrapper for the VFS stream
-                let wrapper = VfsOutputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_stream);
+        // Add to resource table
+        let resource = self
+            .table
+            .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+            .map_err(TrappableError::trap)?;
 
-                // Add to resource table
-                let resource = self
-                    .table
-                    .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
-                    .map_err(TrappableError::trap)?;
-
-                Ok(resource)
-            }
-            Err(vfs_error) => {
-                let host_error = super::convert_vfs_error(vfs_error);
-                Err(convert_sync_to_nonsync_error(host_error))
-            }
-        }
+        Ok(resource)
     }
 
     fn append_via_stream(
@@ -522,36 +458,38 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
             .get_vfs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Lock shared VFS core and call RPC adapter's append_via_stream
-        let result = {
+        // Get file size to determine append offset
+        let file_size = {
             let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
             let rpc_store_arc = core.rpc_store.clone();
             let mut rpc_store = lock_rpc_store(&rpc_store_arc).map_err(TrappableError::trap)?;
-            core.rpc_instance
+            let result = core
+                .rpc_instance
                 .wasi_filesystem_types()
                 .descriptor()
-                .call_append_via_stream(&mut *rpc_store, vfs_desc)
-                .map_err(TrappableError::trap)?
+                .call_stat(&mut *rpc_store, vfs_desc)
+                .map_err(TrappableError::trap)?;
+            match result {
+                Ok(stat) => stat.size,
+                Err(vfs_error) => {
+                    let host_error = super::convert_vfs_error(vfs_error);
+                    return Err(convert_sync_to_nonsync_error(host_error));
+                }
+            }
         };
 
-        match result {
-            Ok(vfs_stream) => {
-                // Create wrapper for the VFS stream
-                let wrapper = VfsOutputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_stream);
+        // Create wrapper directly with descriptor + file size as offset
+        // (bypasses rpc-adapter's wasi:io/streams to avoid nested runtime issues)
+        let wrapper =
+            VfsOutputStreamWrapper::new(Arc::clone(&self.shared_rpc), vfs_desc, file_size);
 
-                // Add to resource table
-                let resource = self
-                    .table
-                    .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
-                    .map_err(TrappableError::trap)?;
+        // Add to resource table
+        let resource = self
+            .table
+            .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+            .map_err(TrappableError::trap)?;
 
-                Ok(resource)
-            }
-            Err(vfs_error) => {
-                let host_error = super::convert_vfs_error(vfs_error);
-                Err(convert_sync_to_nonsync_error(host_error))
-            }
-        }
+        Ok(resource)
     }
 
     fn advise(
@@ -778,32 +716,30 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
 
         match result {
             Ok(vfs_stream) => {
-                // Create host directory entry stream resource and map it
-                // NOTE: Resource leak is not a concern here because transmute and insert
-                // operations below cannot fail/panic
-                let temp_resource = self.table.push(())?;
-                // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
-                // Compile-time checks ensure size and alignment match
+                // Push RpcDirectoryEntryStreamWrapper to ResourceTable (proper typed storage)
+                let wrapper = RpcDirectoryEntryStreamWrapper(vfs_stream);
+                let wrapper_resource: Resource<RpcDirectoryEntryStreamWrapper> =
+                    self.table.push(wrapper)?;
+
+                // Transmute Resource<RpcDirectoryEntryStreamWrapper> to Resource<DirectoryEntryStream>
+                // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
                 const _: () = {
                     use std::mem::{align_of, size_of};
                     assert!(
-                        size_of::<Resource<()>>()
+                        size_of::<Resource<RpcDirectoryEntryStreamWrapper>>()
                             == size_of::<Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>>()
                     );
                     assert!(
-                        align_of::<Resource<()>>()
+                        align_of::<Resource<RpcDirectoryEntryStreamWrapper>>()
                             == align_of::<Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>>()
                     );
                 };
                 let host_stream = unsafe {
                     std::mem::transmute::<
-                        Resource<()>,
+                        Resource<RpcDirectoryEntryStreamWrapper>,
                         Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
-                    >(temp_resource)
+                    >(wrapper_resource)
                 };
-                // Re-lock core to insert into map
-                let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-                core.dir_stream_map.insert(host_stream.rep(), vfs_stream);
                 Ok(host_stream)
             }
             Err(vfs_error) => {
@@ -1005,22 +941,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
 
         match result {
             Ok(vfs_new_desc) => {
-                // Create host descriptor and map it
-                // NOTE: Resource leak is not a concern here because transmute and insert
-                // operations below cannot fail/panic
-                let temp_resource = self.table.push(())?;
-                // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
-                // Compile-time checks ensure size and alignment match
+                // Push RpcDescriptorWrapper to ResourceTable (proper typed storage)
+                let wrapper = RpcDescriptorWrapper(vfs_new_desc);
+                let wrapper_resource: Resource<RpcDescriptorWrapper> = self.table.push(wrapper)?;
+
+                // Transmute Resource<RpcDescriptorWrapper> to Resource<Descriptor>
+                // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
                 const _: () = {
                     use std::mem::{align_of, size_of};
                     assert!(
-                        size_of::<Resource<()>>()
+                        size_of::<Resource<RpcDescriptorWrapper>>()
                             == size_of::<
                                 Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                             >()
                     );
                     assert!(
-                        align_of::<Resource<()>>()
+                        align_of::<Resource<RpcDescriptorWrapper>>()
                             == align_of::<
                                 Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                             >()
@@ -1028,14 +964,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
                 };
                 let host_descriptor = unsafe {
                     std::mem::transmute::<
-                        Resource<()>,
+                        Resource<RpcDescriptorWrapper>,
                         Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                    >(temp_resource)
+                    >(wrapper_resource)
                 };
-                // Re-lock core to insert into map
-                let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-                core.descriptor_map
-                    .insert(host_descriptor.rep(), vfs_new_desc);
                 Ok(host_descriptor)
             }
             Err(vfs_error) => {
@@ -1325,22 +1257,19 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream
         Option<wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        // Lock shared VFS core
+        // Get VFS stream from ResourceTable using wrapper type
+        let rep = self_.rep();
+        let wrapper_resource: Resource<RpcDirectoryEntryStreamWrapper> = Resource::new_borrow(rep);
+        let wrapper = self.table.get(&wrapper_resource).map_err(|e| {
+            TrappableError::trap(anyhow::anyhow!(
+                "Failed to get directory entry stream from table: {}",
+                e
+            ))
+        })?;
+        let vfs_stream = wrapper.0;
+
+        // Lock shared VFS core and call RPC adapter's read_directory_entry
         let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        // Get VFS stream from mapping
-        let vfs_stream = core
-            .dir_stream_map
-            .get(&self_.rep())
-            .copied()
-            .ok_or_else(|| {
-                TrappableError::trap(anyhow::anyhow!(
-                    "Invalid stream: {} not found in dir_stream_map",
-                    self_.rep()
-                ))
-            })?;
-
-        // Call RPC adapter's read_directory_entry
 
         let result = core
             .rpc_instance
@@ -1374,14 +1303,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream
         &mut self,
         rep: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
     ) -> Result<(), anyhow::Error> {
-        // Remove from mapping (VFS stream will be cleaned up by VFS store)
-        {
-            let mut core = self.lock_vfs_core()?;
-            core.dir_stream_map.remove(&rep.rep());
-        }
-
-        // Remove from host table
-        self.table.delete(rep)?;
+        // Delete from ResourceTable using wrapper type
+        let wrapper_resource: Resource<RpcDirectoryEntryStreamWrapper> =
+            Resource::new_own(rep.rep());
+        self.table.delete(wrapper_resource)?;
         Ok(())
     }
 }

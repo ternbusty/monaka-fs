@@ -2,6 +2,10 @@
 //
 // This is a component that exports WASI filesystem interfaces
 // and delegates to vfs-rpc-server via TCP RPC calls.
+//
+// Design: Uses persistent TCP connection with blocking_* methods only.
+// IMPORTANT: Never use subscribe() to avoid creating child Pollable resources,
+// which would cause "resource has children" errors when creating Descriptor resources.
 
 #![no_main]
 #![allow(warnings)]
@@ -26,24 +30,38 @@ use exports::wasi::filesystem::types::{
     DirectoryEntryStream, ErrorCode, Filesize, NewTimestamp, OpenFlags, PathFlags,
 };
 
-use wasi::io::poll::poll;
 use wasi::io::streams::{InputStream, OutputStream};
 use wasi::sockets::instance_network::instance_network;
 use wasi::sockets::network::{IpAddressFamily, IpSocketAddress, Ipv4SocketAddress};
+use wasi::sockets::tcp::TcpSocket;
 use wasi::sockets::tcp_create_socket::create_tcp_socket;
 
-// RPC connection using TCP sockets
-struct RpcConnection {
+// Persistent RPC connection - holds socket AND streams globally.
+// The socket must be kept alive because dropping it while streams exist
+// causes "resource has children" error (streams are tracked as children of socket).
+
+static CONN_INIT: Once = Once::new();
+static mut RPC_CONNECTION: Option<PersistentConnection> = None;
+
+struct PersistentConnection {
+    // Keep socket alive to prevent "resource has children" error
+    #[allow(dead_code)]
+    socket: TcpSocket,
     input_stream: InputStream,
     output_stream: OutputStream,
     session_id: u64,
 }
 
-impl RpcConnection {
+impl PersistentConnection {
     fn connect() -> Result<Self, ErrorCode> {
+        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: starting");
+
         // Create TCP socket
         let network = instance_network();
-        let socket = create_tcp_socket(IpAddressFamily::Ipv4).map_err(|_| ErrorCode::Io)?;
+        let socket = create_tcp_socket(IpAddressFamily::Ipv4).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] Failed to create socket: {:?}", e);
+            ErrorCode::Io
+        })?;
 
         // Connect to localhost:9000
         let addr = IpSocketAddress::Ipv4(Ipv4SocketAddress {
@@ -51,110 +69,240 @@ impl RpcConnection {
             address: (127, 0, 0, 1),
         });
 
-        socket
-            .start_connect(&network, addr)
-            .map_err(|_| ErrorCode::Io)?;
+        socket.start_connect(&network, addr).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] Failed to start connect: {:?}", e);
+            ErrorCode::Io
+        })?;
 
-        // Wait for connection to complete
-        let (input_stream, output_stream) = loop {
+        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: waiting for connection");
+
+        // Wait for connection to complete (busy-wait, NO subscribe!)
+        let (mut input_stream, mut output_stream) = loop {
             match socket.finish_connect() {
                 Ok(streams) => break streams,
-                Err(_) => {
-                    let pollable = socket.subscribe();
-                    poll(&[&pollable]);
+                Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
+                    // Busy-wait: just continue trying (no subscribe to avoid child resources)
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("[RPC-ADAPTER] Failed to finish connect: {:?}", e);
+                    return Err(ErrorCode::Io);
                 }
             }
         };
+        // IMPORTANT: Keep socket alive! Dropping it causes "resource has children" error
+        // because streams are tracked as children of the socket in wasmtime's resource table.
 
-        // Do handshake
-        let mut conn = RpcConnection {
-            input_stream,
-            output_stream,
-            session_id: 0,
-        };
+        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: connected, sending handshake");
 
-        conn.send_request(&Request::Connect {
-            version: PROTOCOL_VERSION,
-        })?;
-        match conn.receive_response()? {
-            Response::Connected { session_id, .. } => {
-                conn.session_id = session_id;
-                Ok(conn)
+        // Do handshake (using blocking_* methods only, no subscribe)
+        Self::send_raw(
+            &mut output_stream,
+            &Request::Connect {
+                version: PROTOCOL_VERSION,
+            },
+        )?;
+
+        eprintln!(
+            "[RPC-ADAPTER] PersistentConnection::connect: handshake sent, waiting for response"
+        );
+
+        match Self::receive_raw(&mut input_stream) {
+            Ok(Response::Connected { session_id, .. }) => {
+                eprintln!(
+                    "[RPC-ADAPTER] PersistentConnection::connect: connected, session_id={}",
+                    session_id
+                );
+                Ok(Self {
+                    socket, // Keep socket alive to prevent "resource has children" error
+                    input_stream,
+                    output_stream,
+                    session_id,
+                })
             }
-            _ => Err(ErrorCode::Io),
+            Ok(other) => {
+                eprintln!(
+                    "[RPC-ADAPTER] PersistentConnection::connect: unexpected response: {:?}",
+                    other
+                );
+                Err(ErrorCode::Io)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[RPC-ADAPTER] PersistentConnection::connect: handshake failed: {:?}",
+                    e
+                );
+                Err(e)
+            }
         }
     }
 
-    fn send_request(&mut self, request: &Request) -> Result<(), ErrorCode> {
-        let data = serde_json::to_vec(request).map_err(|_| ErrorCode::Io)?;
+    fn send_raw(output_stream: &mut OutputStream, request: &Request) -> Result<(), ErrorCode> {
+        let data = serde_json::to_vec(request).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] send_raw: JSON serialize error: {:?}", e);
+            ErrorCode::Io
+        })?;
         let len = (data.len() as u32).to_be_bytes();
 
-        // Write length prefix
-        loop {
-            match self.output_stream.blocking_write_and_flush(&len) {
-                Ok(()) => break,
-                Err(_) => {
-                    let pollable = self.output_stream.subscribe();
-                    poll(&[&pollable]);
-                }
-            }
-        }
+        eprintln!(
+            "[RPC-ADAPTER] send_raw: sending {} bytes ({})",
+            data.len(),
+            String::from_utf8_lossy(&data[..std::cmp::min(100, data.len())])
+        );
 
-        // Write JSON payload
-        loop {
-            match self.output_stream.blocking_write_and_flush(&data) {
-                Ok(()) => break,
-                Err(_) => {
-                    let pollable = self.output_stream.subscribe();
-                    poll(&[&pollable]);
-                }
-            }
-        }
+        // Write length prefix (blocking, NO subscribe)
+        output_stream.blocking_write_and_flush(&len).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] send_raw: write length prefix error: {:?}", e);
+            ErrorCode::Io
+        })?;
 
+        // Write JSON payload (blocking, NO subscribe)
+        output_stream.blocking_write_and_flush(&data).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] send_raw: write body error: {:?}", e);
+            ErrorCode::Io
+        })?;
+
+        eprintln!("[RPC-ADAPTER] send_raw: sent successfully");
         Ok(())
     }
 
-    fn receive_response(&mut self) -> Result<Response, ErrorCode> {
-        // Read 4-byte length prefix with retry on would-block and partial reads
+    fn receive_raw(input_stream: &mut InputStream) -> Result<Response, ErrorCode> {
+        eprintln!("[RPC-ADAPTER] receive_raw: reading length prefix...");
+        // Read 4-byte length prefix (blocking, NO subscribe)
+        // Retry empty reads - blocking_read can return 0 if data hasn't arrived yet
         let mut len_buf = Vec::new();
+        let mut empty_reads = 0;
+        const MAX_EMPTY_READS: u32 = 1000; // Busy-wait limit
+
         while len_buf.len() < 4 {
-            match self.input_stream.blocking_read(4 - len_buf.len() as u64) {
-                Ok(bytes) if !bytes.is_empty() => {
-                    len_buf.extend_from_slice(&bytes);
+            let remaining = 4 - len_buf.len() as u64;
+            let bytes = match input_stream.blocking_read(remaining) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[RPC-ADAPTER] receive_raw: blocking_read error: {:?}", e);
+                    return Err(ErrorCode::Io);
                 }
-                _ => {
-                    let pollable = self.input_stream.subscribe();
-                    poll(&[&pollable]);
+            };
+            if bytes.is_empty() {
+                empty_reads += 1;
+                if empty_reads > MAX_EMPTY_READS {
+                    eprintln!(
+                        "[RPC-ADAPTER] receive_raw: too many empty reads ({}), EOF",
+                        empty_reads
+                    );
+                    return Err(ErrorCode::Io);
                 }
+                // Busy-wait: just continue trying (no subscribe to avoid child resources)
+                continue;
             }
+            empty_reads = 0;
+            len_buf.extend_from_slice(&bytes);
         }
 
         let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
+        eprintln!("[RPC-ADAPTER] receive_raw: message length is {} bytes", len);
 
-        // Read message body with retry on would-block and partial reads
+        // Read message body (blocking, NO subscribe)
         let mut data = Vec::new();
+        empty_reads = 0;
+
         while (data.len() as u64) < len {
-            match self.input_stream.blocking_read(len - data.len() as u64) {
-                Ok(bytes) if !bytes.is_empty() => {
-                    data.extend_from_slice(&bytes);
+            let remaining = len - data.len() as u64;
+            let bytes = match input_stream.blocking_read(remaining) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "[RPC-ADAPTER] receive_raw: blocking_read body error: {:?}",
+                        e
+                    );
+                    return Err(ErrorCode::Io);
                 }
-                _ => {
-                    let pollable = self.input_stream.subscribe();
-                    poll(&[&pollable]);
+            };
+            if bytes.is_empty() {
+                empty_reads += 1;
+                if empty_reads > MAX_EMPTY_READS {
+                    eprintln!(
+                        "[RPC-ADAPTER] receive_raw: too many empty reads in body ({}), EOF",
+                        empty_reads
+                    );
+                    return Err(ErrorCode::Io);
                 }
+                // Busy-wait: just continue trying
+                continue;
             }
+            empty_reads = 0;
+            data.extend_from_slice(&bytes);
         }
 
-        serde_json::from_slice(&data).map_err(|_| ErrorCode::Io)
+        eprintln!(
+            "[RPC-ADAPTER] receive_raw: parsing {} bytes of JSON",
+            data.len()
+        );
+        serde_json::from_slice(&data).map_err(|e| {
+            eprintln!("[RPC-ADAPTER] receive_raw: JSON parse error: {:?}", e);
+            ErrorCode::Io
+        })
+    }
+
+    fn send(&mut self, request: &Request) -> Result<(), ErrorCode> {
+        eprintln!("[RPC-ADAPTER] send: calling send_raw");
+        Self::send_raw(&mut self.output_stream, request)
+    }
+
+    fn receive(&mut self) -> Result<Response, ErrorCode> {
+        eprintln!("[RPC-ADAPTER] receive: calling receive_raw");
+        Self::receive_raw(&mut self.input_stream)
+    }
+
+    fn call(&mut self, request: &Request) -> Result<Response, ErrorCode> {
+        eprintln!("[RPC-ADAPTER] call: sending request");
+        self.send(request)?;
+        eprintln!("[RPC-ADAPTER] call: request sent, receiving response");
+        self.receive()
     }
 }
 
-// Main RPC adapter state
+// Get or initialize the persistent connection
+fn with_connection<F, R>(f: F) -> Result<R, ErrorCode>
+where
+    F: FnOnce(&mut PersistentConnection) -> Result<R, ErrorCode>,
+{
+    unsafe {
+        CONN_INIT.call_once(|| {
+            match PersistentConnection::connect() {
+                Ok(conn) => {
+                    RPC_CONNECTION = Some(conn);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[RPC-ADAPTER] Failed to establish persistent connection: {:?}",
+                        e
+                    );
+                    // Connection will be None, subsequent calls will fail
+                }
+            }
+        });
+
+        match RPC_CONNECTION.as_mut() {
+            Some(conn) => f(conn),
+            None => {
+                eprintln!("[RPC-ADAPTER] No connection available");
+                Err(ErrorCode::Io)
+            }
+        }
+    }
+}
+
+// Helper to make RPC call using persistent connection
+fn rpc_call(request: &Request) -> Result<Response, ErrorCode> {
+    with_connection(|conn| conn.call(request))
+}
+
+// Main RPC adapter state - only stores descriptor mappings, no connection
 static INIT: Once = Once::new();
 static mut RPC_STATE: Option<RpcState> = None;
 
 struct RpcState {
-    connection: RefCell<RpcConnection>,
     // Map descriptor handle to server FD
     descriptor_to_fd: RefCell<BTreeMap<u32, u32>>,
     // Map server FD to descriptor handle
@@ -163,11 +311,8 @@ struct RpcState {
 }
 
 impl RpcState {
-    fn new() -> Result<Self, ErrorCode> {
-        let connection = RpcConnection::connect()?;
-
+    fn new() -> Self {
         let state = Self {
-            connection: RefCell::new(connection),
             descriptor_to_fd: RefCell::new(BTreeMap::new()),
             fd_to_descriptor: RefCell::new(BTreeMap::new()),
             next_descriptor: RefCell::new(1),
@@ -177,7 +322,7 @@ impl RpcState {
         state.descriptor_to_fd.borrow_mut().insert(0, 0);
         state.fd_to_descriptor.borrow_mut().insert(0, 0);
 
-        Ok(state)
+        state
     }
 
     fn allocate_descriptor(&self, server_fd: u32) -> u32 {
@@ -204,17 +349,15 @@ impl RpcState {
 }
 
 // Helper to get or initialize RPC state
-fn with_rpc_state<F, R>(f: F) -> Result<R, ErrorCode>
+fn with_rpc_state<F, R>(f: F) -> R
 where
     F: FnOnce(&RpcState) -> R,
 {
     unsafe {
         INIT.call_once(|| {
-            if let Ok(state) = RpcState::new() {
-                RPC_STATE = Some(state);
-            }
+            RPC_STATE = Some(RpcState::new());
         });
-        RPC_STATE.as_ref().map(f).ok_or(ErrorCode::Io)
+        f(RPC_STATE.as_ref().unwrap())
     }
 }
 
@@ -269,29 +412,20 @@ impl exports::wasi::filesystem::preopens::Guest for RpcAdapter {
     fn get_directories() -> Vec<(Descriptor, String)> {
         eprintln!("[RPC-ADAPTER] get_directories() called");
 
-        // Initialize state and verify connection
-        // This ensures RPC connection is established before returning descriptor
-        match with_rpc_state(|state| {
-            // Verify that descriptor 0 is mapped
-            state.descriptor_to_fd.borrow().get(&0).copied()
-        }) {
-            Ok(Some(fd)) => {
+        // Initialize state (no connection stored, just descriptor mappings)
+        let fd = with_rpc_state(|state| state.descriptor_to_fd.borrow().get(&0).copied());
+
+        match fd {
+            Some(fd) => {
                 eprintln!("[RPC-ADAPTER] State verified: descriptor 0 -> fd {}", fd);
-                // Connection established and descriptor 0 is mapped
+                // Descriptor 0 is mapped to root directory
                 let desc = Descriptor::new(DescriptorImpl { handle: 0 });
                 eprintln!("[RPC-ADAPTER] Returning descriptor 0 for path /");
                 vec![(desc, "/".to_string())]
             }
-            Ok(None) => {
+            None => {
                 eprintln!("[RPC-ADAPTER] ERROR: descriptor 0 not mapped");
                 // State exists but descriptor 0 not mapped - this shouldn't happen
-                // but return empty to signal error
-                vec![]
-            }
-            Err(e) => {
-                eprintln!("[RPC-ADAPTER] ERROR: Failed to initialize state: {:?}", e);
-                // Failed to initialize RPC state (connection failed)
-                // Return empty vector to signal no preopens available
                 vec![]
             }
         }
@@ -315,17 +449,29 @@ struct DescriptorImpl {
 impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn read_via_stream(
         &self,
-        _offset: Filesize,
+        offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::InputStream, ErrorCode> {
-        // Not yet implemented - would create a stream wrapper
+        eprintln!(
+            "[RPC-ADAPTER] read_via_stream called for handle={}, offset={}",
+            self.handle, offset
+        );
+        // Stream operations cause "Cannot start runtime from within runtime" errors
+        // because they make WASI socket calls while already in a WASI call context.
+        // Return Unsupported to force callers to use Descriptor::read instead.
         Err(ErrorCode::Unsupported)
     }
 
     fn write_via_stream(
         &self,
-        _offset: Filesize,
+        offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        // Not yet implemented - would create a stream wrapper
+        eprintln!(
+            "[RPC-ADAPTER] write_via_stream called for handle={}, offset={}",
+            self.handle, offset
+        );
+        // Stream operations cause "Cannot start runtime from within runtime" errors
+        // because they make WASI socket calls while already in a WASI call context.
+        // Return Unsupported to force callers to use Descriptor::write instead.
         Err(ErrorCode::Unsupported)
     }
 
@@ -354,48 +500,38 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn get_type(&self) -> Result<DescriptorType, ErrorCode> {
-        with_rpc_state(|state| {
-            if self.handle == 0 {
-                return Ok(DescriptorType::Directory);
-            }
+        if self.handle == 0 {
+            return Ok(DescriptorType::Directory);
+        }
 
-            let server_fd = state.get_server_fd(self.handle)?;
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
-            let request = Request::Fstat { fd: server_fd };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Metadata { metadata } => {
-                    if metadata.is_dir {
-                        Ok(DescriptorType::Directory)
-                    } else {
-                        Ok(DescriptorType::RegularFile)
-                    }
+        let request = Request::Fstat { fd: server_fd };
+        match rpc_call(&request)? {
+            Response::Metadata { metadata } => {
+                if metadata.is_dir {
+                    Ok(DescriptorType::Directory)
+                } else {
+                    Ok(DescriptorType::RegularFile)
                 }
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
             }
-        })?
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn set_size(&self, size: Filesize) -> Result<(), ErrorCode> {
-        with_rpc_state(|state| {
-            let server_fd = state.get_server_fd(self.handle)?;
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
-            let request = Request::Ftruncate {
-                fd: server_fd,
-                size,
-            };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Ok => Ok(()),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Ftruncate {
+            fd: server_fd,
+            size,
+        };
+        match rpc_call(&request)? {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn set_times(
@@ -407,32 +543,32 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn read(&self, length: Filesize, offset: Filesize) -> Result<(Vec<u8>, bool), ErrorCode> {
-        with_rpc_state(|state| {
-            let server_fd = state.get_server_fd(self.handle)?;
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
+        // Use persistent connection to perform seek + read atomically
+        with_connection(|conn| {
             // Seek to offset
-            let request = Request::Seek {
+            let seek_request = Request::Seek {
                 fd: server_fd,
                 offset: offset as i64,
                 whence: 0,
             };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
+            conn.send(&seek_request)?;
 
-            match conn.receive_response()? {
+            match conn.receive()? {
                 Response::Position { .. } => {}
                 Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                 _ => return Err(ErrorCode::Io),
             }
 
             // Read data
-            let request = Request::Read {
+            let read_request = Request::Read {
                 fd: server_fd,
                 length: length as usize,
             };
-            conn.send_request(&request)?;
+            conn.send(&read_request)?;
 
-            match conn.receive_response()? {
+            match conn.receive()? {
                 Response::Data { bytes } => {
                     let end_of_stream = bytes.len() < length as usize;
                     Ok((bytes, end_of_stream))
@@ -440,80 +576,80 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                 _ => Err(ErrorCode::Io),
             }
-        })?
+        })
     }
 
     fn write(&self, buffer: Vec<u8>, offset: Filesize) -> Result<Filesize, ErrorCode> {
-        with_rpc_state(|state| {
-            let server_fd = state.get_server_fd(self.handle)?;
+        eprintln!(
+            "[RPC-ADAPTER] write called for handle={}, buffer.len()={}, offset={}",
+            self.handle,
+            buffer.len(),
+            offset
+        );
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
+        // Use persistent connection to perform seek + write atomically
+        with_connection(|conn| {
             // Seek to offset
-            let request = Request::Seek {
+            let seek_request = Request::Seek {
                 fd: server_fd,
                 offset: offset as i64,
                 whence: 0,
             };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
+            conn.send(&seek_request)?;
 
-            match conn.receive_response()? {
+            match conn.receive()? {
                 Response::Position { .. } => {}
                 Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                 _ => return Err(ErrorCode::Io),
             }
 
             // Write data
-            let len = buffer.len();
-            let request = Request::Write {
+            let write_request = Request::Write {
                 fd: server_fd,
                 data: buffer,
             };
-            conn.send_request(&request)?;
+            conn.send(&write_request)?;
 
-            match conn.receive_response()? {
+            match conn.receive()? {
                 Response::Written { count } => Ok(count as Filesize),
                 Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                 _ => Err(ErrorCode::Io),
             }
-        })?
+        })
     }
 
     fn read_directory(
         &self,
     ) -> Result<exports::wasi::filesystem::types::DirectoryEntryStream, ErrorCode> {
-        with_rpc_state(|state| {
-            let server_fd = state.get_server_fd(self.handle)?;
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
-            let request = Request::ReaddirFd { fd: server_fd };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::DirEntries { entries } => {
-                    // Convert RPC entries to WASI entries
-                    let wasi_entries: Vec<DirectoryEntry> = entries
-                        .into_iter()
-                        .map(|e| DirectoryEntry {
-                            type_: if e.is_dir {
-                                DescriptorType::Directory
-                            } else {
-                                DescriptorType::RegularFile
-                            },
-                            name: e.name,
-                        })
-                        .collect();
-
-                    Ok(exports::wasi::filesystem::types::DirectoryEntryStream::new(
-                        DirectoryEntryStreamImpl {
-                            entries: RefCell::new(wasi_entries),
-                            index: Cell::new(0),
+        let request = Request::ReaddirFd { fd: server_fd };
+        match rpc_call(&request)? {
+            Response::DirEntries { entries } => {
+                // Convert RPC entries to WASI entries
+                let wasi_entries: Vec<DirectoryEntry> = entries
+                    .into_iter()
+                    .map(|e| DirectoryEntry {
+                        type_: if e.is_dir {
+                            DescriptorType::Directory
+                        } else {
+                            DescriptorType::RegularFile
                         },
-                    ))
-                }
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
+                        name: e.name,
+                    })
+                    .collect();
+
+                Ok(exports::wasi::filesystem::types::DirectoryEntryStream::new(
+                    DirectoryEntryStreamImpl {
+                        entries: RefCell::new(wasi_entries),
+                        index: Cell::new(0),
+                    },
+                ))
             }
-        })?
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn sync(&self) -> Result<(), ErrorCode> {
@@ -521,95 +657,80 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn create_directory_at(&self, path: String) -> Result<(), ErrorCode> {
-        with_rpc_state(|state| {
-            // For root directory, use direct path
-            let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
-            } else {
-                // Would need to track paths, for now just use relative
-                path
-            };
+        // For root directory, use direct path
+        let full_path = if self.handle == 0 {
+            format!("/{}", path.trim_start_matches('/'))
+        } else {
+            // Would need to track paths, for now just use relative
+            path
+        };
 
-            let request = Request::Mkdir { path: full_path };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Ok => Ok(()),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Mkdir { path: full_path };
+        match rpc_call(&request)? {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn stat(&self) -> Result<DescriptorStat, ErrorCode> {
-        with_rpc_state(|state| {
-            if self.handle == 0 {
-                // Root directory
-                return Ok(DescriptorStat {
-                    type_: DescriptorType::Directory,
-                    link_count: 1,
-                    size: 0,
-                    data_access_timestamp: None,
-                    data_modification_timestamp: None,
-                    status_change_timestamp: None,
-                });
-            }
+        if self.handle == 0 {
+            // Root directory
+            return Ok(DescriptorStat {
+                type_: DescriptorType::Directory,
+                link_count: 1,
+                size: 0,
+                data_access_timestamp: None,
+                data_modification_timestamp: None,
+                status_change_timestamp: None,
+            });
+        }
 
-            let server_fd = state.get_server_fd(self.handle)?;
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
-            let request = Request::Fstat { fd: server_fd };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Metadata { metadata } => Ok(DescriptorStat {
-                    type_: if metadata.is_dir {
-                        DescriptorType::Directory
-                    } else {
-                        DescriptorType::RegularFile
-                    },
-                    link_count: 1,
-                    size: metadata.size as Filesize,
-                    data_access_timestamp: None,
-                    data_modification_timestamp: None,
-                    status_change_timestamp: None,
-                }),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Fstat { fd: server_fd };
+        match rpc_call(&request)? {
+            Response::Metadata { metadata } => Ok(DescriptorStat {
+                type_: if metadata.is_dir {
+                    DescriptorType::Directory
+                } else {
+                    DescriptorType::RegularFile
+                },
+                link_count: 1,
+                size: metadata.size as Filesize,
+                data_access_timestamp: None,
+                data_modification_timestamp: None,
+                status_change_timestamp: None,
+            }),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn stat_at(&self, _path_flags: PathFlags, path: String) -> Result<DescriptorStat, ErrorCode> {
-        with_rpc_state(|state| {
-            let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
-            } else {
-                path
-            };
+        let full_path = if self.handle == 0 {
+            format!("/{}", path.trim_start_matches('/'))
+        } else {
+            path
+        };
 
-            let request = Request::Stat { path: full_path };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Metadata { metadata } => Ok(DescriptorStat {
-                    type_: if metadata.is_dir {
-                        DescriptorType::Directory
-                    } else {
-                        DescriptorType::RegularFile
-                    },
-                    link_count: 1,
-                    size: metadata.size as Filesize,
-                    data_access_timestamp: None,
-                    data_modification_timestamp: None,
-                    status_change_timestamp: None,
-                }),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Stat { path: full_path };
+        match rpc_call(&request)? {
+            Response::Metadata { metadata } => Ok(DescriptorStat {
+                type_: if metadata.is_dir {
+                    DescriptorType::Directory
+                } else {
+                    DescriptorType::RegularFile
+                },
+                link_count: 1,
+                size: metadata.size as Filesize,
+                data_access_timestamp: None,
+                data_modification_timestamp: None,
+                status_change_timestamp: None,
+            }),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn set_times_at(
@@ -644,32 +765,30 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             self.handle, path
         );
 
-        with_rpc_state(|state| {
-            let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
-            } else {
-                path
-            };
+        let full_path = if self.handle == 0 {
+            format!("/{}", path.trim_start_matches('/'))
+        } else {
+            path
+        };
 
-            eprintln!("[RPC-ADAPTER] open_at: full_path={}", full_path);
-            let fs_flags = convert_flags(open_flags, flags);
+        eprintln!("[RPC-ADAPTER] open_at: full_path={}", full_path);
+        let fs_flags = convert_flags(open_flags, flags);
 
-            let request = Request::OpenPath {
-                path: full_path,
-                flags: fs_flags,
-            };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
+        let request = Request::OpenPath {
+            path: full_path,
+            flags: fs_flags,
+        };
 
-            match conn.receive_response()? {
-                Response::Fd { fd: server_fd } => {
-                    let desc_id = state.allocate_descriptor(server_fd);
-                    Ok(Descriptor::new(DescriptorImpl { handle: desc_id }))
-                }
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        // Make the RPC call first, then allocate descriptor after connection is closed
+        let server_fd = match rpc_call(&request)? {
+            Response::Fd { fd } => fd,
+            Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
+            _ => return Err(ErrorCode::Io),
+        };
+
+        // Now allocate descriptor (RPC connection is already closed)
+        let desc_id = with_rpc_state(|state| state.allocate_descriptor(server_fd));
+        Ok(Descriptor::new(DescriptorImpl { handle: desc_id }))
     }
 
     fn readlink_at(&self, _path: String) -> Result<String, ErrorCode> {
@@ -677,23 +796,18 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn remove_directory_at(&self, path: String) -> Result<(), ErrorCode> {
-        with_rpc_state(|state| {
-            let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
-            } else {
-                path
-            };
+        let full_path = if self.handle == 0 {
+            format!("/{}", path.trim_start_matches('/'))
+        } else {
+            path
+        };
 
-            let request = Request::Rmdir { path: full_path };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Ok => Ok(()),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Rmdir { path: full_path };
+        match rpc_call(&request)? {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn rename_at(
@@ -710,23 +824,18 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn unlink_file_at(&self, path: String) -> Result<(), ErrorCode> {
-        with_rpc_state(|state| {
-            let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
-            } else {
-                path
-            };
+        let full_path = if self.handle == 0 {
+            format!("/{}", path.trim_start_matches('/'))
+        } else {
+            path
+        };
 
-            let request = Request::Unlink { path: full_path };
-            let mut conn = state.connection.borrow_mut();
-            conn.send_request(&request)?;
-
-            match conn.receive_response()? {
-                Response::Ok => Ok(()),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        })?
+        let request = Request::Unlink { path: full_path };
+        match rpc_call(&request)? {
+            Response::Ok => Ok(()),
+            Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+            _ => Err(ErrorCode::Io),
+        }
     }
 
     fn is_same_object(&self, other: DescriptorBorrow<'_>) -> bool {
@@ -753,6 +862,23 @@ struct DirectoryEntryStreamImpl {
     entries: RefCell<Vec<DirectoryEntry>>,
     index: Cell<usize>,
 }
+
+// Dummy pollable that's always ready (avoids nested runtime issue with WASI imports)
+struct AlwaysReadyPollable;
+
+impl exports::wasi::io::poll::GuestPollable for AlwaysReadyPollable {
+    fn ready(&self) -> bool {
+        true // Always ready
+    }
+
+    fn block(&self) {
+        // No-op: already ready
+    }
+}
+
+// NOTE: Stream operations (write_via_stream, read_via_stream) are handled directly
+// in vfs-rpc-host using Descriptor::write/read to avoid nested runtime issues
+// (WASI exports cannot call WASI imports from within an export call).
 
 impl exports::wasi::filesystem::types::GuestDirectoryEntryStream for DirectoryEntryStreamImpl {
     fn read_directory_entry(&self) -> Result<Option<DirectoryEntry>, ErrorCode> {

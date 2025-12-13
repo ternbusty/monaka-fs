@@ -1,9 +1,8 @@
 // WASI Filesystem Preopens Host Implementation
 //
 // Implements wasi:filesystem/preopens interface by forwarding to RPC adapter
-//
 
-use super::VfsRpcHostState;
+use super::{RpcDescriptorWrapper, VfsRpcHostState};
 use wasmtime::component::Resource;
 
 impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostState {
@@ -43,28 +42,27 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
             "[VFS-RPC-HOST] Mapping {} RPC descriptors to host descriptors",
             rpc_dirs.len()
         );
+
         // Map RPC descriptors to host descriptors
         let mut host_dirs = Vec::new();
         for (rpc_descriptor, path) in rpc_dirs {
-            // Create a host descriptor resource
-            // We push () and then unsafely cast to the right type since Resource<T> is just a u32 wrapper
-            let temp_resource = self.table.push(())?;
-            let rep_value = temp_resource.rep();
+            // Push RpcDescriptorWrapper to ResourceTable (proper typed storage)
+            let wrapper = RpcDescriptorWrapper(rpc_descriptor);
+            let wrapper_resource: Resource<RpcDescriptorWrapper> = self.table.push(wrapper)?;
 
-            // Create properly typed resource from rep
-            // Resource<T> is just a u32 wrapper, so we can reinterpret cast
-            // SAFETY: This relies on Resource<T> being a transparent wrapper around u32
+            // Transmute Resource<RpcDescriptorWrapper> to Resource<Descriptor>
+            // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
             // Compile-time checks ensure size and alignment match
             const _: () = {
                 use std::mem::{align_of, size_of};
                 assert!(
-                    size_of::<Resource<()>>()
+                    size_of::<Resource<RpcDescriptorWrapper>>()
                         == size_of::<
                             Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                         >()
                 );
                 assert!(
-                    align_of::<Resource<()>>()
+                    align_of::<Resource<RpcDescriptorWrapper>>()
                         == align_of::<
                             Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
                         >()
@@ -72,14 +70,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
             };
             let host_descriptor = unsafe {
                 std::mem::transmute::<
-                    Resource<()>,
+                    Resource<RpcDescriptorWrapper>,
                     Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                >(temp_resource)
+                >(wrapper_resource)
             };
-
-            // Re-lock core to insert into descriptor map
-            let mut core = self.lock_rpc_core()?;
-            core.descriptor_map.insert(rep_value, rpc_descriptor);
 
             host_dirs.push((host_descriptor, path));
         }

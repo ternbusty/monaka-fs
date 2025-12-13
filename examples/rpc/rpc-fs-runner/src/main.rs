@@ -66,9 +66,9 @@ fn main() -> Result<()> {
     let component =
         Component::from_binary(&engine, &component_bytes).context("Failed to compile component")?;
 
-    // Create linker and add WASI support
+    // Create linker with custom VFS filesystem
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker_sync(&mut linker)?;
+    vfs_rpc_host::add_to_linker_with_vfs(&mut linker)?;
 
     println!("Instantiating application component...");
 

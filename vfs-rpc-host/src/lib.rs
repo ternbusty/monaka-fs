@@ -43,6 +43,17 @@ pub struct SharedRpcAdapterCore {
     pub output_stream_map: HashMap<u32, crate::exports::wasi::io::streams::OutputStream>,
 }
 
+/// Wrapper for RPC Descriptor stored in ResourceTable.
+/// This allows proper type tracking in ResourceTable instead of using () with unsafe transmute.
+#[derive(Clone, Copy)]
+pub struct RpcDescriptorWrapper(pub crate::exports::wasi::filesystem::types::Descriptor);
+
+/// Wrapper for RPC DirectoryEntryStream stored in ResourceTable.
+#[derive(Clone, Copy)]
+pub struct RpcDirectoryEntryStreamWrapper(
+    pub crate::exports::wasi::filesystem::types::DirectoryEntryStream,
+);
+
 /// Host state that wraps an RpcAdapter component instance
 /// and implements WASI Host traits to forward calls to the RPC adapter component.
 /// Multiple instances can share the same RPC adapter core via Arc<Mutex<>>.
@@ -211,4 +222,95 @@ pub fn convert_vfs_error(
         RpcError::TextFileBusy => WasiError::TextFileBusy,
         RpcError::CrossDevice => WasiError::CrossDevice,
     }
+}
+
+// Helper to annotate closure type for lifetime inference (same pattern as wasmtime-wasi)
+fn type_annotate_wasi<F>(val: F) -> F
+where
+    F: Fn(&mut VfsRpcHostState) -> wasmtime_wasi::WasiImpl<&mut VfsRpcHostState>,
+{
+    val
+}
+
+fn type_annotate_identity<F>(val: F) -> F
+where
+    F: Fn(&mut VfsRpcHostState) -> &mut VfsRpcHostState,
+{
+    val
+}
+
+/// Add WASI interfaces to linker with custom VFS filesystem implementation.
+///
+/// This function registers all standard WASI interfaces but replaces the
+/// filesystem implementation with VfsRpcHostState's custom Host trait implementation.
+/// This allows std::fs to work transparently through the RPC adapter.
+pub fn add_to_linker_with_vfs(
+    linker: &mut wasmtime::component::Linker<VfsRpcHostState>,
+) -> Result<()> {
+    use wasmtime_wasi::WasiImpl;
+
+    // Closure for standard WASI implementations (via WasiImpl)
+    let wasi_closure = type_annotate_wasi(|t| WasiImpl(t));
+
+    // Closure for custom filesystem (returns VfsRpcHostState directly)
+    let fs_closure = type_annotate_identity(|t| t);
+
+    // Register standard WASI interfaces (non-filesystem)
+    wasmtime_wasi::bindings::clocks::wall_clock::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::clocks::monotonic_clock::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::io::error::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::sync::io::poll::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::sync::io::streams::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::random::random::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::random::insecure::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::random::insecure_seed::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::environment::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::stdin::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::stdout::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::stderr::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::terminal_input::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::terminal_output::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::terminal_stdin::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::terminal_stdout::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::cli::terminal_stderr::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::sync::sockets::tcp::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::sockets::tcp_create_socket::add_to_linker_get_host(
+        linker,
+        wasi_closure,
+    )?;
+    wasmtime_wasi::bindings::sync::sockets::udp::add_to_linker_get_host(linker, wasi_closure)?;
+    wasmtime_wasi::bindings::sockets::udp_create_socket::add_to_linker_get_host(
+        linker,
+        wasi_closure,
+    )?;
+    wasmtime_wasi::bindings::sockets::instance_network::add_to_linker_get_host(
+        linker,
+        wasi_closure,
+    )?;
+    wasmtime_wasi::bindings::sockets::ip_name_lookup::add_to_linker_get_host(linker, wasi_closure)?;
+
+    // Register custom VFS filesystem implementation
+    // These use VfsRpcHostState's Host trait implementations directly
+    wasmtime_wasi::bindings::sync::filesystem::types::add_to_linker_get_host(linker, fs_closure)?;
+    wasmtime_wasi::bindings::sync::filesystem::preopens::add_to_linker_get_host(
+        linker, fs_closure,
+    )?;
+
+    // cli::exit requires LinkOptions - use default
+    let exit_options = wasmtime_wasi::bindings::cli::exit::LinkOptions::default();
+    wasmtime_wasi::bindings::cli::exit::add_to_linker_get_host(
+        linker,
+        &exit_options,
+        wasi_closure,
+    )?;
+
+    // sockets::network requires LinkOptions - use default
+    let network_options = wasmtime_wasi::bindings::sockets::network::LinkOptions::default();
+    wasmtime_wasi::bindings::sockets::network::add_to_linker_get_host(
+        linker,
+        &network_options,
+        wasi_closure,
+    )?;
+
+    Ok(())
 }
