@@ -14,6 +14,7 @@ members = [
   "examples/rpc/demo-app1",
   "examples/rpc/demo-app2",
   "examples/rpc/demo-std-fs",
+  "examples/rpc/direct-rpc-demo",
   "examples/component-model/dynamic/runtime-linker",
 ]
 exclude = [

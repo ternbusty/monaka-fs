@@ -1,0 +1,12 @@
+[package]
+name = "direct-rpc-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Demo of direct RPC communication with VFS server (without rpc-fs-runner)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vfs-rpc-protocol = { path = "../../../vfs-rpc-protocol" }
+serde_json = "1.0"
