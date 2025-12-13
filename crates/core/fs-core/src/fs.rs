@@ -200,11 +200,16 @@ impl<T: TimeProvider> Fs<T> {
             Err(e) => return Err(e),
         };
 
-        // Allow opening directories, but verify O_TRUNC is not used on them
+        // Check if target is a directory
         {
             let inode = file_inode.borrow();
             if matches!(inode.content, FileContent::Dir(_)) {
-                // Directories can be opened, but not with O_TRUNC
+                let access_mode = flags & 0x3;
+                // POSIX: opening directory with write access is not allowed
+                if access_mode == O_WRONLY || access_mode == O_RDWR {
+                    return Err(FsError::IsADirectory);
+                }
+                // O_TRUNC on directory is also not allowed
                 if flags & O_TRUNC != 0 {
                     return Err(FsError::IsADirectory);
                 }
@@ -285,11 +290,16 @@ impl<T: TimeProvider> Fs<T> {
             Err(e) => return Err(e),
         };
 
-        // Allow opening directories, but verify O_TRUNC is not used on them
+        // Check if target is a directory
         {
             let inode = file_inode.borrow();
             if matches!(inode.content, FileContent::Dir(_)) {
-                // Directories can be opened, but not with O_TRUNC
+                let access_mode = flags & 0x3;
+                // POSIX: opening directory with write access is not allowed
+                if access_mode == O_WRONLY || access_mode == O_RDWR {
+                    return Err(FsError::IsADirectory);
+                }
+                // O_TRUNC on directory is also not allowed
                 if flags & O_TRUNC != 0 {
                     return Err(FsError::IsADirectory);
                 }

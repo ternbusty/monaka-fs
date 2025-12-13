@@ -27,6 +27,14 @@ members = [
   # Examples - Component Model
   "examples/component-model/runtime-linker",
 ]
+default-members = [
+  "crates/core/fs-core",
+  "crates/hosts/vfs-host",
+  "crates/hosts/vfs-rpc-host",
+  "crates/rpc/vfs-rpc-protocol",
+  "crates/runners/rpc-fs-runner",
+  "examples/component-model/runtime-linker",
+]
 exclude = [
   ".tmp",
   "deprecated",

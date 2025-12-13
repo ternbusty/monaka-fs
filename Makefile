@@ -1,7 +1,7 @@
 # halycon Makefile
 # Naming pattern: action-target-mode (e.g., build-component-model-rust-release)
 
-.PHONY: build build-release clean help
+.PHONY: build build-release build-all build-native build-wasm build-wasm-release clean help
 .PHONY: demo-component-model-dynamic demo-component-model-static
 .PHONY: build-component-model-adapter build-component-model-rust build-component-model-c build-component-model-all build-component-model-linker
 .PHONY: compose-component-model-rust compose-component-model-c
@@ -29,6 +29,42 @@ build-release:
 	@echo "Building libraries (release mode)..."
 	@cargo build -p fs-core --release
 	@echo "Release libraries built successfully"
+
+# Build all packages (native + WASM)
+build-all: build-native build-wasm
+	@echo "All packages built successfully"
+
+# Build native packages only
+build-native:
+	@echo "Building native packages..."
+	@cargo build
+	@echo "Native packages built"
+
+# Build all WASM packages
+build-wasm:
+	@echo "Building WASM packages..."
+	@cargo build --target wasm32-wasip2 \
+		-p vfs-adapter \
+		-p rpc-adapter \
+		-p vfs-rpc-server \
+		-p demo-writer \
+		-p demo-reader \
+		-p demo-std-fs \
+		-p direct-rpc-demo
+	@echo "WASM packages built"
+
+# Build all WASM packages (release)
+build-wasm-release:
+	@echo "Building WASM packages (release)..."
+	@cargo build --release --target wasm32-wasip2 \
+		-p vfs-adapter \
+		-p rpc-adapter \
+		-p vfs-rpc-server \
+		-p demo-writer \
+		-p demo-reader \
+		-p demo-std-fs \
+		-p direct-rpc-demo
+	@echo "WASM packages built (release)"
 
 # Clean build artifacts
 clean:
@@ -355,5 +391,4 @@ help:
 	@echo ""
 	@echo "Documentation:"
 	@echo "  README.md                                           - Project overview"
-	@echo "  CLAUDE.md                                           - Development guide"
 	@echo "  examples/component-model/runtime-linker/README.md - Dynamic linking"
