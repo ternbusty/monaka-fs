@@ -1,0 +1,15 @@
+[package]
+name = "rpc-adapter"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vfs-rpc-protocol = { path = "../../rpc/vfs-rpc-protocol" }
+wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+serde_json = "1.0"
+
+[build-dependencies]
+wit-bindgen = "0.36"

@@ -1,33 +1,41 @@
 [workspace]
 members = [
-  "fs-core",
-  "fs-wasm",
-  "vfs-adapter",
-  "vfs-host",
-  "vfs-rpc-protocol",
-  "vfs-rpc-server",
-  "vfs-rpc-host",
-  "rpc-adapter",
-  "examples/legacy/rust",
-  "examples/rpc/wasm-runner",
-  "examples/rpc/rpc-fs-runner",
-  "examples/rpc/demo-app1",
-  "examples/rpc/demo-app2",
+  # Core
+  "crates/core/fs-core",
+
+  # Adapters
+  "crates/adapters/vfs-adapter",
+  "crates/adapters/rpc-adapter",
+
+  # Hosts
+  "crates/hosts/vfs-host",
+  "crates/hosts/vfs-rpc-host",
+
+  # RPC
+  "crates/rpc/vfs-rpc-protocol",
+  "crates/rpc/vfs-rpc-server",
+
+  # Runners
+  "crates/runners/rpc-fs-runner",
+
+  # Examples - RPC
+  "examples/rpc/demo-writer",
+  "examples/rpc/demo-reader",
   "examples/rpc/demo-std-fs",
-  "examples/rpc/direct-rpc-demo",
-  "examples/component-model/dynamic/runtime-linker",
+  "examples/rpc/demo-direct-rpc",
+
+  # Examples - Component Model
+  "examples/component-model/runtime-linker",
 ]
 exclude = [
-  ".tmp",  # Temporary work-in-progress code
-  "test-app",  # Test application for composition testing
-  "test-simple",  # Simple test without console I/O
-  "vfs-rpc-client",  # Unused stub library
-  "vfs-tcp-server",  # Unused native server
-  "examples/rpc/rpc-fs-host",  # Old native RPC host implementation (replaced by rpc-fs-runner)
+  ".tmp",
+  "deprecated",
+  "test-app",
+  "test-simple",
+  "vfs-rpc-client",
+  "vfs-tcp-server",
 ]
 resolver="3"
-
-# examples/c is built with its own Makefile (no cargo)
 
 [profile.dev]
 opt-level = 1

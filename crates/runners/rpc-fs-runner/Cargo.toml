@@ -1,0 +1,14 @@
+[package]
+name = "rpc-fs-runner"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rpc-fs-runner"
+path = "src/main.rs"
+
+[dependencies]
+wasmtime = "27.0"
+wasmtime-wasi = "27.0"
+anyhow = "1.0"
+vfs-rpc-host = { path = "../../hosts/vfs-rpc-host" }

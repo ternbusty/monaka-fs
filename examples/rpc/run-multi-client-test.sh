@@ -1,6 +1,6 @@
 #!/bin/bash
 # Multi-client VFS RPC test script
-# Tests that App1 can write to the shared VFS and App2 can read from it
+# Tests that Writer app can write to the shared VFS and Reader app can read from it
 
 set -e
 
@@ -15,7 +15,7 @@ sleep 1
 
 echo "=== Building components ==="
 # Build WASM components
-cargo build -p vfs-rpc-server -p vfs-demo-app1 -p vfs-demo-app2 -p rpc-adapter --target wasm32-wasip2 2>&1 | tail -1
+cargo build -p vfs-rpc-server -p demo-writer -p demo-reader -p rpc-adapter --target wasm32-wasip2 2>&1 | tail -1
 # Build native runner
 cargo build -p rpc-fs-runner 2>&1 | tail -1
 echo "Build complete"
@@ -36,12 +36,12 @@ trap cleanup EXIT
 echo "Server started (PID: $SERVER_PID)"
 
 echo ""
-echo "=== Running App1 (Writer) ==="
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/vfs-demo-app1.wasm 2>&1 | grep -E "^(===|Creating|Writing|  |Application)" || true
+echo "=== Running Writer App ==="
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm 2>&1 | grep -E "^(===|Creating|Writing|  |Application)" || true
 
 echo ""
-echo "=== Running App2 (Reader) ==="
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/vfs-demo-app2.wasm 2>&1 | grep -E "^(===|Getting|Reading|  |Application|\")" || true
+echo "=== Running Reader App ==="
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm 2>&1 | grep -E "^(===|Getting|Reading|  |Application|\")" || true
 
 echo ""
 echo "=== Test completed successfully ==="
