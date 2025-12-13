@@ -1,6 +1,6 @@
 # vfs-host
 
-Host trait implementation for VFS adapter - enables multiple WebAssembly applications to share a single VFS instance at runtime.
+Host trait implementation for VFS adapter that enables multiple WebAssembly applications to share a single VFS instance at runtime.
 
 ## Overview
 
@@ -147,13 +147,13 @@ pub struct SharedVfsCore {
 
 The library implements all WASI Preview 2 filesystem Host traits:
 
-**wasi:filesystem/types@0.2.6:**
-- `Host` trait (2 methods) - Error conversion utilities
-- `HostDescriptor` trait (28 methods) - File/directory operations
-- `HostDirectoryEntryStream` trait (2 methods) - Directory listing
+wasi:filesystem/types@0.2.6:
+- `Host` trait (2 methods): Error conversion utilities
+- `HostDescriptor` trait (28 methods): File/directory operations
+- `HostDirectoryEntryStream` trait (2 methods): Directory listing
 
-**wasi:filesystem/preopens@0.2.6:**
-- `Host` trait (1 method) - Preopened directory listing
+wasi:filesystem/preopens@0.2.6:
+- `Host` trait (1 method): Preopened directory listing
 
 ### Real Implementations (26 methods)
 
@@ -169,7 +169,7 @@ The library implements all WASI Preview 2 filesystem Host traits:
 ### Stub Implementations (7 methods)
 
 These methods return `Unsupported` error as they're not required for in-memory VFS:
-- `advise`, `sync_data`, `sync` - Advisory/sync operations (no-op for in-memory FS)
+- `advise`, `sync_data`, `sync`: Advisory/sync operations (no-op for in-memory FS)
 
 ## Complete Example
 
@@ -182,9 +182,9 @@ cargo run
 
 ## Dependencies
 
-- `wasmtime` v27.0 - WebAssembly runtime with component model support
-- `wasmtime-wasi` v27.0 - WASI host implementations
-- `anyhow` v1.0 - Error handling
+- `wasmtime` v27.0: WebAssembly runtime with component model support
+- `wasmtime-wasi` v27.0: WASI host implementations
+- `anyhow` v1.0: Error handling
 
 ## License
 

@@ -56,7 +56,7 @@ fn main() {
         Ok(()) => println!("  ✓ Directory created"),
         Err(e) => {
             eprintln!("  ✗ Failed to create directory: {}", e);
-            // Don't return - directory might already exist
+            // Don't return: directory might already exist
         }
     }
     println!();

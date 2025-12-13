@@ -244,7 +244,7 @@ mod read_write {
         let fd = fs.open_path("/test.txt").unwrap();
         // Write 5 bytes
         fs.write(fd, b"Hello").unwrap();
-        // Try to read 100 bytes - should only get 5
+        // Try to read 100 bytes. Should only get 5
         fs.seek(fd, 0, 0).unwrap();
         let mut buf = [0u8; 100];
         let n = fs.read(fd, &mut buf).unwrap();
@@ -414,7 +414,7 @@ mod mkdir {
         fs.mkdir("/parent").unwrap();
         let initial_metadata = fs.stat("/parent").unwrap();
         let initial_mtime = initial_metadata.modified;
-        // Create a file in the directory - parent mtime should update
+        // Create a file in the directory. Parent mtime should update
         let fd = fs.open_path("/parent/file.txt").unwrap();
         fs.close(fd).unwrap();
         let after_file_metadata = fs.stat("/parent").unwrap();
@@ -422,7 +422,7 @@ mod mkdir {
             after_file_metadata.modified > initial_mtime,
             "Parent directory mtime should update when file is created"
         );
-        // Create a subdirectory - parent mtime should update again
+        // Create a subdirectory. Parent mtime should update again
         let mtime_before_subdir = after_file_metadata.modified;
         fs.mkdir("/parent/subdir").unwrap();
         let after_subdir_metadata = fs.stat("/parent").unwrap();
@@ -613,7 +613,7 @@ mod ftruncate {
         // Verify new size
         let metadata = fs.fstat(fd).unwrap();
         assert_eq!(metadata.size, 10);
-        // Read back data - expanded region should be zeros
+        // Read back data. Expanded region should be zeros
         fs.seek(fd, 0, 0).unwrap();
         let mut buf = [0xFFu8; 10];
         let n = fs.read(fd, &mut buf).unwrap();
@@ -1118,7 +1118,7 @@ mod open_at {
         fs.mkdir_p("/testdir").unwrap();
 
         // Try to use open_at with absolute path (should fail)
-        // We need a directory fd first - this is a limitation
+        // We need a directory fd first. This is a limitation
         // We'll test this properly once we have directory opening
 
         // For now, let's just verify the error happens

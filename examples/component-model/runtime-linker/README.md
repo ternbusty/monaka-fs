@@ -6,19 +6,19 @@ This directory demonstrates runtime dynamic linking with WebAssembly Component M
 
 The Component Model supports two linking approaches:
 
-1. **Dynamic Linking** (this approach):
+1. Dynamic Linking (this approach):
    - Components are loaded separately at runtime
    - Linked dynamically using `wac plug` or Wasmtime's Linker API
    - Allows swapping implementations without rebuilding
 
-2. **Static Composition** (alternative - use `make demo-static`):
+2. Static Composition (alternative; use `make demo-component-model-static`)
    - Components are linked at build time using `wac plug`
    - Produces a single `.composed.wasm` file
    - Simple deployment: one file to distribute
 
 ## What This Demo Shows
 
-This program demonstrates:
+This program demonstrates
 
 ### Part 1: Separate Component Loading
 - Loads VFS Adapter component (4.24 MB)
@@ -46,12 +46,10 @@ cargo install wasmtime-cli wac-cli
 
 ### Quick Start
 
-From the repository root or examples directory:
+From the repository root:
 
 ```bash
-make demo
-# or
-make demo-dynamic
+make demo-component-model-dynamic
 ```
 
 This automatically:
@@ -64,12 +62,12 @@ This automatically:
 
 ```bash
 # From repository root:
-make build-vfs-adapter       # Build VFS adapter
-make build-component-rust    # Build application
-make build-runtime-linker    # Build runtime linker host
+make build-component-model-adapter   # Build VFS adapter
+make build-component-model-rust      # Build application
+make build-component-model-linker    # Build runtime linker host
 
 # Run the demo
-cd examples/component-model/dynamic/runtime-linker
+cd examples/component-model/runtime-linker
 cargo run --release
 ```
 
@@ -77,11 +75,11 @@ cargo run --release
 
 ### Component Files
 
-- **VFS Adapter**: `../../../../target/wasm32-wasip2/debug/vfs_adapter.wasm`
+- **VFS Adapter**: `../../../target/wasm32-wasip2/debug/vfs_adapter.wasm`
   - Exports `wasi:filesystem/types@0.2.6` and other WASI interfaces
   - Provides in-memory filesystem implementation
 
-- **Application**: `../../static/rust/target/wasm32-wasip2/debug/component-rust.wasm`
+- **Application**: `../static/rust/target/wasm32-wasip2/debug/component-rust.wasm`
   - Imports `wasi:filesystem/types@0.2.6` and other WASI interfaces
   - Uses standard Rust `std::fs` API
 

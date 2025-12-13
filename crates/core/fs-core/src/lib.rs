@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-// Logging support - conditional compilation for zero-cost when disabled
+// Logging support: conditional compilation for zero-cost when disabled
 #[cfg(feature = "logging")]
 pub use log::{debug, error, info, trace, warn};
 

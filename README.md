@@ -1,23 +1,170 @@
 # Halycon
 
-Halycon is a virtual in-memory filesystem implemented in Rust and compiled to WebAssembly.
+An ephemeral in-memory filesystem implementation for WebAssembly, featuring transparent `std::fs` access through RPC communication.
 
-## Quick Start
+## Overview
 
-```bash
-make demo
-```
+Halycon provides a shared virtual filesystem that multiple WASM applications can access transparently using standard Rust `std::fs` APIs. Applications don't need to know they're using a virtual filesystem. The RPC adapter handles all communication with the VFS server behind the scenes.
+
+## Prerequisites
+
+- Rust toolchain (1.75+)
+- wasm32-wasip2 target: `rustup target add wasm32-wasip2`
+- wasmtime CLI: `cargo install wasmtime-cli`
 
 ## Project Structure
 
-### Libraries
+```
+halycon/
+├── crates/
+│   ├── core/fs-core/           # Core filesystem implementation (no_std compatible)
+│   ├── adapters/
+│   │   ├── vfs-adapter/        # WASI Component Model adapter
+│   │   └── rpc-adapter/        # RPC communication adapter
+│   ├── hosts/
+│   │   ├── vfs-host/           # Host implementation for vfs-adapter
+│   │   └── vfs-rpc-host/       # Host implementation for rpc-adapter
+│   ├── rpc/
+│   │   ├── vfs-rpc-protocol/   # RPC protocol definitions
+│   │   └── vfs-rpc-server/     # RPC server (WASM component)
+│   └── runners/
+│       └── rpc-fs-runner/      # Native runner for RPC-based apps
+├── examples/
+│   ├── rpc/                    # RPC-based examples
+│   │   ├── demo-writer/        # Writer application
+│   │   ├── demo-reader/        # Reader application
+│   │   ├── demo-std-fs/        # std::fs demonstration
+│   │   └── demo-direct-rpc/    # Direct RPC communication demo
+│   └── component-model/
+│       ├── runtime-linker/     # Dynamic component loader
+│       └── static/             # Static composition examples
+├── wit/                        # WIT interface definitions
+└── deprecated/                 # Legacy code (for reference)
+```
 
-- **fs-core** - Core in-memory filesystem implementation (no_std compatible)
-- **vfs-adapter** - WebAssembly Component Model VFS adapter (WASI Preview 2)
-- **vfs-host** - Host trait implementation for sharing VFS across multiple applications
-- **vfs-rpc-server** - TCP server exposing VFS over network (WASI Preview 2)
-- **vfs-rpc-protocol** - Shared RPC protocol definitions
-- **fs-wasm** - Legacy C FFI layer
+## Building
+
+### Build Native Crates
+
+```bash
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+```
+
+### Build WASM Components
+
+```bash
+cargo build --target wasm32-wasip2 \
+  -p vfs-adapter \
+  -p rpc-adapter \
+  -p vfs-rpc-server \
+  -p demo-writer \
+  -p demo-reader \
+  -p demo-std-fs \
+  -p direct-rpc-demo
+```
+
+### Build Everything
+
+```bash
+# Native crates
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+
+# WASM components
+cargo build --target wasm32-wasip2 \
+  -p vfs-adapter -p rpc-adapter -p vfs-rpc-server \
+  -p demo-writer -p demo-reader -p demo-std-fs -p direct-rpc-demo
+```
+
+## Running Examples
+
+### RPC Examples
+
+#### Multi-Client Test (Writer + Reader)
+
+This example demonstrates multiple applications sharing a single VFS instance:
+
+```bash
+# Use the provided script
+./examples/rpc/run-multi-client-test.sh
+```
+
+Or manually:
+
+```bash
+# Terminal 1: Start VFS RPC Server
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# Terminal 2: Run Writer App (creates files)
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm
+
+# Terminal 3: Run Reader App (reads files created by Writer)
+./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm
+```
+
+#### Direct RPC Demo
+
+This example shows direct WASI socket communication with the VFS server (without using rpc-fs-runner):
+
+```bash
+# Use the provided script
+./examples/rpc/run-direct-rpc-demo.sh
+```
+
+Or manually:
+
+```bash
+# Terminal 1: Start VFS RPC Server
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# Terminal 2: Run Direct RPC Demo
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/direct_rpc_demo.wasm
+```
+
+### Component Model Examples
+
+#### Runtime Linker
+
+The runtime-linker example demonstrates dynamic component loading with shared VFS:
+
+```bash
+# Build
+cargo build -p runtime-linker
+cargo build -p vfs-adapter --target wasm32-wasip2
+
+# Run
+./target/debug/runtime-linker ./target/wasm32-wasip2/debug/vfs_adapter.wasm <app.wasm>
+```
+
+## Testing
+
+```bash
+# Run fs-core tests
+cargo test -p fs-core
+
+# Run all tests
+cargo test
+```
+
+## How It Works
+
+1. VFS RPC Server: A WASM component running `fs-core` that listens on TCP port 9000. It manages an in-memory filesystem and handles requests from multiple clients.
+
+2. RPC Adapter: A WASM component that implements WASI filesystem interfaces. When an application calls `std::fs::write()`, the rpc-adapter intercepts the call and forwards it to the VFS server via TCP.
+
+3. RPC FS Runner: A native Rust application that:
+   - Loads the rpc-adapter WASM component
+   - Loads the application WASM component
+   - Composes them so the application's filesystem calls go through the rpc-adapter
+
+4. Application: Any WASM application using standard `std::fs` APIs. It doesn't need to know about the VFS; everything is transparent.
+
+## Key Features
+
+- Transparent VFS: Applications use standard `std::fs` APIs
+- Multi-Client Support: Multiple applications can share the same VFS
+- In-Memory: Fast, ephemeral storage (no persistence)
+- WASI Compatible: Uses WASI Component Model
+- no_std Core: The filesystem implementation is `no_std` compatible
 
 ## Development Setup
 
@@ -33,147 +180,3 @@ Once installed, the following checks run automatically on `git commit`:
 - `cargo fmt` - Auto-formats Rust code
 - `cargo clippy` - Runs linter with warnings as errors
 
-## How to Build
-
-```bash
-# Build libraries
-make build
-
-# Build in release mode
-make build-release
-```
-
-## How to Test
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests for specific package
-cargo test -p fs-core
-cargo test -p fs-wasm
-```
-
-## Execution Methods
-
-### 1. Component Model - Runtime Dynamic Linking
-
-Runtime composition using `wac plug`.
-
-```bash
-make demo
-# or
-make demo-dynamic
-```
-
-**Location**: `examples/component-model/dynamic/runtime-linker/`
-
-### 2. Component Model - Static Composition
-
-Build-time composition producing single `.composed.wasm` file.
-
-```bash
-make demo-static
-
-# Or individually:
-make run-static-rust
-make run-static-c
-```
-
-### 3. RPC Approach - Multiple WASM Processes
-
-Multiple separate WASM processes sharing VFS via TCP server.
-
-```bash
-# Terminal 1: Start VFS RPC Server (port 9000)
-cargo build -p wasm-runner
-cargo build -p vfs-rpc-server --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-
-# Terminal 2: Run writer application
-cargo build -p vfs-demo-app1 --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app1.wasm
-
-# Terminal 3: Run reader application
-cargo build -p vfs-demo-app2 --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app2.wasm
-```
-
-**Components**: `vfs-rpc-server`, `vfs-demo-app1`, `vfs-demo-app2`, `wasm-runner`
-
-### 4. Legacy C Example
-
-C code using fs-wasm FFI directly.
-
-```bash
-make build-c-example
-make run-c-example
-```
-
-**Location**: `examples/legacy/c/`
-
-### 5. Legacy Rust Example
-
-Rust code using fs-core library directly.
-
-```bash
-make build-rust-example
-make run-rust-example
-```
-
-**Location**: `examples/legacy/rust/`
-
-## Component Model VFS Adapter
-
-The VFS Adapter exports WASI Preview 2 filesystem interfaces.
-
-### Prerequisites
-
-```bash
-# Install prerequisites
-rustup target add wasm32-wasip2
-cargo install wac-cli wasmtime-cli
-```
-
-### Building
-
-```bash
-cargo build -p vfs-adapter --target wasm32-wasip2
-```
-
-Output: `target/wasm32-wasip2/debug/vfs_adapter.wasm`
-
-### WIT Definitions
-
-Uses official WASI Preview 2 WIT definitions (v0.2.6):
-- `wit/deps/filesystem/` - WASI filesystem interfaces
-- `wit/deps/io/` - WASI I/O interfaces
-- `wit/deps/clocks/` - WASI clock interfaces
-- `wit/world.wit` - VFS adapter world definition
-
-## VFS Host Library (vfs-host)
-
-The `vfs-host` library provides Host trait implementations for sharing VFS across multiple applications.
-
-### Usage
-
-```rust
-use vfs_host::VfsHostState;
-use wasmtime::{Engine, Store};
-
-// Create shared VFS host
-let engine = Engine::default();
-let vfs_host = VfsHostState::new(&engine, "vfs-adapter.wasm")?;
-
-// Create stores sharing the same VFS
-let mut store1 = Store::new(&engine, vfs_host.clone_shared());
-let mut store2 = Store::new(&engine, vfs_host.clone_shared());
-```
-
-### API
-
-- `VfsHostState::new(engine, vfs_adapter_path)` - Create new VFS host
-- `VfsHostState::clone_shared()` - Create host sharing same VFS
-- All WASI filesystem Host trait methods implemented
-
-See `vfs-host/README.md` and `examples/component-model/dynamic/runtime-linker` for details.

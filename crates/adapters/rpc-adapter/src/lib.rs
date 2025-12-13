@@ -1,4 +1,4 @@
-// RPC Adapter - WASI filesystem adapter that makes RPC calls to vfs-rpc-server
+// RPC Adapter: WASI filesystem adapter that makes RPC calls to vfs-rpc-server
 //
 // This is a component that exports WASI filesystem interfaces
 // and delegates to vfs-rpc-server via TCP RPC calls.
@@ -36,7 +36,7 @@ use wasi::sockets::network::{IpAddressFamily, IpSocketAddress, Ipv4SocketAddress
 use wasi::sockets::tcp::TcpSocket;
 use wasi::sockets::tcp_create_socket::create_tcp_socket;
 
-// Persistent RPC connection - holds socket AND streams globally.
+// Persistent RPC connection: holds socket AND streams globally.
 // The socket must be kept alive because dropping it while streams exist
 // causes "resource has children" error (streams are tracked as children of socket).
 
@@ -169,7 +169,7 @@ impl PersistentConnection {
     fn receive_raw(input_stream: &mut InputStream) -> Result<Response, ErrorCode> {
         eprintln!("[RPC-ADAPTER] receive_raw: reading length prefix...");
         // Read 4-byte length prefix (blocking, NO subscribe)
-        // Retry empty reads - blocking_read can return 0 if data hasn't arrived yet
+        // Retry empty reads. blocking_read can return 0 if data hasn't arrived yet
         let mut len_buf = Vec::new();
         let mut empty_reads = 0;
         const MAX_EMPTY_READS: u32 = 1000; // Busy-wait limit
@@ -298,7 +298,7 @@ fn rpc_call(request: &Request) -> Result<Response, ErrorCode> {
     with_connection(|conn| conn.call(request))
 }
 
-// Main RPC adapter state - only stores descriptor mappings, no connection
+// Main RPC adapter state: only stores descriptor mappings, no connection
 static INIT: Once = Once::new();
 static mut RPC_STATE: Option<RpcState> = None;
 
@@ -425,7 +425,7 @@ impl exports::wasi::filesystem::preopens::Guest for RpcAdapter {
             }
             None => {
                 eprintln!("[RPC-ADAPTER] ERROR: descriptor 0 not mapped");
-                // State exists but descriptor 0 not mapped - this shouldn't happen
+                // State exists but descriptor 0 not mapped. This shouldn't happen
                 vec![]
             }
         }
@@ -478,7 +478,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn append_via_stream(
         &self,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        // Not yet implemented - would create a stream wrapper
+        // Not yet implemented. Would create a stream wrapper
         Err(ErrorCode::Unsupported)
     }
 

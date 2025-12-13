@@ -44,7 +44,7 @@ impl BlockStorage {
                 bytes_read += bytes_to_copy;
                 current_offset += bytes_to_copy;
             } else {
-                // Sparse block - fill with zeros
+                // Sparse block: fill with zeros
                 let bytes_in_block = BLOCK_SIZE - block_offset;
                 let bytes_to_copy = core::cmp::min(
                     bytes_in_block,

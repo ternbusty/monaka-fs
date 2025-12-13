@@ -14,11 +14,11 @@ ifeq ($(CLANG),/bin/clang)
 endif
 
 # Directories
-ROOT_DIR := ../..
+ROOT_DIR := ../../..
 TARGET_DIR := $(ROOT_DIR)/target/$(TARGET)/$(BUILD_MODE)
 DEPS_DIR := $(TARGET_DIR)/deps
-FS_CORE_DIR := $(ROOT_DIR)/fs-core
-FS_WASM_DIR := $(ROOT_DIR)/fs-wasm
+FS_CORE_DIR := $(ROOT_DIR)/crates/core/fs-core
+FS_WASM_DIR := $(ROOT_DIR)/deprecated/fs-wasm
 
 # Output files
 FS_CORE_RLIB := $(DEPS_DIR)/libfs_core.rlib
@@ -52,7 +52,8 @@ $(DEPS_DIR):
 build-libs: $(DEPS_DIR)
 	@echo "Building fs-core..."
 	@echo "Building fs-wasm..."
-	@cd $(ROOT_DIR) && cargo build -p fs-core -p fs-wasm --target $(TARGET) $(if $(findstring release,$(BUILD_MODE)),--release,)
+	@cd $(ROOT_DIR) && cargo build -p fs-core --target $(TARGET) $(if $(findstring release,$(BUILD_MODE)),--release,)
+	@cd $(ROOT_DIR) && cargo build --manifest-path deprecated/fs-wasm/Cargo.toml --target-dir target --target $(TARGET) $(if $(findstring release,$(BUILD_MODE)),--release,)
 
 $(FS_CORE_RLIB): build-libs
 $(FS_WASM_RLIB): build-libs
@@ -86,7 +87,6 @@ clean:
 	@rm -f $(C_OBJECT)
 	@rm -f $(FINAL_WASM)
 	@echo "Clean complete"
-	@echo "Note: Run 'make clean' from repository root to clean Rust libraries"
 
 # Run the WASM binary
 .PHONY: run

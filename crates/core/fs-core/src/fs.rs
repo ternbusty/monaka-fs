@@ -135,7 +135,7 @@ impl<T: TimeProvider> Fs<T> {
             dir_fd, path, flags
         );
 
-        // Reject absolute paths - open_at only accepts relative paths
+        // Reject absolute paths. open_at only accepts relative paths
         if path.starts_with('/') {
             error!("open_at: absolute path not allowed");
             return Err(FsError::InvalidArgument);
@@ -163,7 +163,7 @@ impl<T: TimeProvider> Fs<T> {
             }
         }
 
-        // Handle empty path - refers to the directory itself
+        // Handle empty path: refers to the directory itself
         if path.is_empty() {
             error!("open_at: empty path not supported yet");
             return Err(FsError::InvalidArgument);
@@ -678,7 +678,7 @@ impl<T: TimeProvider> Fs<T> {
         // Check if the file exists and get its inode
         let target_inode = self.find_inode(&current_inode, filename)?;
 
-        // Check if it's a directory - use IsADirectory error
+        // Check if it's a directory: use IsADirectory error
         {
             let target = target_inode.borrow();
             if matches!(target.content, FileContent::Dir(_)) {

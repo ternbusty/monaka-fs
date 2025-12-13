@@ -662,7 +662,7 @@ fn test_real_component_with_std_fs(engine: &Engine, vfs_adapter_path: &str) -> R
     println!("Step 4: Instantiating component...");
     println!("  (This will test if stream API is required)");
 
-    // Try to instantiate - if stream API is required, this will fail
+    // Try to instantiate. If stream API is required, this will fail
     match linker.instantiate(&mut store, &component) {
         Ok(instance) => {
             println!("  ✓ Component instantiated successfully!");
@@ -834,7 +834,7 @@ fn test_true_dynamic_linking(
 
     let start_total = Instant::now();
 
-    // Step 1: Create VfsHostState - this wraps the VFS adapter and implements Host traits
+    // Step 1: Create VfsHostState. This wraps the VFS adapter and implements Host traits
     println!("Step 1: Creating VfsHostState (Host trait wrapper)...");
     let start = Instant::now();
 
@@ -918,9 +918,9 @@ fn main() -> Result<()> {
     println!();
 
     // File paths
-    let vfs_adapter_path = "../../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
-    let app_path = "../../static/rust/target/wasm32-wasip2/debug/component-rust.wasm";
-    let composed_path = "../../../component-rust.composed.wasm";
+    let vfs_adapter_path = "../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
+    let app_path = "../static/rust/target/wasm32-wasip2/debug/component-rust.wasm";
+    let composed_path = "../../component-rust.composed.wasm";
 
     // Part 1: Show that components can be loaded separately
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

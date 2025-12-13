@@ -234,7 +234,7 @@ impl HostOutputStream for VfsOutputStreamWrapper {
         let shared_rpc = &self.shared_rpc;
         let descriptor = self.descriptor;
         let current_offset = self.offset.get();
-        // Clone bytes for the thread (Bytes is cheap to clone - reference counted)
+        // Clone bytes for the thread (Bytes is cheap to clone: reference counted)
         let bytes_clone = bytes.clone();
 
         // Run RPC operation in a separate thread to avoid tokio runtime nesting.
@@ -499,7 +499,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
         _len: u64,
         _advice: wasmtime_wasi::bindings::sync::filesystem::types::Advice,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        // Advisory hints - can safely ignore
+        // Advisory hints: can safely ignore
         Ok(())
     }
 
@@ -507,7 +507,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsRpc
         &mut self,
         _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        // In-memory FS - sync is no-op
+        // In-memory FS: sync is no-op
         Ok(())
     }
 

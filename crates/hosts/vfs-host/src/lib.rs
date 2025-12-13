@@ -64,7 +64,7 @@ pub struct VfsHostState {
     /// Resource table for managing WASM resources
     pub table: ResourceTable,
 
-    /// Shared VFS core - multiple VfsHostState instances can reference the same VFS
+    /// Shared VFS core: multiple VfsHostState instances can reference the same VFS
     pub shared_vfs: Arc<Mutex<SharedVfsCore>>,
 }
 
@@ -282,7 +282,7 @@ pub fn add_to_linker_with_vfs(
         linker, fs_closure,
     )?;
 
-    // cli::exit requires LinkOptions - use default
+    // cli::exit requires LinkOptions. Use default
     let exit_options = wasmtime_wasi::bindings::cli::exit::LinkOptions::default();
     wasmtime_wasi::bindings::cli::exit::add_to_linker_get_host(
         linker,
@@ -290,7 +290,7 @@ pub fn add_to_linker_with_vfs(
         wasi_closure,
     )?;
 
-    // sockets::network requires LinkOptions - use default
+    // sockets::network requires LinkOptions. Use default
     let network_options = wasmtime_wasi::bindings::sockets::network::LinkOptions::default();
     wasmtime_wasi::bindings::sockets::network::add_to_linker_get_host(
         linker,

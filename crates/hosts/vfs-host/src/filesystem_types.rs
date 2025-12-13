@@ -412,7 +412,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Ok(())
     }
 
-    // Stubs for remaining methods - will implement next
+    // Stubs for remaining methods. Will implement next
     fn read_via_stream(
         &mut self,
         self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
@@ -554,7 +554,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         _len: u64,
         _advice: wasmtime_wasi::bindings::sync::filesystem::types::Advice,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        // Advisory hints - can safely ignore
+        // Advisory hints: can safely ignore
         Ok(())
     }
 
@@ -562,7 +562,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         &mut self,
         _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        // In-memory FS - sync is no-op
+        // In-memory FS: sync is no-op
         Ok(())
     }
 

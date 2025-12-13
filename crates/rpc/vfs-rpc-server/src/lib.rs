@@ -279,7 +279,7 @@ fn read_message(stream: &InputStream) -> Option<Vec<u8>> {
             Ok(bytes) => {
                 println!("read_message: got {} bytes for body", bytes.len());
                 if bytes.is_empty() {
-                    // Empty read doesn't necessarily mean EOF - data might not have arrived yet
+                    // Empty read doesn't necessarily mean EOF. Data might not have arrived yet
                     // Poll and retry
                     println!("read_message: empty read, polling...");
                     let pollable = stream.subscribe();

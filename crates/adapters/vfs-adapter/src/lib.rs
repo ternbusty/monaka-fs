@@ -1,4 +1,4 @@
-// VFS Adapter - Minimal WASI filesystem adapter using fs-core
+// VFS Adapter: Minimal WASI filesystem adapter using fs-core
 //
 // This is a thin adapter component that exports WASI filesystem interfaces
 // and delegates to fs-core for the actual filesystem implementation.
@@ -188,7 +188,7 @@ impl exports::wasi::filesystem::types::Guest for VfsAdapter {
     type DirectoryEntryStream = DirectoryEntryStreamImpl;
 
     fn filesystem_error_code(_err: exports::wasi::io::error::ErrorBorrow<'_>) -> Option<ErrorCode> {
-        // Not yet implemented - would convert io error resource to filesystem error code
+        // Not yet implemented. Would convert io error resource to filesystem error code
         // This function is used to downcast stream errors to filesystem errors
         None
     }
@@ -548,7 +548,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
             // Use open_at if available, otherwise fall back to absolute path for root
             let fd = if self.handle == 0 {
-                // Root directory - use absolute path
+                // Root directory: use absolute path
                 let full_path = format!("/{}", path.trim_start_matches('/'));
                 state
                     .fs
@@ -768,7 +768,7 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 exports::wasi::io::poll::Pollable::new(PollableImpl)
             }
             Self::Host(stream) => {
-                // Wrap host pollable - for now just return ready pollable
+                // Wrap host pollable. For now just return ready pollable
                 // TODO: properly wrap host pollable
                 exports::wasi::io::poll::Pollable::new(PollableImpl)
             }

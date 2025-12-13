@@ -8,7 +8,7 @@ resolver="3"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-fs-core = { path = "../fs-core", features = ["logging"] }
+fs-core = { path = "../../crates/core/fs-core", features = ["logging"] }
 log = "0.4"
 
 [dev-dependencies]

@@ -280,7 +280,7 @@ fn demo_append_operations() -> Result<(), String> {
             return Err(format!("Failed to open file in append mode: {}", fd));
         }
 
-        // Write multiple times - all should append
+        // Write multiple times. All should append
         fs_write(fd as u32, b" First".as_ptr(), 6);
         fs_write(fd as u32, b" Second".as_ptr(), 7);
         fs_write(fd as u32, b" Third".as_ptr(), 6);

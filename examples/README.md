@@ -7,21 +7,21 @@ This directory contains examples demonstrating different approaches to using the
 ### Component Model Examples
 
 #### Dynamic Linking
-- `component-model/dynamic/runtime-linker/` - Runtime component loading and composition
+- `component-model/runtime-linker/` - Runtime component loading and composition
 
 #### Static Composition
 - `component-model/static/rust/` - Rust example using std::fs API
 - `component-model/static/c/` - C example using standard C I/O functions
 
 ### RPC Examples
-- `vfs-rpc-server/` (in parent) - TCP server exposing VFS on port 9000
-- `rpc/demo-app1/` - Writer application
-- `rpc/demo-app2/` - Reader application
-- `rpc/wasm-runner/` - Host program with network permissions
+- `rpc/demo-writer/` - Writer application
+- `rpc/demo-reader/` - Reader application
+- `rpc/demo-std-fs/` - Standard filesystem demo
+- `rpc/demo-direct-rpc/` - Direct RPC demo
 
-### Legacy Examples
-- `legacy/c/` - C code using fs-wasm FFI directly
-- `legacy/rust/` - Rust code using fs-wasm library directly
+### Legacy Examples (Deprecated)
+- `../deprecated/legacy-examples/c/` - C code using fs-wasm FFI directly
+- `../deprecated/legacy-examples/rust/` - Rust code using fs-wasm library directly
 
 ## Prerequisites
 
@@ -57,61 +57,52 @@ brew install llvm wasi-libc
 ### Runtime Dynamic Linking
 
 ```bash
-# From repository root or examples directory:
-make demo
+# From repository root:
+make demo-component-model-dynamic
 ```
 
 ### Component Model - Static Composition
 
 ```bash
-make demo-static
+make demo-component-model-static
 
 # Or individually:
-make run-static-rust
-make run-static-c
+make run-component-model-static-rust
+make run-component-model-static-c
 ```
 
 ### RPC Approach
 
 ```bash
+# Build all RPC components
+make build-rpc-all
+
 # Terminal 1: Start VFS RPC Server
-cargo build -p wasm-runner
-cargo build -p vfs-rpc-server --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+make start-rpc-server
 
-# Terminal 2: Run writer application
-cargo build -p vfs-demo-app1 --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app1.wasm
+# Terminal 2: Run demos
+make run-rpc-demo-writer
+make run-rpc-demo-reader
+make run-rpc-demo-std-fs
 
-# Terminal 3: Run reader application
-cargo build -p vfs-demo-app2 --target wasm32-wasip2
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app2.wasm
+# Stop server when done
+make stop-rpc-server
 ```
 
 ### Legacy Examples
 
 ```bash
 # C example
-make build-c-example
-make run-c-example
+make build-legacy-c
+make run-legacy-c
 
 # Rust example
-make build-rust-example
-make run-rust-example
-```
+make build-legacy-rust
+make run-legacy-rust
 
-Or directly:
-
-```bash
-# C example
-cd examples/legacy/c
-make
-wasmtime run ../../../target/wasm32-wasip1/debug/c_example.wasm
-
-# Rust example
-cd examples/legacy/rust
-cargo build --target wasm32-wasip1
-wasmtime run target/wasm32-wasip1/debug/rust-example.wasm
+# Release builds
+make build-legacy-c-release
+make build-legacy-rust-release
 ```
 
 ## What the Examples Demonstrate
@@ -143,22 +134,22 @@ Both component-rust and component-c perform:
 
 ### RPC Examples
 
-**vfs-demo-app1** (Writer):
+demo-writer (Writer):
 - Connects to VFS RPC server on localhost:9000
 - Creates `/shared` directory
 - Creates and writes to `/shared/message.txt`
 - Demonstrates file creation over network protocol
 
-**vfs-demo-app2** (Reader):
+demo-reader (Reader):
 - Connects to same VFS RPC server
-- Opens `/shared/message.txt` created by App1
+- Opens `/shared/message.txt` created by demo-writer
 - Reads file content
 - Gets file metadata
 - Demonstrates file sharing between separate WASM processes
 
-### Legacy Examples
+### Legacy Examples (Deprecated)
 
-Both legacy/c/ and legacy/rust/ examples perform:
+Both deprecated/legacy-examples/c/ and deprecated/legacy-examples/rust/ examples perform:
 
 #### Test 1: Basic File Operations
 - Create files and write content
@@ -192,6 +183,8 @@ Both legacy/c/ and legacy/rust/ examples perform:
 
 #### Rust Component
 ```bash
+make build-component-model-rust
+# Or manually:
 cd component-model/static/rust
 cargo build --target wasm32-wasip2
 ```
@@ -200,6 +193,8 @@ Output: `target/wasm32-wasip2/debug/component-rust.wasm`
 
 #### C Component
 ```bash
+make build-component-model-c
+# Or manually:
 cd component-model/static/c
 cargo build --target wasm32-wasip2
 ```
@@ -209,43 +204,25 @@ Output: `target/wasm32-wasip2/debug/component-c.wasm`
 ### RPC Components
 
 ```bash
-# Build wasm-runner host
-cargo build -p wasm-runner
+# Build all
+make build-rpc-all
 
-# Build VFS RPC server
-cargo build -p vfs-rpc-server --target wasm32-wasip2
-
-# Build demo applications
-cargo build -p vfs-demo-app1 --target wasm32-wasip2
-cargo build -p vfs-demo-app2 --target wasm32-wasip2
+# Or individually:
+make build-rpc-server   # VFS RPC server
+make build-rpc-runner   # rpc-fs-runner host
+make build-rpc-demos    # demo applications
 ```
 
-### Legacy Examples
+### Legacy Examples (Deprecated)
 
-#### C Example
 ```bash
-cd legacy/c
-make
-```
+# Build
+make build-legacy-c
+make build-legacy-rust
 
-Output: `../../../target/wasm32-wasip1/debug/c_example.wasm`
-
-Or from repository root:
-```bash
-make build-c-example
-```
-
-#### Rust Example
-```bash
-cd legacy/rust
-cargo build --target wasm32-wasip1
-```
-
-Output: `target/wasm32-wasip1/debug/rust-example.wasm`
-
-Or from repository root:
-```bash
-make build-rust-example
+# Release builds
+make build-legacy-c-release
+make build-legacy-rust-release
 ```
 
 ## Manual Composition (Component Model Only)
@@ -254,16 +231,10 @@ Using `wac plug` to connect the VFS provider to your application:
 
 ```bash
 # Rust component
-wac plug \
-    --plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-    component-model/static/rust/target/wasm32-wasip2/debug/component-rust.wasm \
-    -o component-rust.composed.wasm
+make compose-component-model-rust
 
 # C component
-wac plug \
-    --plug ../target/wasm32-wasip2/debug/vfs_adapter.wasm \
-    component-model/static/c/target/wasm32-wasip2/debug/component-c.wasm \
-    -o component-c.composed.wasm
+make compose-component-model-c
 ```
 
 ## Manual Execution
@@ -271,23 +242,28 @@ wac plug \
 ### Component Model Examples
 ```bash
 # Run composed components
-wasmtime run component-rust.composed.wasm
-wasmtime run component-c.composed.wasm
+make run-component-model-static-rust
+make run-component-model-static-c
 ```
 
 ### RPC Examples
 ```bash
-# Run with wasm-runner host
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app1.wasm
-./target/debug/wasm-runner target/wasm32-wasip2/debug/vfs_demo_app2.wasm
+# Start VFS RPC server (Terminal 1)
+make start-rpc-server
+
+# Run demo applications (separate terminals)
+make run-rpc-demo-writer
+make run-rpc-demo-reader
+make run-rpc-demo-std-fs
+
+# Stop server
+make stop-rpc-server
 ```
 
-### Legacy Examples
+### Legacy Examples (Deprecated)
 ```bash
-# Run standalone WASM modules
-wasmtime run ../target/wasm32-wasip1/debug/c_example.wasm
-wasmtime run legacy/rust/target/wasm32-wasip1/debug/rust-example.wasm
+make run-legacy-c
+make run-legacy-rust
 ```
 
 ## Troubleshooting
@@ -314,15 +290,15 @@ wasmtime run legacy/rust/target/wasm32-wasip1/debug/rust-example.wasm
 ### RPC Examples
 
 #### Connection refused
-- Ensure VFS RPC server is running first
+- Ensure VFS RPC server is running first: `make start-rpc-server`
 - Check that port 9000 is not in use: `lsof -i :9000`
-- Verify wasm-runner is built: `cargo build -p wasm-runner`
+- Verify rpc-fs-runner is built: `make build-rpc-runner`
 
 #### Network permission errors
-- wasm-runner host enables network permissions via `inherit_network()`
-- Standard wasmtime will not work; must use wasm-runner
+- rpc-fs-runner host enables network permissions via `inherit_network()`
+- For server, use `wasmtime run -S inherit-network=y`
 
-### Legacy Examples
+### Legacy Examples (Deprecated)
 
 #### C compilation fails
 - Ensure you have LLVM/clang with wasm32-wasip1 support
