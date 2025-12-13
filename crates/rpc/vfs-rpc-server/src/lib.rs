@@ -7,9 +7,14 @@
 #![allow(warnings)]
 
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_core::{Fs, FsError};
-use vfs_rpc_protocol::{DirEntry, ErrorCode, Metadata, Request, Response, PROTOCOL_VERSION};
+use vfs_rpc_protocol::{
+    DirEntry, ErrorCode, Metadata, Request, Response, RpcRequest, PROTOCOL_VERSION,
+};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -27,6 +32,37 @@ use wasi::sockets::tcp_create_socket::create_tcp_socket;
 // Global filesystem instance
 static mut VFS: Option<RefCell<Fs>> = None;
 
+// Session counter (used as part of hash input for uniqueness)
+static mut SESSION_COUNTER: u64 = 0;
+
+/// Generate a unique 6-character alphanumeric session ID
+fn generate_session_id() -> String {
+    const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+    unsafe {
+        SESSION_COUNTER = SESSION_COUNTER.wrapping_add(1);
+
+        let mut hasher = DefaultHasher::new();
+        SESSION_COUNTER.hash(&mut hasher);
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            .hash(&mut hasher);
+
+        let hash = hasher.finish();
+
+        // Convert hash to 6-character alphanumeric string
+        let mut result = String::with_capacity(6);
+        let mut h = hash;
+        for _ in 0..6 {
+            result.push(CHARSET[(h % 36) as usize] as char);
+            h /= 36;
+        }
+        result
+    }
+}
+
 /// Initialize the VFS
 fn init_vfs() {
     unsafe {
@@ -38,7 +74,7 @@ fn init_vfs() {
 }
 
 /// Handle a single RPC request
-fn handle_request(request: Request) -> Response {
+fn handle_request(request: Request, session_id: Option<String>) -> Response {
     unsafe {
         let vfs_ref = match VFS.as_ref() {
             Some(vfs) => vfs,
@@ -49,6 +85,11 @@ fn handle_request(request: Request) -> Response {
                 }
             }
         };
+
+        // Log the session ID for tracking
+        if let Some(ref sid) = session_id {
+            println!("[session {}] Processing request", sid);
+        }
 
         match request {
             Request::Connect { version } => {
@@ -61,8 +102,10 @@ fn handle_request(request: Request) -> Response {
                         ),
                     }
                 } else {
+                    let new_session_id = generate_session_id();
+                    println!("[session {}] New client connected", new_session_id);
                     Response::Connected {
-                        session_id: 1,
+                        session_id: new_session_id,
                         version: PROTOCOL_VERSION,
                     }
                 }
@@ -352,8 +395,8 @@ fn handle_client(input: InputStream, output: OutputStream) {
             }
         };
 
-        // Parse request JSON
-        let request: Request = match serde_json::from_slice(&request_bytes) {
+        // Parse request JSON (RpcRequest wrapper)
+        let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to parse request: {}", e);
@@ -369,8 +412,8 @@ fn handle_client(input: InputStream, output: OutputStream) {
             }
         };
 
-        // Handle request
-        let response = handle_request(request);
+        // Handle request with session tracking
+        let response = handle_request(rpc_request.request, rpc_request.session_id);
 
         // Serialize response
         let response_bytes = match serde_json::to_vec(&response) {

@@ -5,7 +5,7 @@
 
 pub mod messages;
 
-pub use messages::{DirEntry, ErrorCode, Metadata, Request, Response};
+pub use messages::{DirEntry, ErrorCode, Metadata, Request, Response, RpcRequest};
 
 /// Protocol version
 pub const PROTOCOL_VERSION: u32 = 1;
