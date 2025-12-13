@@ -1915,20 +1915,10 @@ dependencies = [
 [[package]]
 name = "vfs-demo-app1"
 version = "0.1.0"
-dependencies = [
- "serde_json",
- "vfs-rpc-protocol",
- "wit-bindgen 0.36.0",
-]
 
 [[package]]
 name = "vfs-demo-app2"
 version = "0.1.0"
-dependencies = [
- "serde_json",
- "vfs-rpc-protocol",
- "wit-bindgen 0.36.0",
-]
 
 [[package]]
 name = "vfs-host"
