@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 
 use crate::types::BLOCK_SIZE;
 
+#[derive(Default)]
 pub struct BlockStorage {
     blocks: Vec<Option<Box<[u8; BLOCK_SIZE]>>>,
     size: usize, // Actual file size (may be less than blocks.len() * BLOCK_SIZE)

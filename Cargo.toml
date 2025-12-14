@@ -47,3 +47,8 @@ resolver="3"
 
 [profile.dev]
 opt-level = 1
+
+# Workaround for rust-lld crash with crc-fast on wasm32-wasip2
+# https://github.com/llvm/llvm-project/issues/ (lld::wasm::ElemSection::writeBody)
+[profile.release.package.crc-fast]
+opt-level = 1
