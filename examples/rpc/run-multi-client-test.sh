@@ -1,6 +1,8 @@
 #!/bin/bash
 # Multi-client VFS RPC test script
 # Tests that Writer app can write to the shared VFS and Reader app can read from it
+#
+# Uses wac compose to build composed components (no native binary needed)
 
 set -e
 
@@ -16,13 +18,25 @@ sleep 1
 echo "=== Building components ==="
 # Build WASM components
 cargo build -p vfs-rpc-server -p demo-writer -p demo-reader -p rpc-adapter --target wasm32-wasip2 2>&1 | tail -1
-# Build native runner
-cargo build -p rpc-fs-runner 2>&1 | tail -1
+
+# Compose with wac
+echo "Composing demo-writer with rpc-adapter..."
+wac plug \
+    --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+    target/wasm32-wasip2/debug/demo-writer.wasm \
+    -o target/wasm32-wasip2/debug/composed-demo-writer.wasm
+
+echo "Composing demo-reader with rpc-adapter..."
+wac plug \
+    --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+    target/wasm32-wasip2/debug/demo-reader.wasm \
+    -o target/wasm32-wasip2/debug/composed-demo-reader.wasm
+
 echo "Build complete"
 
 echo ""
 echo "=== Starting VFS RPC Server ==="
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm > /dev/null 2>&1 &
+wasmtime run -S inherit-network=y -S http ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm > /dev/null 2>&1 &
 SERVER_PID=$!
 sleep 2
 
@@ -37,11 +51,11 @@ echo "Server started (PID: $SERVER_PID)"
 
 echo ""
 echo "=== Running Writer App ==="
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm 2>&1 | grep -E "^(===|Creating|Writing|  |Application)" || true
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm 2>&1 | grep -E "^(===|Creating|Writing|  |Application)" || true
 
 echo ""
 echo "=== Running Reader App ==="
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm 2>&1 | grep -E "^(===|Getting|Reading|  |Application|\")" || true
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm 2>&1 | grep -E "^(===|Getting|Reading|  |Application|\")" || true
 
 echo ""
 echo "=== Test completed successfully ==="

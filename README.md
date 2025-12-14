@@ -24,11 +24,9 @@ halycon/
 │   ├── hosts/
 │   │   ├── vfs-host/           # Host implementation for vfs-adapter
 │   │   └── vfs-rpc-host/       # Host implementation for rpc-adapter
-│   ├── rpc/
-│   │   ├── vfs-rpc-protocol/   # RPC protocol definitions
-│   │   └── vfs-rpc-server/     # RPC server (WASM component)
-│   └── runners/
-│       └── rpc-fs-runner/      # Native runner for RPC-based apps
+│   └── rpc/
+│       ├── vfs-rpc-protocol/   # RPC protocol definitions
+│       └── vfs-rpc-server/     # RPC server (WASM component)
 ├── examples/
 │   ├── rpc/                    # RPC-based examples
 │   │   ├── demo-writer/        # Writer application
@@ -47,7 +45,7 @@ halycon/
 ### Build Native Crates
 
 ```bash
-cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host
 ```
 
 ### Build WASM Components
@@ -67,7 +65,7 @@ cargo build --target wasm32-wasip2 \
 
 ```bash
 # Native crates
-cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host -p rpc-fs-runner
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host
 
 # WASM components
 cargo build --target wasm32-wasip2 \
@@ -91,19 +89,22 @@ This example demonstrates multiple applications sharing a single VFS instance:
 Or manually:
 
 ```bash
+# Build composed components
+./examples/rpc/build-composed.sh
+
 # Terminal 1: Start VFS RPC Server
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+wasmtime run -S inherit-network=y -S http ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
 
 # Terminal 2: Run Writer App (creates files)
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm
 
 # Terminal 3: Run Reader App (reads files created by Writer)
-./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm
+wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm
 ```
 
 #### Direct RPC Demo
 
-This example shows direct WASI socket communication with the VFS server (without using rpc-fs-runner):
+This example shows direct WASI socket communication with the VFS server:
 
 ```bash
 # Use the provided script
@@ -151,10 +152,7 @@ cargo test
 
 2. RPC Adapter: A WASM component that implements WASI filesystem interfaces. When an application calls `std::fs::write()`, the rpc-adapter intercepts the call and forwards it to the VFS server via TCP.
 
-3. RPC FS Runner: A native Rust application that:
-   - Loads the rpc-adapter WASM component
-   - Loads the application WASM component
-   - Composes them so the application's filesystem calls go through the rpc-adapter
+3. Build-time Composition: Applications are composed with rpc-adapter using `wac plug` at build time, creating a self-contained WASM component that can run directly with wasmtime.
 
 4. Application: Any WASM application using standard `std::fs` APIs. It doesn't need to know about the VFS; everything is transparent.
 
