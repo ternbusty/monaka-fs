@@ -74,16 +74,15 @@ make run-component-model-static-c
 ### RPC Approach
 
 ```bash
-# Build all RPC components
-make build-rpc-all
+# Build composed components (uses wac plug)
+make build-rpc-composed
 
 # Terminal 1: Start VFS RPC Server
 make start-rpc-server
 
-# Terminal 2: Run demos
+# Terminal 2: Run demos (no native binary needed)
 make run-rpc-demo-writer
 make run-rpc-demo-reader
-make run-rpc-demo-std-fs
 
 # Stop server when done
 make stop-rpc-server
@@ -204,13 +203,13 @@ Output: `target/wasm32-wasip2/debug/component-c.wasm`
 ### RPC Components
 
 ```bash
-# Build all
-make build-rpc-all
+# Build all (server + demos + composed)
+make build-rpc-composed
 
 # Or individually:
 make build-rpc-server   # VFS RPC server
-make build-rpc-runner   # rpc-fs-runner host
 make build-rpc-demos    # demo applications
+make compose-rpc-demos  # compose demos with rpc-adapter
 ```
 
 ### Legacy Examples (Deprecated)
@@ -292,11 +291,11 @@ make run-legacy-rust
 #### Connection refused
 - Ensure VFS RPC server is running first: `make start-rpc-server`
 - Check that port 9000 is not in use: `lsof -i :9000`
-- Verify rpc-fs-runner is built: `make build-rpc-runner`
+- Verify composed components are built: `make compose-rpc-demos`
 
 #### Network permission errors
-- rpc-fs-runner host enables network permissions via `inherit_network()`
-- For server, use `wasmtime run -S inherit-network=y`
+- Composed applications need network permissions: `wasmtime run -S inherit-network=y`
+- For server, use `wasmtime run -S inherit-network=y -S http`
 
 ### Legacy Examples (Deprecated)
 

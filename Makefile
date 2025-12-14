@@ -10,7 +10,7 @@
 .PHONY: build-legacy-c-release build-legacy-rust-release build-legacy-all-release
 .PHONY: run-legacy-c run-legacy-rust run-legacy-all
 .PHONY: run-legacy-c-release run-legacy-rust-release run-legacy-all-release
-.PHONY: build-rpc-server build-rpc-runner build-rpc-demos build-rpc-all
+.PHONY: build-rpc-server build-rpc-demos build-rpc-all
 .PHONY: build-rpc-adapter compose-rpc-demos build-rpc-composed
 .PHONY: start-rpc-server stop-rpc-server run-rpc-demo-writer run-rpc-demo-reader run-rpc-demo-std-fs
 .PHONY: run-rpc-composed-writer run-rpc-composed-reader run-rpc-composed-test
@@ -165,12 +165,6 @@ build-rpc-server:
 	@cargo build -p vfs-rpc-server --target wasm32-wasip2
 	@echo "Built: target/wasm32-wasip2/debug/vfs_rpc_server.wasm"
 
-# Build rpc-fs-runner host program
-build-rpc-runner:
-	@echo "Building rpc-fs-runner host..."
-	@cargo build -p rpc-fs-runner
-	@echo "Built: target/debug/rpc-fs-runner"
-
 # Build RPC demo applications
 build-rpc-demos:
 	@echo "Building RPC demo applications..."
@@ -181,7 +175,7 @@ build-rpc-demos:
 	@echo "Built all RPC demos"
 
 # Build all RPC components
-build-rpc-all: build-rpc-server build-rpc-runner build-rpc-demos
+build-rpc-all: build-rpc-server build-rpc-demos
 
 # Start VFS RPC server (runs in background)
 start-rpc-server: build-rpc-server
@@ -196,19 +190,19 @@ stop-rpc-server:
 	@echo "Server stopped."
 
 # Run demo-writer (requires server running)
-run-rpc-demo-writer: build-rpc-runner build-rpc-demos
+run-rpc-demo-writer: compose-rpc-demos
 	@echo "Running demo-writer..."
-	@./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo_writer.wasm
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm
 
 # Run demo-reader (requires server running)
-run-rpc-demo-reader: build-rpc-runner build-rpc-demos
+run-rpc-demo-reader: compose-rpc-demos
 	@echo "Running demo-reader..."
-	@./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo_reader.wasm
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm
 
-# Run demo-std-fs (requires server running)
-run-rpc-demo-std-fs: build-rpc-runner build-rpc-demos
+# Run demo-std-fs (requires server running, uses direct RPC)
+run-rpc-demo-std-fs: build-rpc-demos
 	@echo "Running demo-std-fs..."
-	@./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo_std_fs.wasm
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/demo_std_fs.wasm
 
 # =============================================================================
 # RPC Composed (Build-time composition with wac - no native binary needed)
@@ -417,7 +411,6 @@ help:
 	@echo ""
 	@echo "RPC (requires server running):"
 	@echo "  make build-rpc-server                   - Build VFS RPC server"
-	@echo "  make build-rpc-runner                   - Build rpc-fs-runner host"
 	@echo "  make build-rpc-demos                    - Build demo applications"
 	@echo "  make build-rpc-all                      - Build all RPC components"
 	@echo "  make start-rpc-server                   - Start VFS RPC server"

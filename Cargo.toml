@@ -15,9 +15,6 @@ members = [
   "crates/rpc/vfs-rpc-protocol",
   "crates/rpc/vfs-rpc-server",
 
-  # Runners
-  "crates/runners/rpc-fs-runner",
-
   # Examples - RPC
   "examples/rpc/demo-writer",
   "examples/rpc/demo-reader",
@@ -32,7 +29,6 @@ default-members = [
   "crates/hosts/vfs-host",
   "crates/hosts/vfs-rpc-host",
   "crates/rpc/vfs-rpc-protocol",
-  "crates/runners/rpc-fs-runner",
   "examples/component-model/runtime-linker",
 ]
 exclude = [

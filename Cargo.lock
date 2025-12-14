@@ -1912,16 +1912,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpc-fs-runner"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "vfs-rpc-host",
- "wasmtime",
- "wasmtime-wasi",
-]
-
-[[package]]
 name = "runtime-linker"
 version = "0.1.0"
 dependencies = [

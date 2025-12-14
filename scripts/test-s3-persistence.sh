@@ -87,16 +87,16 @@ start_server_bg() {
     echo $!
 }
 
-# Run demo-writer
+# Run demo-writer (composed component)
 run_writer() {
     log_info "Running demo-writer..."
-    ./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-writer.wasm
+    wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm
 }
 
-# Run demo-reader
+# Run demo-reader (composed component)
 run_reader() {
     log_info "Running demo-reader..."
-    ./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo-reader.wasm
+    wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm
 }
 
 # Show S3 contents
