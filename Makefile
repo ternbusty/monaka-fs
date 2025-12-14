@@ -11,7 +11,9 @@
 .PHONY: run-legacy-c run-legacy-rust run-legacy-all
 .PHONY: run-legacy-c-release run-legacy-rust-release run-legacy-all-release
 .PHONY: build-rpc-server build-rpc-runner build-rpc-demos build-rpc-all
+.PHONY: build-rpc-adapter compose-rpc-demos build-rpc-composed
 .PHONY: start-rpc-server stop-rpc-server run-rpc-demo-writer run-rpc-demo-reader run-rpc-demo-std-fs
+.PHONY: run-rpc-composed-writer run-rpc-composed-reader run-rpc-composed-test
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -209,6 +211,63 @@ run-rpc-demo-std-fs: build-rpc-runner build-rpc-demos
 	@./target/debug/rpc-fs-runner ./target/wasm32-wasip2/debug/demo_std_fs.wasm
 
 # =============================================================================
+# RPC Composed (Build-time composition with wac - no native binary needed)
+# =============================================================================
+
+# Build rpc-adapter WASM component
+build-rpc-adapter:
+	@echo "Building rpc-adapter..."
+	@cargo build -p rpc-adapter --target wasm32-wasip2
+	@echo "Built: target/wasm32-wasip2/debug/rpc_adapter.wasm"
+
+# Compose demo apps with rpc-adapter (build-time composition)
+compose-rpc-demos: build-rpc-adapter build-rpc-demos
+	@echo "Composing demo-writer with rpc-adapter..."
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+		target/wasm32-wasip2/debug/demo-writer.wasm \
+		-o target/wasm32-wasip2/debug/composed-demo-writer.wasm
+	@echo "Composing demo-reader with rpc-adapter..."
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+		target/wasm32-wasip2/debug/demo-reader.wasm \
+		-o target/wasm32-wasip2/debug/composed-demo-reader.wasm
+	@echo "Composed components created"
+
+# Build all composed components
+build-rpc-composed: build-rpc-server compose-rpc-demos
+	@echo "All RPC composed components built"
+
+# Run composed demo-writer (requires server running, no native binary needed)
+run-rpc-composed-writer: compose-rpc-demos
+	@echo "Running composed demo-writer..."
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm
+
+# Run composed demo-reader (requires server running, no native binary needed)
+run-rpc-composed-reader: compose-rpc-demos
+	@echo "Running composed demo-reader..."
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm
+
+# Run full composed test (starts server, runs writer, runs reader, stops server)
+run-rpc-composed-test: build-rpc-composed
+	@echo "=============================================="
+	@echo "  RPC Composed Component Test"
+	@echo "=============================================="
+	@pkill -f vfs_rpc_server.wasm 2>/dev/null || true
+	@sleep 1
+	@echo "Starting VFS RPC server..."
+	@wasmtime run -S inherit-network=y -S http ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm > /tmp/vfs-server-make.log 2>&1 &
+	@sleep 2
+	@echo "Running composed demo-writer..."
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm 2>&1 | grep -v "^\[RPC-ADAPTER\]"
+	@echo ""
+	@echo "Running composed demo-reader..."
+	@wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm 2>&1 | grep -v "^\[RPC-ADAPTER\]"
+	@echo ""
+	@pkill -f vfs_rpc_server.wasm 2>/dev/null || true
+	@echo "Test completed successfully!"
+
+# =============================================================================
 # Legacy (Deprecated)
 # =============================================================================
 
@@ -366,6 +425,14 @@ help:
 	@echo "  make run-rpc-demo-writer                - Run demo-writer"
 	@echo "  make run-rpc-demo-reader                - Run demo-reader"
 	@echo "  make run-rpc-demo-std-fs                - Run demo-std-fs"
+	@echo ""
+	@echo "RPC Composed (no native binary needed):"
+	@echo "  make build-rpc-adapter                  - Build rpc-adapter"
+	@echo "  make compose-rpc-demos                  - Compose demos with rpc-adapter"
+	@echo "  make build-rpc-composed                 - Build all composed components"
+	@echo "  make run-rpc-composed-writer            - Run composed demo-writer"
+	@echo "  make run-rpc-composed-reader            - Run composed demo-reader"
+	@echo "  make run-rpc-composed-test              - Run full composed test"
 	@echo ""
 	@echo "Legacy (Deprecated, wasm32-wasip1):"
 	@echo "  make build-legacy-c                     - Build C example"

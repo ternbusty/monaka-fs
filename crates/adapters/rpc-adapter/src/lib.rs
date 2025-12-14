@@ -472,10 +472,15 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             "[RPC-ADAPTER] read_via_stream called for handle={}, offset={}",
             self.handle, offset
         );
-        // Stream operations cause "Cannot start runtime from within runtime" errors
-        // because they make WASI socket calls while already in a WASI call context.
-        // Return Unsupported to force callers to use Descriptor::read instead.
-        Err(ErrorCode::Unsupported)
+        // Verify the descriptor is valid
+        with_rpc_state(|state| state.get_server_fd(self.handle))?;
+
+        Ok(exports::wasi::filesystem::types::InputStream::new(
+            UnifiedInputStream::File(FileInputStream {
+                handle: self.handle,
+                offset: Cell::new(offset),
+            }),
+        ))
     }
 
     fn write_via_stream(
@@ -486,10 +491,15 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             "[RPC-ADAPTER] write_via_stream called for handle={}, offset={}",
             self.handle, offset
         );
-        // Stream operations cause "Cannot start runtime from within runtime" errors
-        // because they make WASI socket calls while already in a WASI call context.
-        // Return Unsupported to force callers to use Descriptor::write instead.
-        Err(ErrorCode::Unsupported)
+        // Verify the descriptor is valid
+        with_rpc_state(|state| state.get_server_fd(self.handle))?;
+
+        Ok(exports::wasi::filesystem::types::OutputStream::new(
+            UnifiedOutputStream::File(FileOutputStream {
+                handle: self.handle,
+                offset: Cell::new(offset),
+            }),
+        ))
     }
 
     fn append_via_stream(
@@ -880,6 +890,209 @@ struct DirectoryEntryStreamImpl {
     index: Cell<usize>,
 }
 
+// File input stream implementation for read_via_stream
+struct FileInputStream {
+    handle: u32,       // Descriptor handle
+    offset: Cell<u64>, // Current read position
+}
+
+impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
+    fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
+        self.blocking_read(len)
+    }
+
+    fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle)).map_err(|_| {
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            })
+        })?;
+
+        let current_offset = self.offset.get();
+
+        let result = with_connection(|conn| {
+            // Seek to offset
+            let seek_request = Request::Seek {
+                fd: server_fd,
+                offset: current_offset as i64,
+                whence: 0,
+            };
+            conn.send(&seek_request)?;
+
+            match conn.receive()? {
+                Response::Position { .. } => {}
+                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
+                _ => return Err(ErrorCode::Io),
+            }
+
+            // Read data
+            let read_request = Request::Read {
+                fd: server_fd,
+                length: len as usize,
+            };
+            conn.send(&read_request)?;
+
+            match conn.receive()? {
+                Response::Data { bytes } => Ok(bytes),
+                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                _ => Err(ErrorCode::Io),
+            }
+        });
+
+        match result {
+            Ok(bytes) => {
+                self.offset.set(current_offset + bytes.len() as u64);
+                if bytes.is_empty() {
+                    Err(exports::wasi::io::streams::StreamError::Closed)
+                } else {
+                    Ok(bytes)
+                }
+            }
+            Err(_) => Err(
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                }),
+            ),
+        }
+    }
+
+    fn skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        self.blocking_skip(len)
+    }
+
+    fn blocking_skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        let current_offset = self.offset.get();
+        self.offset.set(current_offset + len);
+        Ok(len)
+    }
+
+    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
+        // Return an always-ready pollable since RPC is blocking
+        exports::wasi::io::poll::Pollable::new(AlwaysReadyPollable)
+    }
+}
+
+// File output stream implementation for write_via_stream
+struct FileOutputStream {
+    handle: u32,       // Descriptor handle
+    offset: Cell<u64>, // Current write position
+}
+
+impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
+    fn check_write(&self) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        // Always ready to accept writes (up to 64KB at a time)
+        Ok(65536)
+    }
+
+    fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
+        self.blocking_write_and_flush(contents)
+    }
+
+    fn blocking_write_and_flush(
+        &self,
+        contents: Vec<u8>,
+    ) -> Result<(), exports::wasi::io::streams::StreamError> {
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle)).map_err(|_| {
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            })
+        })?;
+
+        let current_offset = self.offset.get();
+        let write_len = contents.len() as u64;
+
+        let result = with_connection(|conn| {
+            // Seek to offset
+            let seek_request = Request::Seek {
+                fd: server_fd,
+                offset: current_offset as i64,
+                whence: 0,
+            };
+            conn.send(&seek_request)?;
+
+            match conn.receive()? {
+                Response::Position { .. } => {}
+                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
+                _ => return Err(ErrorCode::Io),
+            }
+
+            // Write data
+            let write_request = Request::Write {
+                fd: server_fd,
+                data: contents,
+            };
+            conn.send(&write_request)?;
+
+            match conn.receive()? {
+                Response::Written { count } => Ok(count as u64),
+                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                _ => Err(ErrorCode::Io),
+            }
+        });
+
+        match result {
+            Ok(written) => {
+                self.offset.set(current_offset + written);
+                Ok(())
+            }
+            Err(_) => Err(
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                }),
+            ),
+        }
+    }
+
+    fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
+        Ok(())
+    }
+
+    fn blocking_flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
+        Ok(())
+    }
+
+    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
+        // Return an always-ready pollable since RPC is blocking
+        exports::wasi::io::poll::Pollable::new(AlwaysReadyPollable)
+    }
+
+    fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
+        let zeroes = vec![0u8; len as usize];
+        self.blocking_write_and_flush(zeroes)
+    }
+
+    fn blocking_write_zeroes_and_flush(
+        &self,
+        len: u64,
+    ) -> Result<(), exports::wasi::io::streams::StreamError> {
+        self.write_zeroes(len)
+    }
+
+    fn splice(
+        &self,
+        _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
+        _len: u64,
+    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        Err(
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            }),
+        )
+    }
+
+    fn blocking_splice(
+        &self,
+        _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
+        _len: u64,
+    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        Err(
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            }),
+        )
+    }
+}
+
 // Dummy pollable that's always ready (avoids nested runtime issue with WASI imports)
 struct AlwaysReadyPollable;
 
@@ -919,8 +1132,8 @@ impl exports::wasi::io::error::Guest for RpcAdapter {
 
 // Implement Guest trait for wasi:io/streams
 impl exports::wasi::io::streams::Guest for RpcAdapter {
-    type InputStream = PassthroughInputStream;
-    type OutputStream = PassthroughOutputStream;
+    type InputStream = UnifiedInputStream;
+    type OutputStream = UnifiedOutputStream;
 }
 
 // Implement Guest trait for wasi:io/poll
@@ -937,25 +1150,217 @@ impl exports::wasi::io::poll::Guest for RpcAdapter {
 impl exports::wasi::cli::stdin::Guest for RpcAdapter {
     fn get_stdin() -> exports::wasi::cli::stdin::InputStream {
         let inner = wasi::cli::stdin::get_stdin();
-        exports::wasi::io::streams::InputStream::new(PassthroughInputStream { inner })
+        exports::wasi::io::streams::InputStream::new(UnifiedInputStream::Passthrough(inner))
     }
 }
 
 impl exports::wasi::cli::stdout::Guest for RpcAdapter {
     fn get_stdout() -> exports::wasi::cli::stdout::OutputStream {
         let inner = wasi::cli::stdout::get_stdout();
-        exports::wasi::io::streams::OutputStream::new(PassthroughOutputStream { inner })
+        exports::wasi::io::streams::OutputStream::new(UnifiedOutputStream::Passthrough(inner))
     }
 }
 
 impl exports::wasi::cli::stderr::Guest for RpcAdapter {
     fn get_stderr() -> exports::wasi::cli::stderr::OutputStream {
         let inner = wasi::cli::stderr::get_stderr();
-        exports::wasi::io::streams::OutputStream::new(PassthroughOutputStream { inner })
+        exports::wasi::io::streams::OutputStream::new(UnifiedOutputStream::Passthrough(inner))
     }
 }
 
-// Passthrough stream implementations
+// Unified stream types that can be either file-based or passthrough
+enum UnifiedInputStream {
+    File(FileInputStream),
+    Passthrough(wasi::io::streams::InputStream),
+}
+
+impl exports::wasi::io::streams::GuestInputStream for UnifiedInputStream {
+    fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedInputStream::File(f) => f.read(len),
+            UnifiedInputStream::Passthrough(p) => p.read(len).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedInputStream::File(f) => f.blocking_read(len),
+            UnifiedInputStream::Passthrough(p) => p.blocking_read(len).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedInputStream::File(f) => f.skip(len),
+            UnifiedInputStream::Passthrough(p) => p.skip(len).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn blocking_skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedInputStream::File(f) => f.blocking_skip(len),
+            UnifiedInputStream::Passthrough(p) => p.blocking_skip(len).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
+        match self {
+            UnifiedInputStream::File(f) => f.subscribe(),
+            UnifiedInputStream::Passthrough(p) => {
+                exports::wasi::io::poll::Pollable::new(PassthroughPollable {
+                    inner: p.subscribe(),
+                })
+            }
+        }
+    }
+}
+
+enum UnifiedOutputStream {
+    File(FileOutputStream),
+    Passthrough(wasi::io::streams::OutputStream),
+}
+
+impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
+    fn check_write(&self) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.check_write(),
+            UnifiedOutputStream::Passthrough(p) => p.check_write().map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.write(contents),
+            UnifiedOutputStream::Passthrough(p) => p.write(&contents).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn blocking_write_and_flush(
+        &self,
+        contents: Vec<u8>,
+    ) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.blocking_write_and_flush(contents),
+            UnifiedOutputStream::Passthrough(p) => {
+                p.blocking_write_and_flush(&contents).map_err(|_| {
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                        exports::wasi::io::error::Error::from_handle(0)
+                    })
+                })
+            }
+        }
+    }
+
+    fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.flush(),
+            UnifiedOutputStream::Passthrough(p) => p.flush().map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn blocking_flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.blocking_flush(),
+            UnifiedOutputStream::Passthrough(p) => p.blocking_flush().map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
+        match self {
+            UnifiedOutputStream::File(f) => f.subscribe(),
+            UnifiedOutputStream::Passthrough(p) => {
+                exports::wasi::io::poll::Pollable::new(PassthroughPollable {
+                    inner: p.subscribe(),
+                })
+            }
+        }
+    }
+
+    fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.write_zeroes(len),
+            UnifiedOutputStream::Passthrough(p) => p.write_zeroes(len).map_err(|_| {
+                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                    exports::wasi::io::error::Error::from_handle(0)
+                })
+            }),
+        }
+    }
+
+    fn blocking_write_zeroes_and_flush(
+        &self,
+        len: u64,
+    ) -> Result<(), exports::wasi::io::streams::StreamError> {
+        match self {
+            UnifiedOutputStream::File(f) => f.blocking_write_zeroes_and_flush(len),
+            UnifiedOutputStream::Passthrough(p) => {
+                p.blocking_write_zeroes_and_flush(len).map_err(|_| {
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                        exports::wasi::io::error::Error::from_handle(0)
+                    })
+                })
+            }
+        }
+    }
+
+    fn splice(
+        &self,
+        _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
+        _len: u64,
+    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        Err(
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            }),
+        )
+    }
+
+    fn blocking_splice(
+        &self,
+        _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
+        _len: u64,
+    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
+        Err(
+            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                exports::wasi::io::error::Error::from_handle(0)
+            }),
+        )
+    }
+}
+
+// Passthrough stream implementations (kept for reference, but no longer used directly)
 struct PassthroughInputStream {
     inner: wasi::io::streams::InputStream,
 }
