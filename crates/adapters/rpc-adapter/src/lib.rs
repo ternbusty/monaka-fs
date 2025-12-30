@@ -3,9 +3,9 @@
 // This is a component that exports WASI filesystem interfaces
 // and delegates to vfs-rpc-server via TCP RPC calls.
 //
-// Design: Uses persistent TCP connection with blocking_* methods only.
-// IMPORTANT: Never use subscribe() to avoid creating child Pollable resources,
-// which would cause "resource has children" errors when creating Descriptor resources.
+// Design: Uses persistent TCP connection with WASI poll for efficient I/O.
+// Socket is kept in PersistentConnection to prevent premature drop.
+// subscribe() creates child Pollables, but they are dropped within each loop iteration.
 
 #![no_main]
 #![allow(warnings)]
@@ -30,21 +30,22 @@ use exports::wasi::filesystem::types::{
     DirectoryEntryStream, ErrorCode, Filesize, NewTimestamp, OpenFlags, PathFlags,
 };
 
+use wasi::io::poll::poll;
 use wasi::io::streams::{InputStream, OutputStream};
 use wasi::sockets::instance_network::instance_network;
 use wasi::sockets::network::{IpAddressFamily, IpSocketAddress, Ipv4SocketAddress};
 use wasi::sockets::tcp::TcpSocket;
 use wasi::sockets::tcp_create_socket::create_tcp_socket;
 
-// Persistent RPC connection: holds socket AND streams globally.
-// The socket must be kept alive because dropping it while streams exist
-// causes "resource has children" error (streams are tracked as children of socket).
+// Persistent RPC connection: holds socket and streams globally.
+// Socket must be kept alive to prevent "resource has children" error when it would be dropped.
+// subscribe() creates child Pollables, but they are dropped within each loop iteration.
 
 static CONN_INIT: Once = Once::new();
 static mut RPC_CONNECTION: Option<PersistentConnection> = None;
 
 struct PersistentConnection {
-    // Keep socket alive to prevent "resource has children" error
+    // Socket is kept alive to prevent premature drop (streams are children of socket)
     #[allow(dead_code)]
     socket: TcpSocket,
     input_stream: InputStream,
@@ -76,12 +77,14 @@ impl PersistentConnection {
 
         eprintln!("[RPC-ADAPTER] PersistentConnection::connect: waiting for connection");
 
-        // Wait for connection to complete (busy-wait, NO subscribe!)
+        // Wait for connection to complete using poll() for efficient waiting
         let (mut input_stream, mut output_stream) = loop {
             match socket.finish_connect() {
                 Ok(streams) => break streams,
                 Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
-                    // Busy-wait: just continue trying (no subscribe to avoid child resources)
+                    // Use subscribe() + poll() for efficient waiting
+                    let pollable = socket.subscribe();
+                    poll(&[&pollable]);
                     continue;
                 }
                 Err(e) => {
@@ -90,12 +93,10 @@ impl PersistentConnection {
                 }
             }
         };
-        // IMPORTANT: Keep socket alive! Dropping it causes "resource has children" error
-        // because streams are tracked as children of the socket in wasmtime's resource table.
 
         eprintln!("[RPC-ADAPTER] PersistentConnection::connect: connected, sending handshake");
 
-        // Do handshake (using blocking_* methods only, no subscribe)
+        // Do handshake
         // session_id is None for the Connect request
         Self::send_raw(
             &mut output_stream,
@@ -116,7 +117,7 @@ impl PersistentConnection {
                     session_id
                 );
                 Ok(Self {
-                    socket, // Keep socket alive to prevent "resource has children" error
+                    socket,
                     input_stream,
                     output_stream,
                     session_id,
@@ -178,48 +179,45 @@ impl PersistentConnection {
 
     fn receive_raw(input_stream: &mut InputStream) -> Result<Response, ErrorCode> {
         eprintln!("[RPC-ADAPTER] receive_raw: reading length prefix...");
-        // Read 4-byte length prefix (blocking, NO subscribe)
-        // Retry empty reads. blocking_read can return 0 if data hasn't arrived yet
+        // Read 4-byte length prefix using poll() for efficient waiting
         let mut len_buf = Vec::new();
-        let mut empty_reads = 0;
-        const MAX_EMPTY_READS: u32 = 1000; // Busy-wait limit
 
         while len_buf.len() < 4 {
             let remaining = 4 - len_buf.len() as u64;
             let bytes = match input_stream.blocking_read(remaining) {
                 Ok(b) => b,
+                Err(wasi::io::streams::StreamError::Closed) => {
+                    eprintln!("[RPC-ADAPTER] receive_raw: stream closed");
+                    return Err(ErrorCode::Io);
+                }
                 Err(e) => {
                     eprintln!("[RPC-ADAPTER] receive_raw: blocking_read error: {:?}", e);
                     return Err(ErrorCode::Io);
                 }
             };
             if bytes.is_empty() {
-                empty_reads += 1;
-                if empty_reads > MAX_EMPTY_READS {
-                    eprintln!(
-                        "[RPC-ADAPTER] receive_raw: too many empty reads ({}), EOF",
-                        empty_reads
-                    );
-                    return Err(ErrorCode::Io);
-                }
-                // Busy-wait: just continue trying (no subscribe to avoid child resources)
+                // Use subscribe() + poll() for efficient waiting
+                let pollable = input_stream.subscribe();
+                poll(&[&pollable]);
                 continue;
             }
-            empty_reads = 0;
             len_buf.extend_from_slice(&bytes);
         }
 
         let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
         eprintln!("[RPC-ADAPTER] receive_raw: message length is {} bytes", len);
 
-        // Read message body (blocking, NO subscribe)
+        // Read message body using poll() for efficient waiting
         let mut data = Vec::new();
-        empty_reads = 0;
 
         while (data.len() as u64) < len {
             let remaining = len - data.len() as u64;
             let bytes = match input_stream.blocking_read(remaining) {
                 Ok(b) => b,
+                Err(wasi::io::streams::StreamError::Closed) => {
+                    eprintln!("[RPC-ADAPTER] receive_raw: stream closed during body read");
+                    return Err(ErrorCode::Io);
+                }
                 Err(e) => {
                     eprintln!(
                         "[RPC-ADAPTER] receive_raw: blocking_read body error: {:?}",
@@ -229,18 +227,11 @@ impl PersistentConnection {
                 }
             };
             if bytes.is_empty() {
-                empty_reads += 1;
-                if empty_reads > MAX_EMPTY_READS {
-                    eprintln!(
-                        "[RPC-ADAPTER] receive_raw: too many empty reads in body ({}), EOF",
-                        empty_reads
-                    );
-                    return Err(ErrorCode::Io);
-                }
-                // Busy-wait: just continue trying
+                // Use subscribe() + poll() for efficient waiting
+                let pollable = input_stream.subscribe();
+                poll(&[&pollable]);
                 continue;
             }
-            empty_reads = 0;
             data.extend_from_slice(&bytes);
         }
 
