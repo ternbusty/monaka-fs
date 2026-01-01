@@ -61,18 +61,6 @@ cargo build --target wasm32-wasip2 \
   -p direct-rpc-demo
 ```
 
-### Build Everything
-
-```bash
-# Native crates
-cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host
-
-# WASM components
-cargo build --target wasm32-wasip2 \
-  -p vfs-adapter -p rpc-adapter -p vfs-rpc-server \
-  -p demo-writer -p demo-reader -p demo-std-fs -p direct-rpc-demo
-```
-
 ## Running Examples
 
 ### RPC Examples
