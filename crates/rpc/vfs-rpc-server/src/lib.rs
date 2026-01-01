@@ -7,11 +7,13 @@
 #![no_main]
 #![allow(warnings)]
 
+mod file_metadata;
 mod s3_client;
 mod sync_manager;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,8 +23,9 @@ use vfs_rpc_protocol::{
     DirEntry, ErrorCode, Metadata, Request, Response, RpcRequest, PROTOCOL_VERSION,
 };
 
+use file_metadata::MetadataCache;
 use s3_client::S3Storage;
-use sync_manager::{load_from_s3, SyncConfig, SyncManager};
+use sync_manager::{init_from_s3, SyncConfig, SyncManager};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -31,11 +34,25 @@ wit_bindgen::generate!({
     generate_all,
 });
 
+use wasi::clocks::monotonic_clock::subscribe_duration;
 use wasi::io::poll::poll;
 use wasi::io::streams::{InputStream, OutputStream};
 use wasi::sockets::instance_network::instance_network;
 use wasi::sockets::network::{IpAddressFamily, IpSocketAddress, Ipv4SocketAddress};
 use wasi::sockets::tcp_create_socket::create_tcp_socket;
+
+/// Result of trying to read a message with timeout
+enum ReadResult {
+    /// Successfully read a message
+    Message(Vec<u8>),
+    /// Timeout occurred, no data available
+    Timeout,
+    /// Client disconnected
+    Disconnected,
+}
+
+/// Timeout for polling (5 seconds in nanoseconds)
+const POLL_TIMEOUT_NS: u64 = 5_000_000_000;
 
 // Session counter (used as part of hash input for uniqueness)
 static mut SESSION_COUNTER: u64 = 0;
@@ -72,6 +89,8 @@ fn generate_session_id() -> String {
 struct ServerContext {
     fs: Rc<RefCell<Fs>>,
     sync_manager: Option<SyncManager>,
+    /// Map from file descriptor to path for sync tracking
+    fd_path_map: RefCell<HashMap<u32, String>>,
 }
 
 impl ServerContext {
@@ -104,7 +123,11 @@ impl ServerContext {
 
             Request::OpenPath { path, flags } => {
                 match self.fs.borrow_mut().open_path_with_flags(&path, flags) {
-                    Ok(fd) => Response::Fd { fd },
+                    Ok(fd) => {
+                        // Track fd -> path mapping for sync
+                        self.fd_path_map.borrow_mut().insert(fd, path);
+                        Response::Fd { fd }
+                    }
                     Err(e) => map_fs_error(e),
                 }
             }
@@ -124,9 +147,11 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().write(fd, &data);
                 match result {
                     Ok(n) => {
-                        // Mark as dirty for S3 sync (periodic snapshots handle this)
+                        // Enqueue upload with actual path
                         if let Some(ref sync) = self.sync_manager {
-                            sync.mark_dirty("__write__".to_string());
+                            if let Some(path) = self.fd_path_map.borrow().get(&fd) {
+                                sync.enqueue_upload(path.clone());
+                            }
                         }
                         Response::Written { count: n }
                     }
@@ -134,10 +159,14 @@ impl ServerContext {
                 }
             }
 
-            Request::Close { fd } => match self.fs.borrow_mut().close(fd) {
-                Ok(()) => Response::Ok,
-                Err(e) => map_fs_error(e),
-            },
+            Request::Close { fd } => {
+                // Remove fd -> path mapping
+                self.fd_path_map.borrow_mut().remove(&fd);
+                match self.fs.borrow_mut().close(fd) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => map_fs_error(e),
+                }
+            }
 
             Request::Seek { fd, offset, whence } => {
                 match self.fs.borrow_mut().seek(fd, offset, whence) {
@@ -148,8 +177,11 @@ impl ServerContext {
 
             Request::Ftruncate { fd, size } => match self.fs.borrow_mut().ftruncate(fd, size) {
                 Ok(()) => {
+                    // Enqueue upload with actual path
                     if let Some(ref sync) = self.sync_manager {
-                        sync.mark_dirty("__truncate__".to_string());
+                        if let Some(path) = self.fd_path_map.borrow().get(&fd) {
+                            sync.enqueue_upload(path.clone());
+                        }
                     }
                     Response::Ok
                 }
@@ -180,38 +212,23 @@ impl ServerContext {
                 Err(e) => map_fs_error(e),
             },
 
-            Request::Mkdir { path } => {
-                let result = self.fs.borrow_mut().mkdir(&path);
-                match result {
-                    Ok(()) => {
-                        if let Some(ref sync) = self.sync_manager {
-                            sync.mark_dirty(path);
-                        }
-                        Response::Ok
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
+            Request::Mkdir { path } => match self.fs.borrow_mut().mkdir(&path) {
+                Ok(()) => Response::Ok,
+                Err(e) => map_fs_error(e),
+            },
 
-            Request::MkdirP { path } => {
-                let result = self.fs.borrow_mut().mkdir_p(&path);
-                match result {
-                    Ok(()) => {
-                        if let Some(ref sync) = self.sync_manager {
-                            sync.mark_dirty(path);
-                        }
-                        Response::Ok
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
+            Request::MkdirP { path } => match self.fs.borrow_mut().mkdir_p(&path) {
+                Ok(()) => Response::Ok,
+                Err(e) => map_fs_error(e),
+            },
 
             Request::Unlink { path } => {
                 let result = self.fs.borrow_mut().unlink(&path);
                 match result {
                     Ok(()) => {
+                        // Enqueue delete for S3 sync
                         if let Some(ref sync) = self.sync_manager {
-                            sync.mark_deleted(path);
+                            sync.enqueue_delete(path);
                         }
                         Response::Ok
                     }
@@ -250,25 +267,32 @@ impl ServerContext {
                 Err(e) => map_fs_error(e),
             },
 
-            Request::Rmdir { path } => {
-                let result = self.fs.borrow_mut().rmdir(&path);
-                match result {
-                    Ok(()) => {
-                        if let Some(ref sync) = self.sync_manager {
-                            sync.mark_deleted(path);
-                        }
-                        Response::Ok
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
+            Request::Rmdir { path } => match self.fs.borrow_mut().rmdir(&path) {
+                Ok(()) => Response::Ok,
+                Err(e) => map_fs_error(e),
+            },
 
             Request::OpenAt {
                 dir_fd,
                 path,
                 flags,
             } => match self.fs.borrow_mut().open_at(dir_fd, &path, flags) {
-                Ok(fd) => Response::Fd { fd },
+                Ok(fd) => {
+                    // Compute absolute path for sync tracking
+                    if let Some(dir_path) = self.fd_path_map.borrow().get(&dir_fd) {
+                        let abs_path = if dir_path == "/" {
+                            format!("/{}", path.trim_start_matches('/'))
+                        } else {
+                            format!(
+                                "{}/{}",
+                                dir_path.trim_end_matches('/'),
+                                path.trim_start_matches('/')
+                            )
+                        };
+                        self.fd_path_map.borrow_mut().insert(fd, abs_path);
+                    }
+                    Response::Fd { fd }
+                }
                 Err(e) => map_fs_error(e),
             },
         }
@@ -294,60 +318,88 @@ fn map_fs_error(error: FsError) -> Response {
     }
 }
 
-/// Read a length-prefixed message from stream
-fn read_message(stream: &InputStream) -> Option<Vec<u8>> {
-    // Read 4-byte length prefix with retry on would-block and partial reads
-    let mut len_buf = Vec::new();
-    let mut empty_reads = 0;
-    while len_buf.len() < 4 {
-        match stream.blocking_read(4 - len_buf.len() as u64) {
-            Ok(bytes) => {
-                if bytes.is_empty() {
-                    empty_reads += 1;
-                    if empty_reads > 10 {
-                        return None;
+/// Try to read a message with timeout
+/// Returns Timeout if no data arrives within POLL_TIMEOUT_NS
+fn try_read_message(stream: &InputStream) -> ReadResult {
+    // First, wait for initial data with timeout
+    let stream_pollable = stream.subscribe();
+    let timeout_pollable = subscribe_duration(POLL_TIMEOUT_NS);
+
+    // Poll both: stream readiness and timeout
+    let ready = poll(&[&stream_pollable, &timeout_pollable]);
+
+    // Check which pollable is ready
+    // ready[0] = stream, ready[1] = timeout
+    if ready.is_empty() || (ready.len() == 1 && ready[0] == 1) {
+        // Only timeout fired, no data
+        return ReadResult::Timeout;
+    }
+
+    // Stream has data (or is closed), try to read
+    match stream.read(1) {
+        Ok(bytes) if bytes.is_empty() => {
+            // Stream closed
+            ReadResult::Disconnected
+        }
+        Ok(first_byte) => {
+            // Got first byte, now read the rest of the length prefix
+            let mut len_buf = first_byte.to_vec();
+
+            // Read remaining 3 bytes of length prefix (blocking is ok now, data is coming)
+            while len_buf.len() < 4 {
+                match stream.blocking_read(4 - len_buf.len() as u64) {
+                    Ok(bytes) => {
+                        if bytes.is_empty() {
+                            let pollable = stream.subscribe();
+                            poll(&[&pollable]);
+                            continue;
+                        }
+                        len_buf.extend_from_slice(&bytes);
                     }
-                    let pollable = stream.subscribe();
-                    poll(&[&pollable]);
-                    continue;
+                    Err(e) => {
+                        if matches!(e, wasi::io::streams::StreamError::Closed) {
+                            return ReadResult::Disconnected;
+                        }
+                        let pollable = stream.subscribe();
+                        poll(&[&pollable]);
+                        continue;
+                    }
                 }
-                empty_reads = 0;
-                len_buf.extend_from_slice(&bytes);
             }
-            Err(e) => {
-                if matches!(e, wasi::io::streams::StreamError::Closed) {
-                    return None;
+
+            let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
+
+            // Read message body
+            let mut data = Vec::new();
+            while (data.len() as u64) < len {
+                match stream.blocking_read(len - data.len() as u64) {
+                    Ok(bytes) => {
+                        if bytes.is_empty() {
+                            let pollable = stream.subscribe();
+                            poll(&[&pollable]);
+                            continue;
+                        }
+                        data.extend_from_slice(&bytes);
+                    }
+                    Err(e) => {
+                        if matches!(e, wasi::io::streams::StreamError::Closed) {
+                            return ReadResult::Disconnected;
+                        }
+                        let pollable = stream.subscribe();
+                        poll(&[&pollable]);
+                        continue;
+                    }
                 }
-                let pollable = stream.subscribe();
-                poll(&[&pollable]);
-                continue;
             }
+
+            ReadResult::Message(data)
+        }
+        Err(wasi::io::streams::StreamError::Closed) => ReadResult::Disconnected,
+        Err(_) => {
+            // Other error, treat as timeout to retry
+            ReadResult::Timeout
         }
     }
-
-    let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
-
-    // Read message body
-    let mut data = Vec::new();
-    while (data.len() as u64) < len {
-        match stream.blocking_read(len - data.len() as u64) {
-            Ok(bytes) => {
-                if bytes.is_empty() {
-                    let pollable = stream.subscribe();
-                    poll(&[&pollable]);
-                    continue;
-                }
-                data.extend_from_slice(&bytes);
-            }
-            Err(_) => {
-                let pollable = stream.subscribe();
-                poll(&[&pollable]);
-                continue;
-            }
-        }
-    }
-
-    Some(data)
 }
 
 /// Write a length-prefixed message to stream
@@ -383,16 +435,24 @@ async fn handle_client(ctx: &ServerContext, input: InputStream, output: OutputSt
     println!("Client connected");
 
     loop {
-        let request_bytes = match read_message(&input) {
-            Some(bytes) => bytes,
-            None => {
-                println!("Client disconnected");
-                // Save snapshot on client disconnect if there are dirty entries
+        // Try to read with timeout for periodic sync
+        let request_bytes = match try_read_message(&input) {
+            ReadResult::Message(bytes) => bytes,
+            ReadResult::Timeout => {
+                // No request received, but run sync check
                 if let Some(ref sync) = ctx.sync_manager {
-                    if sync.dirty_count() > 0 {
-                        println!("[sync] Saving snapshot on client disconnect...");
-                        if let Err(e) = sync.force_snapshot().await {
-                            eprintln!("[sync] Failed to save snapshot: {}", e);
+                    sync.maybe_sync().await;
+                }
+                continue;
+            }
+            ReadResult::Disconnected => {
+                println!("Client disconnected");
+                // Flush pending operations on client disconnect
+                if let Some(ref sync) = ctx.sync_manager {
+                    if sync.pending_count() > 0 {
+                        println!("[sync] Flushing pending operations on client disconnect...");
+                        if let Err(e) = sync.force_flush().await {
+                            eprintln!("[sync] Failed to flush: {}", e);
                         }
                     }
                 }
@@ -430,12 +490,12 @@ async fn handle_client(ctx: &ServerContext, input: InputStream, output: OutputSt
 
         if !write_message(&output, &response_bytes) {
             println!("Client disconnected (write error)");
-            // Save snapshot on client disconnect
+            // Flush pending operations on client disconnect
             if let Some(ref sync) = ctx.sync_manager {
-                if sync.dirty_count() > 0 {
-                    println!("[sync] Saving snapshot on client disconnect...");
-                    if let Err(e) = sync.force_snapshot().await {
-                        eprintln!("[sync] Failed to save snapshot: {}", e);
+                if sync.pending_count() > 0 {
+                    println!("[sync] Flushing pending operations on client disconnect...");
+                    if let Err(e) = sync.force_flush().await {
+                        eprintln!("[sync] Failed to flush: {}", e);
                     }
                 }
             }
@@ -464,16 +524,15 @@ async fn init_server() -> ServerContext {
         // Initialize S3 client
         let s3 = Rc::new(S3Storage::new(bucket, s3_prefix).await);
 
-        // Try to load existing snapshot from S3
-        let fs = match load_from_s3(&s3).await {
-            Ok(Some(fs)) => fs,
-            Ok(None) => Fs::new(),
+        // Try to load existing files from S3
+        let (fs, metadata_cache) = match init_from_s3(&s3).await {
+            Ok((fs, cache)) => (fs, cache),
             Err(e) => {
                 eprintln!(
                     "Failed to load from S3: {}, starting with empty filesystem",
                     e
                 );
-                Fs::new()
+                (Fs::new(), MetadataCache::new())
             }
         };
 
@@ -481,7 +540,7 @@ async fn init_server() -> ServerContext {
 
         // Create sync manager
         let config = SyncConfig::default();
-        let sync_manager = SyncManager::new(s3, fs.clone(), config);
+        let sync_manager = SyncManager::new(s3, fs.clone(), metadata_cache, config);
 
         (fs, Some(sync_manager))
     } else {
@@ -489,7 +548,11 @@ async fn init_server() -> ServerContext {
         (Rc::new(RefCell::new(Fs::new())), None)
     };
 
-    ServerContext { fs, sync_manager }
+    ServerContext {
+        fs,
+        sync_manager,
+        fd_path_map: RefCell::new(HashMap::new()),
+    }
 }
 
 /// Main entry point

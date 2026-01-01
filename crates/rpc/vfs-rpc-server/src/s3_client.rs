@@ -1,11 +1,24 @@
 //! S3 Client for WASI environment
 //!
-//! Provides S3 operations for snapshot storage and file synchronization.
+//! Provides S3 operations for per-file synchronization with bidirectional sync support.
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_smithy_async::rt::sleep::TokioSleep;
 use aws_smithy_wasm::wasi::WasiHttpClientBuilder;
+
+/// S3 object info from listing
+#[derive(Debug, Clone)]
+pub struct S3ObjectInfo {
+    /// Key without prefix (VFS path)
+    pub path: String,
+    /// ETag (usually MD5)
+    pub etag: String,
+    /// Last modified timestamp (Unix epoch seconds)
+    pub last_modified: u64,
+    /// Size in bytes
+    pub size: u64,
+}
 
 /// S3 client wrapper for VFS persistence
 pub struct S3Storage {
@@ -59,86 +72,6 @@ impl S3Storage {
         format!("{}{}", self.prefix, path.trim_start_matches('/'))
     }
 
-    /// Load snapshot from S3
-    ///
-    /// Returns None if snapshot doesn't exist
-    pub async fn load_snapshot(&self) -> Result<Option<Vec<u8>>, S3Error> {
-        let key = self.key("snapshot.json");
-        println!("[s3] Loading snapshot from s3://{}/{}", self.bucket, key);
-
-        match self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                println!("[s3] Snapshot found, reading body...");
-                let data = output.body.collect().await.map_err(|e| S3Error::Read {
-                    key: key.clone(),
-                    message: e.to_string(),
-                })?;
-                Ok(Some(data.into_bytes().to_vec()))
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                println!("[s3] GetObject error: {}", error_str);
-
-                // Check if it's a NoSuchKey error
-                if error_str.contains("NoSuchKey") || error_str.contains("404") {
-                    println!("[s3] Snapshot does not exist (NoSuchKey)");
-                    Ok(None)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Save snapshot to S3
-    pub async fn save_snapshot(&self, data: &[u8]) -> Result<(), S3Error> {
-        let key = self.key("snapshot.json");
-
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .body(data.to_vec().into())
-            .content_type("application/json")
-            .send()
-            .await
-            .map_err(|e| S3Error::Write {
-                key: key.clone(),
-                message: e.to_string(),
-            })?;
-
-        Ok(())
-    }
-
-    /// Upload a single file to S3
-    pub async fn put_file(&self, path: &str, data: Vec<u8>) -> Result<(), S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .body(data.into())
-            .send()
-            .await
-            .map_err(|e| S3Error::Write {
-                key: key.clone(),
-                message: e.to_string(),
-            })?;
-
-        Ok(())
-    }
-
     /// Delete a file from S3
     pub async fn delete_file(&self, path: &str) -> Result<(), S3Error> {
         let key = self.key(&format!("files{}", path));
@@ -155,6 +88,127 @@ impl S3Storage {
             })?;
 
         Ok(())
+    }
+
+    /// List all file objects in S3 under the files/ prefix
+    pub async fn list_objects(&self) -> Result<Vec<S3ObjectInfo>, S3Error> {
+        let prefix = self.key("files/");
+        let mut objects = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut request = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix);
+
+            if let Some(token) = continuation_token.take() {
+                request = request.continuation_token(token);
+            }
+
+            let output = request.send().await.map_err(|e| S3Error::Read {
+                key: prefix.clone(),
+                message: e.to_string(),
+            })?;
+
+            if let Some(contents) = output.contents {
+                for obj in contents {
+                    if let (Some(key), Some(etag), Some(size)) =
+                        (obj.key.as_ref(), obj.e_tag.as_ref(), obj.size)
+                    {
+                        // Convert S3 key to VFS path
+                        let files_prefix = self.key("files");
+                        let path = key.strip_prefix(&files_prefix).unwrap_or(key).to_string();
+
+                        // Extract last_modified timestamp
+                        let last_modified = obj.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
+
+                        objects.push(S3ObjectInfo {
+                            path,
+                            etag: etag.trim_matches('"').to_string(),
+                            last_modified,
+                            size: size as u64,
+                        });
+                    }
+                }
+            }
+
+            if output.is_truncated.unwrap_or(false) {
+                continuation_token = output.next_continuation_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// Get a single file from S3
+    ///
+    /// Returns (content, etag, last_modified) or None if not found
+    pub async fn get_file(&self, path: &str) -> Result<Option<(Vec<u8>, String, u64)>, S3Error> {
+        let key = self.key(&format!("files{}", path));
+
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                let etag = output
+                    .e_tag
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string();
+                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
+
+                let data = output.body.collect().await.map_err(|e| S3Error::Read {
+                    key: key.clone(),
+                    message: e.to_string(),
+                })?;
+
+                Ok(Some((data.into_bytes().to_vec(), etag, last_modified)))
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("NoSuchKey") || error_str.contains("404") {
+                    Ok(None)
+                } else {
+                    Err(S3Error::Read {
+                        key,
+                        message: error_str,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Upload a file and return the ETag
+    pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {
+        let key = self.key(&format!("files{}", path));
+
+        let output = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .body(data.into())
+            .send()
+            .await
+            .map_err(|e| S3Error::Write {
+                key: key.clone(),
+                message: e.to_string(),
+            })?;
+
+        Ok(output
+            .e_tag
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string())
     }
 }
 
