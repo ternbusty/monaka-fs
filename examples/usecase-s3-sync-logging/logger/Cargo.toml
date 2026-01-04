@@ -1,0 +1,10 @@
+[package]
+name = "logger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "logger"
+path = "src/main.rs"
