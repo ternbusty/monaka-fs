@@ -51,8 +51,9 @@ enum ReadResult {
     Disconnected,
 }
 
-/// Timeout for polling (5 seconds in nanoseconds)
-const POLL_TIMEOUT_NS: u64 = 5_000_000_000;
+/// Timeout for polling (100ms in nanoseconds)
+/// Short timeout allows other tasks to run (accept loop, other client handlers)
+const POLL_TIMEOUT_NS: u64 = 100_000_000;
 
 // Session counter (used as part of hash input for uniqueness)
 static mut SESSION_COUNTER: u64 = 0;
@@ -335,8 +336,9 @@ fn try_read_message(stream: &InputStream) -> ReadResult {
         return ReadResult::Timeout;
     }
 
-    // Stream has data (or is closed), try to read
-    match stream.read(1) {
+    // Stream has data (or is closed), try to read first byte
+    // Use blocking_read because even after poll, non-blocking read might return empty
+    match stream.blocking_read(1) {
         Ok(bytes) if bytes.is_empty() => {
             // Stream closed
             ReadResult::Disconnected
@@ -431,7 +433,7 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
 }
 
 /// Handle a single client connection
-async fn handle_client(ctx: &ServerContext, input: InputStream, output: OutputStream) {
+async fn handle_client(ctx: &Rc<ServerContext>, input: InputStream, output: OutputStream) {
     println!("Client connected");
 
     loop {
@@ -506,6 +508,9 @@ async fn handle_client(ctx: &ServerContext, input: InputStream, output: OutputSt
         if let Some(ref sync) = ctx.sync_manager {
             sync.maybe_sync().await;
         }
+
+        // Yield to allow other tasks to run (accept loop, other client handlers)
+        tokio::task::yield_now().await;
     }
 }
 
@@ -555,10 +560,22 @@ async fn init_server() -> ServerContext {
     }
 }
 
+/// Client connection state
+/// Note: Field order matters for drop order - children (streams) must be dropped before parent (socket)
+struct ClientConnection {
+    input: InputStream,
+    output: OutputStream,
+    /// Keep the socket alive - streams are children of this resource
+    #[allow(dead_code)]
+    socket: wasi::sockets::tcp::TcpSocket,
+    session_id: Option<String>,
+    connected: bool,
+}
+
 /// Main entry point
 #[no_mangle]
 pub extern "C" fn _start() {
-    // Use single-threaded tokio runtime for WASI
+    // Use single-threaded tokio runtime for WASI (needed for S3 async operations)
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -570,7 +587,7 @@ async fn async_main() {
     println!("VFS RPC Server starting...");
 
     // Initialize server with optional S3 persistence
-    let ctx = init_server().await;
+    let ctx = Rc::new(init_server().await);
 
     // Create TCP socket
     let network = instance_network();
@@ -597,26 +614,106 @@ async fn async_main() {
     println!("Protocol version: {}", PROTOCOL_VERSION);
     println!("Waiting for connections...");
 
-    // Accept loop
-    loop {
-        let (_client_socket, input_stream, output_stream) = loop {
-            match socket.accept() {
-                Ok(result) => break result,
-                Err(e) => match e {
-                    wasi::sockets::network::ErrorCode::WouldBlock => {
-                        let pollable = socket.subscribe();
-                        poll(&[&pollable]);
-                        continue;
-                    }
-                    _ => {
-                        eprintln!("Failed to accept connection: {:?}", e);
-                        continue;
-                    }
-                },
-            }
-        };
+    // Active client connections
+    let mut clients: Vec<ClientConnection> = Vec::new();
 
-        // Handle client
-        handle_client(&ctx, input_stream, output_stream).await;
+    // Main event loop - round-robin processing
+    loop {
+        // Step 1: Try to accept new connections (non-blocking with short timeout)
+        {
+            let socket_pollable = socket.subscribe();
+            let timeout_pollable = subscribe_duration(10_000_000); // 10ms
+            let ready = poll(&[&socket_pollable, &timeout_pollable]);
+            drop(socket_pollable);
+            drop(timeout_pollable);
+
+            // Check if socket is ready
+            if !ready.is_empty() && ready[0] == 0 {
+                // Socket ready, try to accept
+                match socket.accept() {
+                    Ok((client_socket, input, output)) => {
+                        println!("Client connected (total: {})", clients.len() + 1);
+                        clients.push(ClientConnection {
+                            input,
+                            output,
+                            socket: client_socket,
+                            session_id: None,
+                            connected: true,
+                        });
+                    }
+                    Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
+                        // Spurious wake, ignore
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to accept connection: {:?}", e);
+                    }
+                }
+            }
+        }
+
+        // Step 2: Process each client (round-robin)
+        let mut i = 0;
+        while i < clients.len() {
+            let client = &mut clients[i];
+
+            // Try to read one message with short timeout
+            let result = try_read_message(&client.input);
+
+            match result {
+                ReadResult::Message(request_bytes) => {
+                    // Parse request
+                    let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            eprintln!("Failed to parse request: {}", e);
+                            let response = Response::Error {
+                                code: ErrorCode::SerializationError,
+                                message: "Failed to parse request JSON".to_string(),
+                            };
+                            if let Ok(response_bytes) = serde_json::to_vec(&response) {
+                                write_message(&client.output, &response_bytes);
+                            }
+                            i += 1;
+                            continue;
+                        }
+                    };
+
+                    // Handle request
+                    let response =
+                        ctx.handle_request(rpc_request.request, client.session_id.clone());
+
+                    // Track session ID from connect response
+                    if let Response::Connected { ref session_id, .. } = response {
+                        client.session_id = Some(session_id.clone());
+                    }
+
+                    // Send response
+                    if let Ok(response_bytes) = serde_json::to_vec(&response) {
+                        if !write_message(&client.output, &response_bytes) {
+                            client.connected = false;
+                        }
+                    }
+                }
+                ReadResult::Timeout => {
+                    // No data, move to next client
+                }
+                ReadResult::Disconnected => {
+                    println!("Client disconnected (session: {:?})", client.session_id);
+                    client.connected = false;
+
+                    // Note: S3 flush will happen at the end of the loop iteration
+                }
+            }
+
+            i += 1;
+        }
+
+        // Step 3: Remove disconnected clients
+        clients.retain(|c| c.connected);
+
+        // Step 4: Run S3 sync if needed
+        if let Some(ref sync) = ctx.sync_manager {
+            sync.maybe_sync().await;
+        }
     }
 }

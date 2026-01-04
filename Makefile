@@ -14,6 +14,7 @@
 .PHONY: build-rpc-adapter compose-rpc-demos build-rpc-composed
 .PHONY: start-rpc-server stop-rpc-server run-rpc-demo-writer run-rpc-demo-reader run-rpc-demo-std-fs
 .PHONY: run-rpc-composed-writer run-rpc-composed-reader run-rpc-composed-test
+.PHONY: build-usecase-s3-sync-logging compose-usecase-s3-sync-logging run-usecase-s3-sync-logging
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -112,7 +113,7 @@ build-component-model-linker:
 # =============================================================================
 
 # Run dynamic linking demo
-demo-component-model-dynamic: build-component-model-all build-component-model-linker
+demo-component-model-dynamic: build-component-model-all build-component-model-linker build-rpc-demos
 	@echo ""
 	@echo "=============================================="
 	@echo "  Component Model: Runtime Dynamic Linking"
@@ -260,6 +261,30 @@ run-rpc-composed-test: build-rpc-composed
 	@echo ""
 	@pkill -f vfs_rpc_server.wasm 2>/dev/null || true
 	@echo "Test completed successfully!"
+
+# =============================================================================
+# Use Cases
+# =============================================================================
+
+# Build S3 sync logging demo app
+build-usecase-s3-sync-logging:
+	@echo "Building S3 sync logging demo app..."
+	@cargo build -p logger --target wasm32-wasip2
+	@echo "Built: target/wasm32-wasip2/debug/logger.wasm"
+
+# Compose S3 sync logging demo with rpc-adapter
+compose-usecase-s3-sync-logging: build-rpc-adapter build-usecase-s3-sync-logging
+	@echo "Composing logger with rpc-adapter..."
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+		target/wasm32-wasip2/debug/logger.wasm \
+		-o target/wasm32-wasip2/debug/composed-logger.wasm
+	@echo "Composed: target/wasm32-wasip2/debug/composed-logger.wasm"
+
+# Run S3 sync logging demo (requires Docker for LocalStack)
+run-usecase-s3-sync-logging: build-rpc-server compose-usecase-s3-sync-logging
+	@echo "Running S3 sync logging demo..."
+	@./examples/usecase-s3-sync-logging/run-demo.sh
 
 # =============================================================================
 # Legacy (Deprecated)
@@ -426,6 +451,11 @@ help:
 	@echo "  make run-rpc-composed-writer            - Run composed demo-writer"
 	@echo "  make run-rpc-composed-reader            - Run composed demo-reader"
 	@echo "  make run-rpc-composed-test              - Run full composed test"
+	@echo ""
+	@echo "Use Cases:"
+	@echo "  make build-usecase-s3-sync-logging      - Build S3 sync logging demo"
+	@echo "  make compose-usecase-s3-sync-logging    - Compose with rpc-adapter"
+	@echo "  make run-usecase-s3-sync-logging        - Run S3 sync demo (requires Docker)"
 	@echo ""
 	@echo "Legacy (Deprecated, wasm32-wasip1):"
 	@echo "  make build-legacy-c                     - Build C example"

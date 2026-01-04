@@ -489,6 +489,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             UnifiedOutputStream::File(FileOutputStream {
                 handle: self.handle,
                 offset: Cell::new(offset),
+                append: false,
             }),
         ))
     }
@@ -496,8 +497,16 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn append_via_stream(
         &self,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        // Not yet implemented. Would create a stream wrapper
-        Err(ErrorCode::Unsupported)
+        // Verify the descriptor is valid
+        with_rpc_state(|state| state.get_server_fd(self.handle))?;
+
+        Ok(exports::wasi::filesystem::types::OutputStream::new(
+            UnifiedOutputStream::File(FileOutputStream {
+                handle: self.handle,
+                offset: Cell::new(0),
+                append: true,
+            }),
+        ))
     }
 
     fn advise(
@@ -967,6 +976,7 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
 struct FileOutputStream {
     handle: u32,       // Descriptor handle
     offset: Cell<u64>, // Current write position
+    append: bool,      // Append mode - seek to end before each write
 }
 
 impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
@@ -993,11 +1003,15 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         let write_len = contents.len() as u64;
 
         let result = with_connection(|conn| {
-            // Seek to offset
+            // Seek to offset (or end for append mode)
             let seek_request = Request::Seek {
                 fd: server_fd,
-                offset: current_offset as i64,
-                whence: 0,
+                offset: if self.append {
+                    0
+                } else {
+                    current_offset as i64
+                },
+                whence: if self.append { 2 } else { 0 }, // 2 = SEEK_END
             };
             conn.send(&seek_request)?;
 
@@ -1023,7 +1037,10 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
 
         match result {
             Ok(written) => {
-                self.offset.set(current_offset + written);
+                // Don't update offset for append mode (always seek to end)
+                if !self.append {
+                    self.offset.set(current_offset + written);
+                }
                 Ok(())
             }
             Err(_) => Err(
@@ -1156,6 +1173,31 @@ impl exports::wasi::cli::stderr::Guest for RpcAdapter {
     fn get_stderr() -> exports::wasi::cli::stderr::OutputStream {
         let inner = wasi::cli::stderr::get_stderr();
         exports::wasi::io::streams::OutputStream::new(UnifiedOutputStream::Passthrough(inner))
+    }
+}
+
+// Passthrough implementation for monotonic-clock
+impl exports::wasi::clocks::monotonic_clock::Guest for RpcAdapter {
+    fn now() -> exports::wasi::clocks::monotonic_clock::Instant {
+        wasi::clocks::monotonic_clock::now()
+    }
+
+    fn resolution() -> exports::wasi::clocks::monotonic_clock::Duration {
+        wasi::clocks::monotonic_clock::resolution()
+    }
+
+    fn subscribe_instant(
+        when: exports::wasi::clocks::monotonic_clock::Instant,
+    ) -> exports::wasi::clocks::monotonic_clock::Pollable {
+        let inner = wasi::clocks::monotonic_clock::subscribe_instant(when);
+        exports::wasi::io::poll::Pollable::new(PassthroughPollable { inner })
+    }
+
+    fn subscribe_duration(
+        when: exports::wasi::clocks::monotonic_clock::Duration,
+    ) -> exports::wasi::clocks::monotonic_clock::Pollable {
+        let inner = wasi::clocks::monotonic_clock::subscribe_duration(when);
+        exports::wasi::io::poll::Pollable::new(PassthroughPollable { inner })
     }
 }
 

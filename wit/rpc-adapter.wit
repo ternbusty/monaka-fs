@@ -4,8 +4,10 @@ package halycon:vfs@0.1.0;
 // Adapter that exports WASI filesystem interfaces and makes RPC calls to vfs-rpc-server
 
 world rpc-adapter {
-    // Import wall clock for timestamps
+    // Import and re-export clocks for timestamps and sleep
     import wasi:clocks/wall-clock@0.2.6;
+    import wasi:clocks/monotonic-clock@0.2.6;
+    export wasi:clocks/monotonic-clock@0.2.6;
 
     // Import sockets for TCP connection to RPC server
     import wasi:sockets/tcp@0.2.6;
