@@ -432,88 +432,6 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     }
 }
 
-/// Handle a single client connection
-async fn handle_client(ctx: &Rc<ServerContext>, input: InputStream, output: OutputStream) {
-    println!("Client connected");
-
-    loop {
-        // Try to read with timeout for periodic sync
-        let request_bytes = match try_read_message(&input) {
-            ReadResult::Message(bytes) => bytes,
-            ReadResult::Timeout => {
-                // No request received, but run sync check
-                if let Some(ref sync) = ctx.sync_manager {
-                    sync.maybe_sync().await;
-                }
-                continue;
-            }
-            ReadResult::Disconnected => {
-                println!("Client disconnected");
-                // Flush pending operations on client disconnect
-                if let Some(ref sync) = ctx.sync_manager {
-                    if sync.pending_count() > 0 {
-                        println!("[sync] Flushing pending operations on client disconnect...");
-                        if let Err(e) = sync.force_flush().await {
-                            eprintln!("[sync] Failed to flush: {}", e);
-                        }
-                    }
-                }
-                return;
-            }
-        };
-
-        // Parse request JSON
-        let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
-            Ok(req) => req,
-            Err(e) => {
-                eprintln!("Failed to parse request: {}", e);
-                let response = Response::Error {
-                    code: ErrorCode::SerializationError,
-                    message: "Failed to parse request JSON".to_string(),
-                };
-                if let Ok(response_bytes) = serde_json::to_vec(&response) {
-                    write_message(&output, &response_bytes);
-                }
-                continue;
-            }
-        };
-
-        // Handle request (synchronous)
-        let response = ctx.handle_request(rpc_request.request, rpc_request.session_id);
-
-        // Serialize and send response
-        let response_bytes = match serde_json::to_vec(&response) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("Failed to serialize response: {}", e);
-                continue;
-            }
-        };
-
-        if !write_message(&output, &response_bytes) {
-            println!("Client disconnected (write error)");
-            // Flush pending operations on client disconnect
-            if let Some(ref sync) = ctx.sync_manager {
-                if sync.pending_count() > 0 {
-                    println!("[sync] Flushing pending operations on client disconnect...");
-                    if let Err(e) = sync.force_flush().await {
-                        eprintln!("[sync] Failed to flush: {}", e);
-                    }
-                }
-            }
-            return;
-        }
-
-        // Check if we need to sync to S3 (based on dirty count threshold)
-        if let Some(ref sync) = ctx.sync_manager {
-            sync.maybe_sync().await;
-        }
-
-        // Yield to allow other tasks to run (accept loop, other client handlers)
-        tokio::task::yield_now().await;
-    }
-}
-
 /// Initialize server with optional S3 persistence
 async fn init_server() -> ServerContext {
     // Check for S3 configuration via environment variables
@@ -560,16 +478,104 @@ async fn init_server() -> ServerContext {
     }
 }
 
-/// Client connection state
-/// Note: Field order matters for drop order - children (streams) must be dropped before parent (socket)
-struct ClientConnection {
+/// Client resources with explicit drop order
+/// Fields are dropped in declaration order: streams first, then socket
+struct ClientResources {
     input: InputStream,
     output: OutputStream,
-    /// Keep the socket alive - streams are children of this resource
+    /// Socket must be dropped last (after streams which are its children)
     #[allow(dead_code)]
     socket: wasi::sockets::tcp::TcpSocket,
-    session_id: Option<String>,
-    connected: bool,
+}
+
+/// Handle a single client connection
+async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
+    // Don't destructure - let the struct handle drop order
+    let mut session_id: Option<String> = None;
+
+    println!("Client connected");
+
+    loop {
+        // Try to read with timeout for periodic sync
+        let request_bytes = match try_read_message(&resources.input) {
+            ReadResult::Message(bytes) => bytes,
+            ReadResult::Timeout => {
+                // No request received, but run sync check
+                if let Some(ref sync) = ctx.sync_manager {
+                    sync.maybe_sync().await;
+                }
+                // Yield to allow other tasks to run
+                tokio::task::yield_now().await;
+                continue;
+            }
+            ReadResult::Disconnected => {
+                println!("Client disconnected (session: {:?})", session_id);
+                // Flush pending operations on client disconnect
+                if let Some(ref sync) = ctx.sync_manager {
+                    if sync.pending_count() > 0 {
+                        println!("[sync] Flushing pending operations on client disconnect...");
+                        if let Err(e) = sync.force_flush().await {
+                            eprintln!("[sync] Failed to flush: {}", e);
+                        }
+                    }
+                }
+                return;
+            }
+        };
+
+        // Parse request JSON
+        let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
+            Ok(req) => req,
+            Err(e) => {
+                eprintln!("Failed to parse request: {}", e);
+                let response = Response::Error {
+                    code: ErrorCode::SerializationError,
+                    message: "Failed to parse request JSON".to_string(),
+                };
+                if let Ok(response_bytes) = serde_json::to_vec(&response) {
+                    write_message(&resources.output, &response_bytes);
+                }
+                continue;
+            }
+        };
+
+        // Handle request
+        let response = ctx.handle_request(rpc_request.request, session_id.clone());
+
+        // Track session ID from connect response
+        if let Response::Connected {
+            session_id: ref new_session_id,
+            ..
+        } = response
+        {
+            session_id = Some(new_session_id.clone());
+        }
+
+        // Serialize and send response
+        let response_bytes = match serde_json::to_vec(&response) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("Failed to serialize response: {}", e);
+                continue;
+            }
+        };
+
+        if !write_message(&resources.output, &response_bytes) {
+            println!(
+                "Client disconnected (write error, session: {:?})",
+                session_id
+            );
+            return;
+        }
+
+        // Check if we need to sync to S3 (based on dirty count threshold)
+        if let Some(ref sync) = ctx.sync_manager {
+            sync.maybe_sync().await;
+        }
+
+        // Yield to allow other tasks to run
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Main entry point
@@ -614,106 +620,45 @@ async fn async_main() {
     println!("Protocol version: {}", PROTOCOL_VERSION);
     println!("Waiting for connections...");
 
-    // Active client connections
-    let mut clients: Vec<ClientConnection> = Vec::new();
+    // Use LocalSet for spawn_local (allows Rc to be used across tasks)
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            loop {
+                // Try to accept with short timeout
+                let socket_pollable = socket.subscribe();
+                let timeout_pollable = subscribe_duration(10_000_000); // 10ms
+                let ready = poll(&[&socket_pollable, &timeout_pollable]);
+                drop(socket_pollable);
+                drop(timeout_pollable);
 
-    // Main event loop - round-robin processing
-    loop {
-        // Step 1: Try to accept new connections (non-blocking with short timeout)
-        {
-            let socket_pollable = socket.subscribe();
-            let timeout_pollable = subscribe_duration(10_000_000); // 10ms
-            let ready = poll(&[&socket_pollable, &timeout_pollable]);
-            drop(socket_pollable);
-            drop(timeout_pollable);
-
-            // Check if socket is ready
-            if !ready.is_empty() && ready[0] == 0 {
-                // Socket ready, try to accept
-                match socket.accept() {
-                    Ok((client_socket, input, output)) => {
-                        println!("Client connected (total: {})", clients.len() + 1);
-                        clients.push(ClientConnection {
-                            input,
-                            output,
-                            socket: client_socket,
-                            session_id: None,
-                            connected: true,
-                        });
-                    }
-                    Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
-                        // Spurious wake, ignore
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to accept connection: {:?}", e);
-                    }
-                }
-            }
-        }
-
-        // Step 2: Process each client (round-robin)
-        let mut i = 0;
-        while i < clients.len() {
-            let client = &mut clients[i];
-
-            // Try to read one message with short timeout
-            let result = try_read_message(&client.input);
-
-            match result {
-                ReadResult::Message(request_bytes) => {
-                    // Parse request
-                    let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
-                        Ok(req) => req,
-                        Err(e) => {
-                            eprintln!("Failed to parse request: {}", e);
-                            let response = Response::Error {
-                                code: ErrorCode::SerializationError,
-                                message: "Failed to parse request JSON".to_string(),
+                // Check if socket is ready
+                if !ready.is_empty() && ready[0] == 0 {
+                    // Socket ready, try to accept
+                    match socket.accept() {
+                        Ok((client_socket, input, output)) => {
+                            let ctx = ctx.clone();
+                            let resources = ClientResources {
+                                input,
+                                output,
+                                socket: client_socket,
                             };
-                            if let Ok(response_bytes) = serde_json::to_vec(&response) {
-                                write_message(&client.output, &response_bytes);
-                            }
-                            i += 1;
-                            continue;
+                            tokio::task::spawn_local(async move {
+                                handle_client(resources, ctx).await;
+                            });
                         }
-                    };
-
-                    // Handle request
-                    let response =
-                        ctx.handle_request(rpc_request.request, client.session_id.clone());
-
-                    // Track session ID from connect response
-                    if let Response::Connected { ref session_id, .. } = response {
-                        client.session_id = Some(session_id.clone());
-                    }
-
-                    // Send response
-                    if let Ok(response_bytes) = serde_json::to_vec(&response) {
-                        if !write_message(&client.output, &response_bytes) {
-                            client.connected = false;
+                        Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
+                            // Spurious wake, ignore
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to accept connection: {:?}", e);
                         }
                     }
                 }
-                ReadResult::Timeout => {
-                    // No data, move to next client
-                }
-                ReadResult::Disconnected => {
-                    println!("Client disconnected (session: {:?})", client.session_id);
-                    client.connected = false;
 
-                    // Note: S3 flush will happen at the end of the loop iteration
-                }
+                // Yield to allow spawned tasks to run
+                tokio::task::yield_now().await;
             }
-
-            i += 1;
-        }
-
-        // Step 3: Remove disconnected clients
-        clients.retain(|c| c.connected);
-
-        // Step 4: Run S3 sync if needed
-        if let Some(ref sync) = ctx.sync_manager {
-            sync.maybe_sync().await;
-        }
-    }
+        })
+        .await;
 }
