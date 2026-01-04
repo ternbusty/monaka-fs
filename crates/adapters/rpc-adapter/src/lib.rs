@@ -1000,40 +1000,51 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         })?;
 
         let current_offset = self.offset.get();
-        let write_len = contents.len() as u64;
 
-        let result = with_connection(|conn| {
-            // Seek to offset (or end for append mode)
-            let seek_request = Request::Seek {
-                fd: server_fd,
-                offset: if self.append {
-                    0
-                } else {
-                    current_offset as i64
-                },
-                whence: if self.append { 2 } else { 0 }, // 2 = SEEK_END
-            };
-            conn.send(&seek_request)?;
+        let result = if self.append {
+            // Use atomic AppendWrite for append mode (no separate Seek needed)
+            with_connection(|conn| {
+                let request = Request::AppendWrite {
+                    fd: server_fd,
+                    data: contents,
+                };
+                conn.send(&request)?;
 
-            match conn.receive()? {
-                Response::Position { .. } => {}
-                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                _ => return Err(ErrorCode::Io),
-            }
+                match conn.receive()? {
+                    Response::Written { count } => Ok(count as u64),
+                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                    _ => Err(ErrorCode::Io),
+                }
+            })
+        } else {
+            // Non-append mode: Seek + Write
+            with_connection(|conn| {
+                let seek_request = Request::Seek {
+                    fd: server_fd,
+                    offset: current_offset as i64,
+                    whence: 0, // SEEK_SET
+                };
+                conn.send(&seek_request)?;
 
-            // Write data
-            let write_request = Request::Write {
-                fd: server_fd,
-                data: contents,
-            };
-            conn.send(&write_request)?;
+                match conn.receive()? {
+                    Response::Position { .. } => {}
+                    Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
+                    _ => return Err(ErrorCode::Io),
+                }
 
-            match conn.receive()? {
-                Response::Written { count } => Ok(count as u64),
-                Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                _ => Err(ErrorCode::Io),
-            }
-        });
+                let write_request = Request::Write {
+                    fd: server_fd,
+                    data: contents,
+                };
+                conn.send(&write_request)?;
+
+                match conn.receive()? {
+                    Response::Written { count } => Ok(count as u64),
+                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                    _ => Err(ErrorCode::Io),
+                }
+            })
+        };
 
         match result {
             Ok(written) => {

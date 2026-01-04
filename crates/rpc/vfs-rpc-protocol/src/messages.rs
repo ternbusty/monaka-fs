@@ -66,6 +66,9 @@ pub enum Request {
 
     /// Remove empty directory
     Rmdir { path: String },
+
+    /// Append data to file (atomic seek to end + write)
+    AppendWrite { fd: u32, data: Vec<u8> },
 }
 
 /// RPC response messages

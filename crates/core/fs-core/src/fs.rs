@@ -384,6 +384,49 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
+    /// Append data to file atomically (always writes at end of file)
+    pub fn append_write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
+        trace!("append_write: fd={}, len={}", fd, buf.len());
+
+        #[allow(clippy::unnecessary_lazy_evaluations)]
+        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
+            error!("append_write: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
+
+        // Check write permission
+        let access_mode = handle.flags & 0x3;
+        if access_mode == O_RDONLY {
+            return Err(FsError::PermissionDenied);
+        }
+
+        let inode = self
+            .inode_table
+            .get(&handle.inode_id)
+            .ok_or(FsError::NotFound)?;
+        let mut inode_ref = inode.borrow_mut();
+
+        match &mut inode_ref.content {
+            FileContent::File(storage) => {
+                // Always write at the end of file (atomic append)
+                let pos = storage.size();
+                let n = storage.write(pos, buf);
+                handle.position = (pos + n) as u64;
+                inode_ref.metadata.size = storage.size() as u64;
+                inode_ref.metadata.modified = self.time_provider.now();
+                debug!(
+                    "append_write: fd={}, appended {} bytes at pos {}",
+                    fd, n, pos
+                );
+                Ok(n)
+            }
+            FileContent::Dir(_) => {
+                error!("append_write: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
+        }
+    }
+
     pub fn read(&mut self, fd: Fd, out: &mut [u8]) -> Result<usize, FsError> {
         trace!("read: fd={}, buf_len={}", fd, out.len());
 

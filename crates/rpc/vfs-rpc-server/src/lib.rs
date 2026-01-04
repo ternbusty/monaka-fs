@@ -273,6 +273,22 @@ impl ServerContext {
                 Err(e) => map_fs_error(e),
             },
 
+            Request::AppendWrite { fd, data } => {
+                let result = self.fs.borrow_mut().append_write(fd, &data);
+                match result {
+                    Ok(n) => {
+                        // Enqueue upload with actual path
+                        if let Some(ref sync) = self.sync_manager {
+                            if let Some(path) = self.fd_path_map.borrow().get(&fd) {
+                                sync.enqueue_upload(path.clone());
+                            }
+                        }
+                        Response::Written { count: n }
+                    }
+                    Err(e) => map_fs_error(e),
+                }
+            }
+
             Request::OpenAt {
                 dir_fd,
                 path,
