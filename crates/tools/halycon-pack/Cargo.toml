@@ -1,0 +1,31 @@
+[package]
+name = "halycon-pack"
+version = "0.1.0"
+edition = "2024"
+description = "CLI tool to pack files into halycon vfs-adapter"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "halycon-pack"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# WASM manipulation
+wasm-encoder = "0.225"
+wasmparser = "0.225"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# fs-core for FsSnapshot types
+fs-core = { path = "../../core/fs-core", features = ["serde", "std"] }
+
+# Error handling
+anyhow = "1"
+
+# File walking
+walkdir = "2"

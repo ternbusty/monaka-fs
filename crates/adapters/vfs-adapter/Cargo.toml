@@ -7,9 +7,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-fs-core = { path = "../../core/fs-core" }
+fs-core = { path = "../../core/fs-core", features = ["serde"] }
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 spin = "0.9"
+serde_json = "1"
 
 [build-dependencies]
 wit-bindgen = "0.36"

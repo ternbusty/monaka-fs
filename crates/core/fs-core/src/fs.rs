@@ -258,8 +258,18 @@ impl<T: TimeProvider> Fs<T> {
             .filter(|s| !s.is_empty())
             .collect();
 
+        // Special case: opening root directory "/"
         if comps.is_empty() {
-            return Err(FsError::InvalidArgument);
+            debug!("open_path_with_flags: opening root directory");
+            let handle = FileHandle {
+                inode_id: self.root_inode,
+                position: 0,
+                flags,
+            };
+            let fd = self.allocate_fd();
+            self.fd_table.insert(fd, handle);
+            debug!("open_path_with_flags: allocated fd={} for root", fd);
+            return Ok(fd);
         }
 
         let root_inode = self

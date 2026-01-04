@@ -2,6 +2,8 @@
 //
 // This is a thin adapter component that exports WASI filesystem interfaces
 // and delegates to fs-core for the actual filesystem implementation.
+//
+// Initial filesystem content can be embedded using halycon-virt tool.
 
 #![no_main]
 #![allow(warnings)]
@@ -10,6 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use fs_core::snapshot::FsSnapshot;
 use fs_core::{Fd, Fs, FsError};
 
 // WIT bindgen generates the bindings
@@ -45,6 +48,26 @@ static mut VFS_STATE: Option<VfsState> = None;
 // Separate static for the FS itself to avoid re-entrancy issues
 static mut VFS_FS: Option<Rc<RefCell<Fs<SystemTimeProvider>>>> = None;
 
+// Compile-time embedded snapshot (set via HALYCON_SNAPSHOT env var during build)
+#[cfg(halycon_snapshot)]
+static EMBEDDED_SNAPSHOT: &[u8] = include_bytes!(env!("HALYCON_SNAPSHOT_PATH"));
+
+#[cfg(not(halycon_snapshot))]
+static EMBEDDED_SNAPSHOT: &[u8] = &[];
+
+/// Try to load the embedded snapshot
+fn load_embedded_snapshot() -> Option<FsSnapshot> {
+    if EMBEDDED_SNAPSHOT.is_empty() {
+        return None;
+    }
+
+    // Parse JSON snapshot
+    match serde_json::from_slice::<FsSnapshot>(EMBEDDED_SNAPSHOT) {
+        Ok(snapshot) => Some(snapshot),
+        Err(_) => None,
+    }
+}
+
 struct VfsState {
     fs: Rc<RefCell<Fs<SystemTimeProvider>>>,
     // Map descriptor handle to FD
@@ -56,7 +79,15 @@ struct VfsState {
 
 impl VfsState {
     fn new() -> Self {
-        let fs = Rc::new(RefCell::new(Fs::with_time_provider(SystemTimeProvider)));
+        // Try to load embedded snapshot, otherwise create empty filesystem
+        let fs = if let Some(snapshot) = load_embedded_snapshot() {
+            Rc::new(RefCell::new(Fs::from_snapshot(
+                snapshot,
+                SystemTimeProvider,
+            )))
+        } else {
+            Rc::new(RefCell::new(Fs::with_time_provider(SystemTimeProvider)))
+        };
 
         let mut state = Self {
             fs,
@@ -366,11 +397,27 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn read_directory(&self) -> Result<DirectoryEntryStream, ErrorCode> {
         with_vfs_state(|state| {
-            // Get the file descriptor for this handle
-            let fd = state.get_fd(self.handle)?;
-
-            // Read directory entries from fs-core using the fd
-            let mut entries = state.fs.borrow().readdir_fd(fd).map_err(to_error_code)?;
+            // Special case for root directory (handle=0 uses fake fd not in fd_table)
+            let mut entries: Vec<(String, bool)> = if self.handle == 0 {
+                // readdir returns Vec<String>, need to convert to Vec<(String, bool)>
+                let names = state.fs.borrow().readdir("/").map_err(to_error_code)?;
+                names
+                    .into_iter()
+                    .map(|name| {
+                        let path = format!("/{}", name);
+                        let is_dir = state
+                            .fs
+                            .borrow()
+                            .stat(&path)
+                            .map(|m| m.is_dir)
+                            .unwrap_or(false);
+                        (name, is_dir)
+                    })
+                    .collect()
+            } else {
+                let fd = state.get_fd(self.handle)?;
+                state.fs.borrow().readdir_fd(fd).map_err(to_error_code)?
+            };
 
             // Add "." and ".." entries for Unix compatibility
             // These are standard directory entries that should always be present
@@ -533,12 +580,18 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         open_flags: OpenFlags,
         flags: DescriptorFlags,
     ) -> Result<Descriptor, ErrorCode> {
-        // Special case: opening "." or "" means opening the directory itself
-        if path.is_empty() || path == "." {
-            // Return a new descriptor for the same handle (dup)
-            return Ok(Descriptor::new(DescriptorImpl {
-                handle: self.handle,
-            }));
+        // Special case: opening ".", "", or "/" from root means opening the root directory
+        if path.is_empty() || path == "." || (self.handle == 0 && path == "/") {
+            // Actually open the root directory to get a real fd
+            return with_vfs_state(|state| {
+                let fd = state
+                    .fs
+                    .borrow_mut()
+                    .open_path_with_flags("/", fs_core::O_RDONLY)
+                    .map_err(to_error_code)?;
+                let handle = state.allocate_descriptor(fd);
+                Ok(Descriptor::new(DescriptorImpl { handle }))
+            });
         }
 
         with_vfs_state(|state| {
