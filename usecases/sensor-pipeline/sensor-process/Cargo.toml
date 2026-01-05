@@ -1,0 +1,8 @@
+[package]
+name = "sensor-process"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sensor-process"
+path = "src/main.rs"

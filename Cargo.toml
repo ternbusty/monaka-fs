@@ -24,11 +24,13 @@ members = [
   "examples/rpc/demo-std-fs",
   "examples/rpc/demo-direct-rpc",
 
-  # Examples - Use Cases
-  "examples/usecase-s3-sync-logging/logger",
-
   # Examples - Component Model
   "examples/component-model/runtime-linker",
+
+  # Use Cases
+  "usecases/sensor-pipeline/sensor-ingest",
+  "usecases/sensor-pipeline/sensor-process",
+  "usecases/s3-sync-logging/logger",
 ]
 default-members = [
   "crates/core/fs-core",
