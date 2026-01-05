@@ -55,17 +55,48 @@ static EMBEDDED_SNAPSHOT: &[u8] = include_bytes!(env!("HALYCON_SNAPSHOT_PATH"));
 #[cfg(not(halycon_snapshot))]
 static EMBEDDED_SNAPSHOT: &[u8] = &[];
 
-/// Try to load the embedded snapshot
+// Runtime-injected snapshot data (set by halycon-pack CLI)
+// These are mutable globals that the CLI modifies in the WASM binary
+#[no_mangle]
+#[used]
+static mut HALYCON_FS_DATA_PTR: u32 = 0;
+
+#[no_mangle]
+#[used]
+static mut HALYCON_FS_DATA_LEN: u32 = 0;
+
+/// Try to load the runtime-injected snapshot from memory
+fn load_runtime_snapshot() -> Option<FsSnapshot> {
+    let (ptr, len) = unsafe { (HALYCON_FS_DATA_PTR, HALYCON_FS_DATA_LEN) };
+
+    if ptr == 0 || len == 0 {
+        return None;
+    }
+
+    // Read data from memory
+    let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+
+    // Parse JSON snapshot
+    match serde_json::from_slice::<FsSnapshot>(data) {
+        Ok(snapshot) => Some(snapshot),
+        Err(_) => None,
+    }
+}
+
+/// Try to load the embedded snapshot (compile-time)
 fn load_embedded_snapshot() -> Option<FsSnapshot> {
     if EMBEDDED_SNAPSHOT.is_empty() {
         return None;
     }
 
     // Parse JSON snapshot
-    match serde_json::from_slice::<FsSnapshot>(EMBEDDED_SNAPSHOT) {
-        Ok(snapshot) => Some(snapshot),
-        Err(_) => None,
-    }
+    serde_json::from_slice::<FsSnapshot>(EMBEDDED_SNAPSHOT).ok()
+}
+
+/// Load snapshot from either runtime injection or compile-time embedding
+fn load_snapshot() -> Option<FsSnapshot> {
+    // Priority: runtime-injected > compile-time embedded
+    load_runtime_snapshot().or_else(load_embedded_snapshot)
 }
 
 struct VfsState {
@@ -79,8 +110,8 @@ struct VfsState {
 
 impl VfsState {
     fn new() -> Self {
-        // Try to load embedded snapshot, otherwise create empty filesystem
-        let fs = if let Some(snapshot) = load_embedded_snapshot() {
+        // Try to load snapshot (runtime-injected or compile-time embedded)
+        let fs = if let Some(snapshot) = load_snapshot() {
             Rc::new(RefCell::new(Fs::from_snapshot(
                 snapshot,
                 SystemTimeProvider,
