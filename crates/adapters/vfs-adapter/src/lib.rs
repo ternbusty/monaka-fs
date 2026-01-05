@@ -48,13 +48,6 @@ static mut VFS_STATE: Option<VfsState> = None;
 // Separate static for the FS itself to avoid re-entrancy issues
 static mut VFS_FS: Option<Rc<RefCell<Fs<SystemTimeProvider>>>> = None;
 
-// Compile-time embedded snapshot (set via HALYCON_SNAPSHOT env var during build)
-#[cfg(halycon_snapshot)]
-static EMBEDDED_SNAPSHOT: &[u8] = include_bytes!(env!("HALYCON_SNAPSHOT_PATH"));
-
-#[cfg(not(halycon_snapshot))]
-static EMBEDDED_SNAPSHOT: &[u8] = &[];
-
 // Runtime-injected snapshot data (set by halycon-pack CLI)
 // These are mutable globals that the CLI modifies in the WASM binary
 #[no_mangle]
@@ -83,20 +76,9 @@ fn load_runtime_snapshot() -> Option<FsSnapshot> {
     }
 }
 
-/// Try to load the embedded snapshot (compile-time)
-fn load_embedded_snapshot() -> Option<FsSnapshot> {
-    if EMBEDDED_SNAPSHOT.is_empty() {
-        return None;
-    }
-
-    // Parse JSON snapshot
-    serde_json::from_slice::<FsSnapshot>(EMBEDDED_SNAPSHOT).ok()
-}
-
-/// Load snapshot from either runtime injection or compile-time embedding
+/// Load snapshot from runtime injection (set by halycon-pack)
 fn load_snapshot() -> Option<FsSnapshot> {
-    // Priority: runtime-injected > compile-time embedded
-    load_runtime_snapshot().or_else(load_embedded_snapshot)
+    load_runtime_snapshot()
 }
 
 struct VfsState {
