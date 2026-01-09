@@ -16,6 +16,7 @@
 .PHONY: run-rpc-composed-writer run-rpc-composed-reader run-rpc-composed-test
 .PHONY: build-usecase-sensor-pipeline run-usecase-sensor-pipeline
 .PHONY: build-usecase-s3-sync-logging compose-usecase-s3-sync-logging run-usecase-s3-sync-logging
+.PHONY: build-usecase-http-cache run-usecase-http-cache
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -314,6 +315,22 @@ run-usecase-s3-sync-logging: compose-usecase-s3-sync-logging
 	@echo "Note: Requires LocalStack and VFS RPC server"
 	@echo "See: usecases/s3-sync-logging/run-demo.sh"
 	@echo ""
+
+# Build HTTP cache demo usecase
+build-usecase-http-cache:
+	@echo "Building HTTP cache demo usecase..."
+	@cargo build -p http-cache-handler --target wasm32-wasip2
+	@cargo build -p http-cache-server --release
+	@echo "Built: usecases/http-cache-demo/"
+
+# Run HTTP cache demo (VFS cache sharing between WASM instances)
+run-usecase-http-cache: build-component-model-adapter build-usecase-http-cache
+	@echo ""
+	@echo "=============================================="
+	@echo "  Use Case: HTTP Cache Demo"
+	@echo "=============================================="
+	@echo ""
+	@cd usecases/http-cache-demo/http-server && cargo run --release
 
 # =============================================================================
 # Legacy (Deprecated)

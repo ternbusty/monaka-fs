@@ -32,6 +32,8 @@ members = [
   "usecases/sensor-pipeline/sensor-process",
   "usecases/sensor-pipeline/runtime-linker",
   "usecases/s3-sync-logging/logger",
+  "usecases/http-cache-demo/request-handler",
+  "usecases/http-cache-demo/http-server",
 ]
 default-members = [
   "crates/core/fs-core",
