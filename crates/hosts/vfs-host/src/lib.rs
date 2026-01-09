@@ -149,12 +149,10 @@ impl VfsHostState {
 
 impl WasiView for VfsHostState {
     fn ctx(&mut self) -> &mut WasiCtx {
-        eprintln!("[VFS-HOST] WasiView::ctx() called");
         &mut self.wasi_ctx
     }
 
     fn table(&mut self) -> &mut ResourceTable {
-        eprintln!("[VFS-HOST] WasiView::table() called");
         &mut self.table
     }
 }

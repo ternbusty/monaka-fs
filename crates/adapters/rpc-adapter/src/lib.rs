@@ -418,8 +418,6 @@ struct RpcAdapter;
 
 impl exports::wasi::filesystem::preopens::Guest for RpcAdapter {
     fn get_directories() -> Vec<(Descriptor, String)> {
-        eprintln!("[RPC-ADAPTER] get_directories() called");
-
         // Initialize state (no connection stored, just descriptor mappings)
         let fd = with_rpc_state(|state| state.descriptor_to_fd.borrow().get(&0).copied());
 
@@ -459,10 +457,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         &self,
         offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::InputStream, ErrorCode> {
-        eprintln!(
-            "[RPC-ADAPTER] read_via_stream called for handle={}, offset={}",
-            self.handle, offset
-        );
         // Verify the descriptor is valid
         with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
@@ -478,10 +472,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         &self,
         offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        eprintln!(
-            "[RPC-ADAPTER] write_via_stream called for handle={}, offset={}",
-            self.handle, offset
-        );
         // Verify the descriptor is valid
         with_rpc_state(|state| state.get_server_fd(self.handle))?;
 

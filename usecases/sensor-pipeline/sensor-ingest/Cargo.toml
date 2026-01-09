@@ -1,0 +1,8 @@
+[package]
+name = "sensor-ingest"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sensor-ingest"
+path = "src/main.rs"
