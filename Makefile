@@ -18,6 +18,7 @@
 .PHONY: build-usecase-s3-sync-logging compose-usecase-s3-sync-logging run-usecase-s3-sync-logging
 .PHONY: build-usecase-http-cache run-usecase-http-cache
 .PHONY: build-usecase-ci-cache run-usecase-ci-cache
+.PHONY: build-usecase-image-pipeline run-usecase-image-pipeline
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -348,6 +349,26 @@ build-usecase-ci-cache:
 # Run CI cache demo (RPC-based VFS cache sharing between parallel CI jobs)
 run-usecase-ci-cache: build-usecase-ci-cache
 	@./usecases/ci-cache-demo/run-demo.sh
+
+# Build image pipeline demo usecase (wac plug composition)
+build-usecase-image-pipeline:
+	@echo "Building image pipeline demo usecase..."
+	@cargo build -p image-processor --target wasm32-wasip2
+	@cargo build -p vfs-adapter --target wasm32-wasip2
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/vfs_adapter.wasm \
+		target/wasm32-wasip2/debug/image-processor.wasm \
+		-o target/wasm32-wasip2/debug/image-processor-composed.wasm
+	@echo "Built: usecases/image-pipeline-demo/"
+
+# Run image pipeline demo (wac-composed VFS pipeline)
+run-usecase-image-pipeline: build-usecase-image-pipeline
+	@echo ""
+	@echo "=============================================="
+	@echo "  Use Case: Image Pipeline Demo"
+	@echo "=============================================="
+	@echo ""
+	@wasmtime run target/wasm32-wasip2/debug/image-processor-composed.wasm
 
 # =============================================================================
 # Legacy (Deprecated)
