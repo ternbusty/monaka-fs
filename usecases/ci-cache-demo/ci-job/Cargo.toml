@@ -1,0 +1,10 @@
+[package]
+name = "ci-job"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "ci-job"
+path = "src/main.rs"

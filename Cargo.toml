@@ -34,6 +34,7 @@ members = [
   "usecases/s3-sync-logging/logger",
   "usecases/http-cache-demo/request-handler",
   "usecases/http-cache-demo/http-server",
+  "usecases/ci-cache-demo/ci-job",
 ]
 default-members = [
   "crates/core/fs-core",
