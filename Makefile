@@ -17,6 +17,7 @@
 .PHONY: build-usecase-sensor-pipeline run-usecase-sensor-pipeline
 .PHONY: build-usecase-s3-sync-logging compose-usecase-s3-sync-logging run-usecase-s3-sync-logging
 .PHONY: build-usecase-http-cache run-usecase-http-cache
+.PHONY: build-usecase-ci-cache run-usecase-ci-cache
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -331,6 +332,22 @@ run-usecase-http-cache: build-component-model-adapter build-usecase-http-cache
 	@echo "=============================================="
 	@echo ""
 	@cd usecases/http-cache-demo/http-server && cargo run --release
+
+# Build CI cache demo usecase
+build-usecase-ci-cache:
+	@echo "Building CI cache demo usecase..."
+	@cargo build -p ci-job --target wasm32-wasip2
+	@cargo build -p vfs-rpc-server --target wasm32-wasip2
+	@cargo build -p rpc-adapter --target wasm32-wasip2
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+		target/wasm32-wasip2/debug/ci-job.wasm \
+		-o target/wasm32-wasip2/debug/ci-job-composed.wasm
+	@echo "Built: usecases/ci-cache-demo/"
+
+# Run CI cache demo (RPC-based VFS cache sharing between parallel CI jobs)
+run-usecase-ci-cache: build-usecase-ci-cache
+	@./usecases/ci-cache-demo/run-demo.sh
 
 # =============================================================================
 # Legacy (Deprecated)
