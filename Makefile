@@ -120,6 +120,7 @@ build-usecase-sensor-pipeline:
 	@echo "Building sensor pipeline usecase..."
 	@cargo build -p sensor-ingest --target wasm32-wasip2
 	@cargo build -p sensor-process --target wasm32-wasip2
+	@cargo build -p sensor-pipeline-runner --release
 	@echo "Built: usecases/sensor-pipeline/"
 
 # =============================================================================
@@ -281,13 +282,13 @@ run-rpc-composed-test: build-rpc-composed
 # =============================================================================
 
 # Run sensor pipeline usecase (VFS sharing demo)
-run-usecase-sensor-pipeline: build-component-model-adapter build-component-model-linker build-usecase-sensor-pipeline
+run-usecase-sensor-pipeline: build-component-model-adapter build-usecase-sensor-pipeline
 	@echo ""
 	@echo "=============================================="
 	@echo "  Use Case: Sensor Data Pipeline"
 	@echo "=============================================="
 	@echo ""
-	@cd examples/component-model/runtime-linker && cargo run --release
+	@cd usecases/sensor-pipeline/runtime-linker && cargo run --release
 
 # Build S3 sync logging usecase
 build-usecase-s3-sync-logging:

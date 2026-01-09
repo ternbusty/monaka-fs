@@ -30,6 +30,7 @@ members = [
   # Use Cases
   "usecases/sensor-pipeline/sensor-ingest",
   "usecases/sensor-pipeline/sensor-process",
+  "usecases/sensor-pipeline/runtime-linker",
   "usecases/s3-sync-logging/logger",
 ]
 default-members = [

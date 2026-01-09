@@ -2147,6 +2147,16 @@ name = "sensor-ingest"
 version = "0.1.0"
 
 [[package]]
+name = "sensor-pipeline-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vfs-host",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
 name = "sensor-process"
 version = "0.1.0"
 
