@@ -15,6 +15,7 @@
 .PHONY: start-rpc-server stop-rpc-server run-rpc-demo-writer run-rpc-demo-reader run-rpc-demo-std-fs
 .PHONY: run-rpc-composed-writer run-rpc-composed-reader run-rpc-composed-test
 .PHONY: build-usecase-sensor-pipeline run-usecase-sensor-pipeline
+.PHONY: build-usecase-s3-sync-logging compose-usecase-s3-sync-logging run-usecase-s3-sync-logging
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -55,7 +56,8 @@ build-wasm:
 		-p demo-std-fs \
 		-p direct-rpc-demo \
 		-p sensor-ingest \
-		-p sensor-process
+		-p sensor-process \
+		-p logger
 	@echo "WASM packages built"
 
 # Build all WASM packages (release)
@@ -70,7 +72,8 @@ build-wasm-release:
 		-p demo-std-fs \
 		-p direct-rpc-demo \
 		-p sensor-ingest \
-		-p sensor-process
+		-p sensor-process \
+		-p logger
 	@echo "WASM packages built (release)"
 
 # Clean build artifacts
@@ -286,6 +289,31 @@ run-usecase-sensor-pipeline: build-component-model-adapter build-component-model
 	@echo ""
 	@cd examples/component-model/runtime-linker && cargo run --release
 
+# Build S3 sync logging usecase
+build-usecase-s3-sync-logging:
+	@echo "Building S3 sync logging usecase..."
+	@cargo build -p logger --target wasm32-wasip2
+	@echo "Built: usecases/s3-sync-logging/"
+
+# Compose S3 sync logging with RPC adapter
+compose-usecase-s3-sync-logging: build-rpc-adapter build-usecase-s3-sync-logging
+	@echo "Composing logger with rpc-adapter..."
+	@wac plug \
+		--plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+		target/wasm32-wasip2/debug/logger.wasm \
+		-o target/wasm32-wasip2/debug/composed-logger.wasm
+	@echo "Composed: target/wasm32-wasip2/debug/composed-logger.wasm"
+
+# Run S3 sync logging demo (requires LocalStack and VFS RPC server)
+run-usecase-s3-sync-logging: compose-usecase-s3-sync-logging
+	@echo ""
+	@echo "=============================================="
+	@echo "  Use Case: S3 Sync Logging"
+	@echo "=============================================="
+	@echo "Note: Requires LocalStack and VFS RPC server"
+	@echo "See: usecases/s3-sync-logging/run-demo.sh"
+	@echo ""
+
 # =============================================================================
 # Legacy (Deprecated)
 # =============================================================================
@@ -455,6 +483,9 @@ help:
 	@echo "Use Cases:"
 	@echo "  make build-usecase-sensor-pipeline      - Build sensor pipeline"
 	@echo "  make run-usecase-sensor-pipeline        - Run sensor pipeline demo"
+	@echo "  make build-usecase-s3-sync-logging      - Build S3 sync logging"
+	@echo "  make compose-usecase-s3-sync-logging    - Compose with VFS adapter"
+	@echo "  make run-usecase-s3-sync-logging        - Run S3 sync logging demo"
 	@echo ""
 	@echo "Legacy (Deprecated, wasm32-wasip1):"
 	@echo "  make build-legacy-c                     - Build C example"

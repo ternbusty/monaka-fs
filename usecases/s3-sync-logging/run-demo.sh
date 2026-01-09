@@ -11,7 +11,7 @@
 #   - wac-cli
 #
 # Usage:
-#   ./examples/usecase-s3-sync-logging/run-demo.sh
+#   ./usecases/s3-sync-logging/run-demo.sh
 
 set -e
 
