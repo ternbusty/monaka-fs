@@ -35,6 +35,7 @@ members = [
   "usecases/http-cache-demo/request-handler",
   "usecases/http-cache-demo/http-server",
   "usecases/ci-cache-demo/ci-job",
+  "usecases/image-pipeline-demo/image-processor",
 ]
 default-members = [
   "crates/core/fs-core",
