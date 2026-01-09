@@ -145,6 +145,48 @@ impl VfsHostState {
             shared_vfs: Arc::clone(&self.shared_vfs),
         }
     }
+
+    /// Create a new VfsHostState that shares the same VFS core with custom environment variables
+    /// This enables passing configuration to WASM handlers
+    pub fn clone_shared_with_env(&self, env_vars: &[(&str, &str)]) -> Self {
+        let mut builder = WasiCtxBuilder::new();
+        builder.inherit_stdio().inherit_stderr();
+
+        for (key, value) in env_vars {
+            builder.env(key, value);
+        }
+
+        Self {
+            wasi_ctx: builder.build(),
+            table: ResourceTable::new(),
+            shared_vfs: Arc::clone(&self.shared_vfs),
+        }
+    }
+
+    /// Create a new VfsHostState from an existing shared VFS core with custom environment variables
+    /// This is useful when sharing VFS across threads (e.g., in HTTP server handlers)
+    pub fn from_shared_vfs_with_env(
+        shared_vfs: Arc<Mutex<SharedVfsCore>>,
+        env_vars: &[(&str, &str)],
+    ) -> Self {
+        let mut builder = WasiCtxBuilder::new();
+        builder.inherit_stdio().inherit_stderr();
+
+        for (key, value) in env_vars {
+            builder.env(key, value);
+        }
+
+        Self {
+            wasi_ctx: builder.build(),
+            table: ResourceTable::new(),
+            shared_vfs,
+        }
+    }
+
+    /// Get the shared VFS core for external use (e.g., sharing across threads)
+    pub fn get_shared_vfs(&self) -> Arc<Mutex<SharedVfsCore>> {
+        Arc::clone(&self.shared_vfs)
+    }
 }
 
 impl WasiView for VfsHostState {
