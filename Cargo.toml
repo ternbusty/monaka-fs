@@ -22,7 +22,6 @@ members = [
   "examples/rpc/demo-writer",
   "examples/rpc/demo-reader",
   "examples/rpc/demo-std-fs",
-  "examples/rpc/demo-direct-rpc",
 
   # Examples - Component Model
   "examples/component-model/runtime-linker",

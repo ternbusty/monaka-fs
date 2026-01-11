@@ -1,0 +1,73 @@
+syntax = "proto3";
+package vfs;
+
+message RpcRequest {
+  optional string session_id = 1;
+  oneof request {
+    Connect connect = 2;
+    OpenPath open_path = 3;
+    OpenAt open_at = 4;
+    Read read = 5;
+    Write write = 6;
+    Close close = 7;
+    Seek seek = 8;
+    Ftruncate ftruncate = 9;
+    Stat stat = 10;
+    Fstat fstat = 11;
+    Mkdir mkdir = 12;
+    MkdirP mkdir_p = 13;
+    Unlink unlink = 14;
+    Readdir readdir = 15;
+    ReaddirFd readdir_fd = 16;
+    Rmdir rmdir = 17;
+    AppendWrite append_write = 18;
+  }
+}
+
+message Connect { uint32 version = 1; }
+message OpenPath { string path = 1; uint32 flags = 2; }
+message OpenAt { uint32 dir_fd = 1; string path = 2; uint32 flags = 3; }
+message Read { uint32 fd = 1; uint64 length = 2; }
+message Write { uint32 fd = 1; bytes data = 2; }
+message Close { uint32 fd = 1; }
+message Seek { uint32 fd = 1; int64 offset = 2; int32 whence = 3; }
+message Ftruncate { uint32 fd = 1; uint64 size = 2; }
+message Stat { string path = 1; }
+message Fstat { uint32 fd = 1; }
+message Mkdir { string path = 1; }
+message MkdirP { string path = 1; }
+message Unlink { string path = 1; }
+message Readdir { string path = 1; }
+message ReaddirFd { uint32 fd = 1; }
+message Rmdir { string path = 1; }
+message AppendWrite { uint32 fd = 1; bytes data = 2; }
+
+message RpcResponse {
+  oneof response {
+    Connected connected = 1;
+    Ok ok = 2;
+    Fd fd = 3;
+    Data data = 4;
+    Written written = 5;
+    Position position = 6;
+    MetadataResponse metadata = 7;
+    DirEntries dir_entries = 8;
+    Error error = 9;
+  }
+}
+
+message Connected { string session_id = 1; uint32 version = 2; }
+message Ok {}
+message Fd { uint32 fd = 1; }
+message Data { bytes bytes = 1; }
+message Written { uint64 count = 1; }
+message Position { uint64 pos = 1; }
+message MetadataResponse {
+  uint64 size = 1;
+  uint64 created = 2;
+  uint64 modified = 3;
+  bool is_dir = 4;
+}
+message DirEntry { string name = 1; bool is_dir = 2; }
+message DirEntries { repeated DirEntry entries = 1; }
+message Error { int32 code = 1; string message = 2; }

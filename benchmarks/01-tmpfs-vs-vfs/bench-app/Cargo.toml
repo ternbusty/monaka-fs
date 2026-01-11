@@ -1,0 +1,17 @@
+[package]
+name = "bench-tmpfs-vs-vfs"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[[bin]]
+name = "bench-tmpfs-vs-vfs"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true

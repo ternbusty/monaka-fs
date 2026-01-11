@@ -22,19 +22,42 @@ pub enum SyncOperation {
     Delete { path: String },
 }
 
+/// Sync mode configuration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SyncMode {
+    /// Batch mode: sync every N seconds or N operations (default)
+    #[default]
+    Batch,
+    /// Real-time mode: sync immediately after each write operation
+    RealTime,
+}
+
+impl SyncMode {
+    /// Parse sync mode from environment variable
+    pub fn from_env() -> Self {
+        match std::env::var("VFS_SYNC_MODE").as_deref() {
+            Ok("realtime") | Ok("real-time") | Ok("immediate") => SyncMode::RealTime,
+            _ => SyncMode::Batch,
+        }
+    }
+}
+
 /// Sync manager configuration
 pub struct SyncConfig {
+    /// Sync mode (batch or realtime)
+    pub mode: SyncMode,
     /// Interval for S3 polling (inbound)
     pub poll_interval: Duration,
-    /// Interval for outbound queue flush
+    /// Interval for outbound queue flush (batch mode only)
     pub flush_interval: Duration,
-    /// Maximum operations per outbound flush
+    /// Maximum operations per outbound flush (batch mode only)
     pub outbound_batch_size: usize,
 }
 
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
+            mode: SyncMode::from_env(),
             poll_interval: Duration::from_secs(30),
             flush_interval: Duration::from_secs(5),
             outbound_batch_size: 10,
@@ -114,6 +137,17 @@ impl SyncManager {
         self.outbound_queue.borrow().len()
     }
 
+    /// Check if running in realtime sync mode
+    pub fn is_realtime(&self) -> bool {
+        self.config.mode == SyncMode::RealTime
+    }
+
+    /// Synchronously upload a single file to S3 (for realtime mode)
+    /// Blocks until the S3 upload completes
+    pub async fn sync_file_now(&self, path: &str) -> Result<(), S3Error> {
+        self.upload_file(path).await
+    }
+
     /// Cooperative sync check - call from main event loop
     pub async fn maybe_sync(&self) -> bool {
         let mut did_work = false;
@@ -123,20 +157,27 @@ impl SyncManager {
             let queue_len = self.outbound_queue.borrow().len();
             let elapsed = self.last_flush.borrow().elapsed();
 
-            queue_len >= self.config.outbound_batch_size
-                || (queue_len > 0 && elapsed >= self.config.flush_interval)
+            match self.config.mode {
+                // RealTime mode: flush immediately if there are any pending operations
+                SyncMode::RealTime => queue_len > 0,
+                // Batch mode: flush when queue is full or interval elapsed
+                SyncMode::Batch => {
+                    queue_len >= self.config.outbound_batch_size
+                        || (queue_len > 0 && elapsed >= self.config.flush_interval)
+                }
+            }
         };
 
         if should_flush {
             match self.flush_outbound().await {
                 Ok(count) => {
                     if count > 0 {
-                        println!("[sync] Flushed {} operations to S3", count);
+                        log::debug!("[sync] Flushed {} operations to S3", count);
                         did_work = true;
                     }
                 }
                 Err(e) => {
-                    eprintln!("[sync] Outbound flush error: {}", e);
+                    log::error!("[sync] Outbound flush error: {}", e);
                 }
             }
         }
@@ -148,15 +189,16 @@ impl SyncManager {
             match self.poll_inbound().await {
                 Ok(stats) => {
                     if stats.downloaded > 0 || stats.deleted > 0 {
-                        println!(
+                        log::info!(
                             "[sync] Inbound: {} downloaded, {} deleted",
-                            stats.downloaded, stats.deleted
+                            stats.downloaded,
+                            stats.deleted
                         );
                         did_work = true;
                     }
                 }
                 Err(e) => {
-                    eprintln!("[sync] Inbound poll error: {}", e);
+                    log::error!("[sync] Inbound poll error: {}", e);
                 }
             }
             *self.last_poll.borrow_mut() = Instant::now();
@@ -185,7 +227,7 @@ impl SyncManager {
             match op {
                 Some(SyncOperation::Upload { path }) => {
                     if let Err(e) = self.upload_file(&path).await {
-                        eprintln!("[sync] Failed to upload {}: {}", path, e);
+                        log::error!("[sync] Failed to upload {}: {}", path, e);
                         // Re-queue failed upload
                         self.outbound_queue
                             .borrow_mut()
@@ -196,9 +238,9 @@ impl SyncManager {
                 }
                 Some(SyncOperation::Delete { path }) => {
                     if let Err(e) = self.s3.delete_file(&path).await {
-                        eprintln!("[sync] Failed to delete {}: {}", path, e);
+                        log::error!("[sync] Failed to delete {}: {}", path, e);
                     } else {
-                        println!("[sync] Deleted from S3: {}", path);
+                        log::info!("[sync] Deleted from S3: {}", path);
                     }
                     processed += 1;
                 }
@@ -227,7 +269,7 @@ impl SyncManager {
             .borrow_mut()
             .update_after_upload(path, etag, size, local_modified);
 
-        println!("[sync] Uploaded: {}", path);
+        log::info!("[sync] Uploaded: {}", path);
         Ok(())
     }
 
@@ -297,7 +339,7 @@ impl SyncManager {
 
                 if !in_queue {
                     if let Err(e) = self.download_file(&obj).await {
-                        eprintln!("[sync] Failed to download {}: {}", obj.path, e);
+                        log::error!("[sync] Failed to download {}: {}", obj.path, e);
                     } else {
                         stats.downloaded += 1;
                     }
@@ -312,7 +354,7 @@ impl SyncManager {
             if !s3_paths.contains(&path) {
                 // File deleted from S3, remove from VFS
                 if let Err(e) = self.delete_local_file(&path) {
-                    eprintln!("[sync] Failed to delete local {}: {}", path, e);
+                    log::error!("[sync] Failed to delete local {}: {}", path, e);
                 } else {
                     stats.deleted += 1;
                 }
@@ -353,7 +395,7 @@ impl SyncManager {
             content.len() as u64,
         );
 
-        println!("[sync] Downloaded: {}", obj.path);
+        log::info!("[sync] Downloaded: {}", obj.path);
         Ok(())
     }
 
@@ -400,7 +442,7 @@ impl SyncManager {
             })?;
 
         self.metadata_cache.borrow_mut().remove(path);
-        println!("[sync] Deleted locally: {}", path);
+        log::info!("[sync] Deleted locally: {}", path);
         Ok(())
     }
 }
@@ -423,7 +465,7 @@ pub async fn init_from_s3(s3: &S3Storage) -> Result<(Fs, MetadataCache), LoadErr
         .await
         .map_err(|e| LoadError::S3 { source: e })?;
 
-    println!("[sync] Found {} files in S3", objects.len());
+    log::info!("[sync] Found {} files in S3", objects.len());
 
     for obj in objects {
         // Get file content
@@ -431,7 +473,7 @@ pub async fn init_from_s3(s3: &S3Storage) -> Result<(Fs, MetadataCache), LoadErr
             Ok(Some(data)) => data,
             Ok(None) => continue,
             Err(e) => {
-                eprintln!("[sync] Failed to download {}: {}", obj.path, e);
+                log::error!("[sync] Failed to download {}: {}", obj.path, e);
                 continue;
             }
         };
@@ -465,7 +507,7 @@ pub async fn init_from_s3(s3: &S3Storage) -> Result<(Fs, MetadataCache), LoadErr
         // Update metadata cache
         cache.update_after_download(&obj.path, etag, last_modified, content.len() as u64);
 
-        println!("[sync] Loaded: {}", obj.path);
+        log::info!("[sync] Loaded: {}", obj.path);
     }
 
     Ok((fs, cache))

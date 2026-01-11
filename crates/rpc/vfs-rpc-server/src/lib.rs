@@ -8,8 +8,10 @@
 #![allow(warnings)]
 
 mod file_metadata;
+mod protocol;
 mod s3_client;
 mod sync_manager;
+mod wasi_http;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -19,8 +21,11 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_core::{Fs, FsError};
-use vfs_rpc_protocol::{
-    DirEntry, ErrorCode, Metadata, Request, Response, RpcRequest, PROTOCOL_VERSION,
+use prost::Message;
+use vfs_rpc_protocol::{ErrorCode, RpcRequest as ProtoRpcRequest, PROTOCOL_VERSION};
+
+use protocol::{
+    from_proto_request, to_proto_response, DirEntry, Metadata, Request, Response, RpcRequest,
 };
 
 use file_metadata::MetadataCache;
@@ -40,6 +45,38 @@ use wasi::io::streams::{InputStream, OutputStream};
 use wasi::sockets::instance_network::instance_network;
 use wasi::sockets::network::{IpAddressFamily, IpSocketAddress, Ipv4SocketAddress};
 use wasi::sockets::tcp_create_socket::create_tcp_socket;
+
+// Simple logger for WASM compatibility
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        if cfg!(debug_assertions) {
+            true
+        } else {
+            metadata.level() <= log::Level::Info
+        }
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
+
+fn init_logger() {
+    log::set_logger(&LOGGER).ok();
+    if cfg!(debug_assertions) {
+        log::set_max_level(log::LevelFilter::Trace);
+    } else {
+        log::set_max_level(log::LevelFilter::Info);
+    }
+}
 
 /// Result of trying to read a message with timeout
 enum ReadResult {
@@ -96,10 +133,10 @@ struct ServerContext {
 
 impl ServerContext {
     /// Handle a single RPC request
-    fn handle_request(&self, request: Request, session_id: Option<String>) -> Response {
-        // Log the session ID for tracking
+    async fn handle_request(&self, request: Request, session_id: Option<String>) -> Response {
+        // Log the session ID for tracking (debug only to avoid performance impact)
         if let Some(ref sid) = session_id {
-            println!("[session {}] Processing request", sid);
+            log::debug!("[session {}] Processing request", sid);
         }
 
         match request {
@@ -114,7 +151,7 @@ impl ServerContext {
                     }
                 } else {
                     let new_session_id = generate_session_id();
-                    println!("[session {}] New client connected", new_session_id);
+                    log::info!("[session {}] New client connected", new_session_id);
                     Response::Connected {
                         session_id: new_session_id,
                         version: PROTOCOL_VERSION,
@@ -148,10 +185,18 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().write(fd, &data);
                 match result {
                     Ok(n) => {
-                        // Enqueue upload with actual path
+                        // Sync to S3
                         if let Some(ref sync) = self.sync_manager {
-                            if let Some(path) = self.fd_path_map.borrow().get(&fd) {
-                                sync.enqueue_upload(path.clone());
+                            if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
+                                if sync.is_realtime() {
+                                    // RealTime mode: sync immediately and wait for S3 completion
+                                    if let Err(e) = sync.sync_file_now(&path).await {
+                                        log::error!("[sync] RealTime sync failed: {}", e);
+                                    }
+                                } else {
+                                    // Batch mode: enqueue for later sync
+                                    sync.enqueue_upload(path);
+                                }
                             }
                         }
                         Response::Written { count: n }
@@ -277,10 +322,18 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().append_write(fd, &data);
                 match result {
                     Ok(n) => {
-                        // Enqueue upload with actual path
+                        // Sync to S3
                         if let Some(ref sync) = self.sync_manager {
-                            if let Some(path) = self.fd_path_map.borrow().get(&fd) {
-                                sync.enqueue_upload(path.clone());
+                            if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
+                                if sync.is_realtime() {
+                                    // RealTime mode: sync immediately and wait for S3 completion
+                                    if let Err(e) = sync.sync_file_now(&path).await {
+                                        log::error!("[sync] RealTime sync failed: {}", e);
+                                    }
+                                } else {
+                                    // Batch mode: enqueue for later sync
+                                    sync.enqueue_upload(path);
+                                }
                             }
                         }
                         Response::Written { count: n }
@@ -425,6 +478,7 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     let len = data.len() as u32;
     let len_bytes = len.to_be_bytes();
 
+    // Write length prefix
     loop {
         match stream.blocking_write_and_flush(&len_bytes) {
             Ok(()) => break,
@@ -436,16 +490,25 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
         }
     }
 
-    loop {
-        match stream.blocking_write_and_flush(data) {
-            Ok(()) => return true,
-            Err(_) => {
-                let pollable = stream.subscribe();
-                poll(&[&pollable]);
-                continue;
+    // Write data in chunks (WASI limits blocking_write_and_flush to 4096 bytes)
+    const CHUNK_SIZE: usize = 4096;
+    let mut offset = 0;
+    while offset < data.len() {
+        let end = std::cmp::min(offset + CHUNK_SIZE, data.len());
+        let chunk = &data[offset..end];
+        loop {
+            match stream.blocking_write_and_flush(chunk) {
+                Ok(()) => break,
+                Err(_) => {
+                    let pollable = stream.subscribe();
+                    poll(&[&pollable]);
+                    continue;
+                }
             }
         }
+        offset = end;
     }
+    true
 }
 
 /// Initialize server with optional S3 persistence
@@ -455,9 +518,10 @@ async fn init_server() -> ServerContext {
     let s3_prefix = std::env::var("VFS_S3_PREFIX").unwrap_or_else(|_| "vfs/".to_string());
 
     let (fs, sync_manager) = if let Some(bucket) = s3_bucket {
-        println!(
+        log::info!(
             "S3 persistence enabled: bucket={}, prefix={}",
-            bucket, s3_prefix
+            bucket,
+            s3_prefix
         );
 
         // Initialize S3 client
@@ -467,7 +531,7 @@ async fn init_server() -> ServerContext {
         let (fs, metadata_cache) = match init_from_s3(&s3).await {
             Ok((fs, cache)) => (fs, cache),
             Err(e) => {
-                eprintln!(
+                log::error!(
                     "Failed to load from S3: {}, starting with empty filesystem",
                     e
                 );
@@ -479,11 +543,15 @@ async fn init_server() -> ServerContext {
 
         // Create sync manager
         let config = SyncConfig::default();
+        log::info!(
+            "Sync mode: {:?} (set VFS_SYNC_MODE=realtime for immediate sync)",
+            config.mode
+        );
         let sync_manager = SyncManager::new(s3, fs.clone(), metadata_cache, config);
 
         (fs, Some(sync_manager))
     } else {
-        println!("S3 persistence disabled (VFS_S3_BUCKET not set)");
+        log::info!("S3 persistence disabled (VFS_S3_BUCKET not set)");
         (Rc::new(RefCell::new(Fs::new())), None)
     };
 
@@ -509,7 +577,7 @@ async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
     // Don't destructure - let the struct handle drop order
     let mut session_id: Option<String> = None;
 
-    println!("Client connected");
+    log::info!("Client connected");
 
     loop {
         // Try to read with timeout for periodic sync
@@ -525,13 +593,13 @@ async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
                 continue;
             }
             ReadResult::Disconnected => {
-                println!("Client disconnected (session: {:?})", session_id);
+                log::info!("Client disconnected (session: {:?})", session_id);
                 // Flush pending operations on client disconnect
                 if let Some(ref sync) = ctx.sync_manager {
                     if sync.pending_count() > 0 {
-                        println!("[sync] Flushing pending operations on client disconnect...");
+                        log::debug!("[sync] Flushing pending operations on client disconnect...");
                         if let Err(e) = sync.force_flush().await {
-                            eprintln!("[sync] Failed to flush: {}", e);
+                            log::error!("[sync] Failed to flush: {}", e);
                         }
                     }
                 }
@@ -539,24 +607,40 @@ async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
             }
         };
 
-        // Parse request JSON
-        let rpc_request: RpcRequest = match serde_json::from_slice(&request_bytes) {
+        // Parse request protobuf
+        let proto_request = match ProtoRpcRequest::decode(&request_bytes[..]) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Failed to parse request: {}", e);
+                log::error!("Failed to decode protobuf request: {}", e);
                 let response = Response::Error {
                     code: ErrorCode::SerializationError,
-                    message: "Failed to parse request JSON".to_string(),
+                    message: "Failed to decode protobuf request".to_string(),
                 };
-                if let Ok(response_bytes) = serde_json::to_vec(&response) {
-                    write_message(&resources.output, &response_bytes);
-                }
+                let response_bytes = to_proto_response(response).encode_to_vec();
+                write_message(&resources.output, &response_bytes);
+                continue;
+            }
+        };
+
+        // Convert to internal request type
+        let rpc_request = match from_proto_request(proto_request) {
+            Ok(req) => req,
+            Err(e) => {
+                log::error!("Failed to convert request: {}", e);
+                let response = Response::Error {
+                    code: ErrorCode::SerializationError,
+                    message: e.to_string(),
+                };
+                let response_bytes = to_proto_response(response).encode_to_vec();
+                write_message(&resources.output, &response_bytes);
                 continue;
             }
         };
 
         // Handle request
-        let response = ctx.handle_request(rpc_request.request, session_id.clone());
+        let response = ctx
+            .handle_request(rpc_request.request, session_id.clone())
+            .await;
 
         // Track session ID from connect response
         if let Response::Connected {
@@ -567,17 +651,12 @@ async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
             session_id = Some(new_session_id.clone());
         }
 
-        // Serialize and send response
-        let response_bytes = match serde_json::to_vec(&response) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("Failed to serialize response: {}", e);
-                continue;
-            }
-        };
+        // Serialize and send response (protobuf)
+        let proto_response = to_proto_response(response);
+        let response_bytes = proto_response.encode_to_vec();
 
         if !write_message(&resources.output, &response_bytes) {
-            println!(
+            log::info!(
                 "Client disconnected (write error, session: {:?})",
                 session_id
             );
@@ -606,7 +685,8 @@ pub extern "C" fn _start() {
 }
 
 async fn async_main() {
-    println!("VFS RPC Server starting...");
+    init_logger();
+    log::info!("VFS RPC Server starting...");
 
     // Initialize server with optional S3 persistence
     let ctx = Rc::new(init_server().await);
@@ -626,15 +706,15 @@ async fn async_main() {
         .expect("Failed to start bind");
     socket.finish_bind().expect("Failed to finish bind");
 
-    println!("Socket bound to 127.0.0.1:9000");
+    log::info!("Socket bound to 127.0.0.1:9000");
 
     // Start listening
     socket.start_listen().expect("Failed to start listen");
     socket.finish_listen().expect("Failed to finish listen");
 
-    println!("VFS RPC Server listening on 127.0.0.1:9000");
-    println!("Protocol version: {}", PROTOCOL_VERSION);
-    println!("Waiting for connections...");
+    log::info!("VFS RPC Server listening on 127.0.0.1:9000");
+    log::info!("Protocol version: {}", PROTOCOL_VERSION);
+    log::info!("Waiting for connections...");
 
     // Use LocalSet for spawn_local (allows Rc to be used across tasks)
     let local = tokio::task::LocalSet::new();
@@ -667,7 +747,7 @@ async fn async_main() {
                             // Spurious wake, ignore
                         }
                         Err(e) => {
-                            eprintln!("Failed to accept connection: {:?}", e);
+                            log::error!("Failed to accept connection: {:?}", e);
                         }
                     }
                 }

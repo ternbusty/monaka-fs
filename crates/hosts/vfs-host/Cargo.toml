@@ -11,6 +11,7 @@ wasmtime-wasi = "27.0.0"
 anyhow = "1.0"
 bytes = "1.9"
 async-trait = "0.1"
+log = "0.4"
 
 [lib]
 crate-type = ["rlib"]

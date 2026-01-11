@@ -57,7 +57,6 @@ build-wasm:
 		-p demo-writer \
 		-p demo-reader \
 		-p demo-std-fs \
-		-p direct-rpc-demo \
 		-p sensor-ingest \
 		-p sensor-process \
 		-p logger
@@ -73,7 +72,6 @@ build-wasm-release:
 		-p demo-writer \
 		-p demo-reader \
 		-p demo-std-fs \
-		-p direct-rpc-demo \
 		-p sensor-ingest \
 		-p sensor-process \
 		-p logger
@@ -190,7 +188,6 @@ build-rpc-demos:
 	@cargo build -p demo-writer --target wasm32-wasip2
 	@cargo build -p demo-reader --target wasm32-wasip2
 	@cargo build -p demo-std-fs --target wasm32-wasip2
-	@cargo build -p direct-rpc-demo --target wasm32-wasip2
 	@echo "Built all RPC demos"
 
 # Build all RPC components
