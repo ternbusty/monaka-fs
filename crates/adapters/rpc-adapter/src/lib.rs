@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Once;
 
-use vfs_rpc_protocol::{Request, Response, RpcRequest, PROTOCOL_VERSION};
+mod protocol;
+use protocol::{ErrorCode as RpcErrorCode, Request, Response, RpcRequest};
+use vfs_rpc_protocol::PROTOCOL_VERSION;
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -55,14 +57,9 @@ struct PersistentConnection {
 
 impl PersistentConnection {
     fn connect() -> Result<Self, ErrorCode> {
-        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: starting");
-
         // Create TCP socket
         let network = instance_network();
-        let socket = create_tcp_socket(IpAddressFamily::Ipv4).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] Failed to create socket: {:?}", e);
-            ErrorCode::Io
-        })?;
+        let socket = create_tcp_socket(IpAddressFamily::Ipv4).map_err(|_| ErrorCode::Io)?;
 
         // Connect to localhost:9000
         let addr = IpSocketAddress::Ipv4(Ipv4SocketAddress {
@@ -70,34 +67,24 @@ impl PersistentConnection {
             address: (127, 0, 0, 1),
         });
 
-        socket.start_connect(&network, addr).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] Failed to start connect: {:?}", e);
-            ErrorCode::Io
-        })?;
-
-        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: waiting for connection");
+        socket
+            .start_connect(&network, addr)
+            .map_err(|_| ErrorCode::Io)?;
 
         // Wait for connection to complete using poll() for efficient waiting
         let (mut input_stream, mut output_stream) = loop {
             match socket.finish_connect() {
                 Ok(streams) => break streams,
                 Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
-                    // Use subscribe() + poll() for efficient waiting
                     let pollable = socket.subscribe();
                     poll(&[&pollable]);
                     continue;
                 }
-                Err(e) => {
-                    eprintln!("[RPC-ADAPTER] Failed to finish connect: {:?}", e);
-                    return Err(ErrorCode::Io);
-                }
+                Err(_) => return Err(ErrorCode::Io),
             }
         };
 
-        eprintln!("[RPC-ADAPTER] PersistentConnection::connect: connected, sending handshake");
-
         // Do handshake
-        // session_id is None for the Connect request
         Self::send_raw(
             &mut output_stream,
             None,
@@ -106,37 +93,15 @@ impl PersistentConnection {
             },
         )?;
 
-        eprintln!(
-            "[RPC-ADAPTER] PersistentConnection::connect: handshake sent, waiting for response"
-        );
-
         match Self::receive_raw(&mut input_stream) {
-            Ok(Response::Connected { session_id, .. }) => {
-                eprintln!(
-                    "[RPC-ADAPTER] PersistentConnection::connect: connected, session_id={}",
-                    session_id
-                );
-                Ok(Self {
-                    socket,
-                    input_stream,
-                    output_stream,
-                    session_id,
-                })
-            }
-            Ok(other) => {
-                eprintln!(
-                    "[RPC-ADAPTER] PersistentConnection::connect: unexpected response: {:?}",
-                    other
-                );
-                Err(ErrorCode::Io)
-            }
-            Err(e) => {
-                eprintln!(
-                    "[RPC-ADAPTER] PersistentConnection::connect: handshake failed: {:?}",
-                    e
-                );
-                Err(e)
-            }
+            Ok(Response::Connected { session_id, .. }) => Ok(Self {
+                socket,
+                input_stream,
+                output_stream,
+                session_id,
+            }),
+            Ok(_) => Err(ErrorCode::Io),
+            Err(e) => Err(e),
         }
     }
 
@@ -149,54 +114,44 @@ impl PersistentConnection {
             session_id,
             request: request.clone(),
         };
-        let data = serde_json::to_vec(&rpc_request).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] send_raw: JSON serialize error: {:?}", e);
-            ErrorCode::Io
-        })?;
+        let data = protocol::to_proto_request_bytes(&rpc_request);
         let len = (data.len() as u32).to_be_bytes();
 
-        eprintln!(
-            "[RPC-ADAPTER] send_raw: sending {} bytes ({})",
-            data.len(),
-            String::from_utf8_lossy(&data[..std::cmp::min(100, data.len())])
-        );
+        // Write length prefix + data together
+        let mut payload = Vec::with_capacity(4 + data.len());
+        payload.extend_from_slice(&len);
+        payload.extend_from_slice(&data);
 
-        // Write length prefix (blocking, NO subscribe)
-        output_stream.blocking_write_and_flush(&len).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] send_raw: write length prefix error: {:?}", e);
-            ErrorCode::Io
-        })?;
-
-        // Write JSON payload (blocking, NO subscribe)
-        output_stream.blocking_write_and_flush(&data).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] send_raw: write body error: {:?}", e);
-            ErrorCode::Io
-        })?;
-
-        eprintln!("[RPC-ADAPTER] send_raw: sent successfully");
+        // Use non-blocking write with check_write to get larger buffer sizes
+        let mut offset = 0;
+        while offset < payload.len() {
+            let available = output_stream.check_write().map_err(|_| ErrorCode::Io)? as usize;
+            if available == 0 {
+                let pollable = output_stream.subscribe();
+                poll(&[&pollable]);
+                continue;
+            }
+            let end = std::cmp::min(offset + available, payload.len());
+            output_stream
+                .write(&payload[offset..end])
+                .map_err(|_| ErrorCode::Io)?;
+            offset = end;
+        }
+        output_stream.blocking_flush().map_err(|_| ErrorCode::Io)?;
         Ok(())
     }
 
     fn receive_raw(input_stream: &mut InputStream) -> Result<Response, ErrorCode> {
-        eprintln!("[RPC-ADAPTER] receive_raw: reading length prefix...");
-        // Read 4-byte length prefix using poll() for efficient waiting
+        // Read 4-byte length prefix
         let mut len_buf = Vec::new();
 
         while len_buf.len() < 4 {
             let remaining = 4 - len_buf.len() as u64;
             let bytes = match input_stream.blocking_read(remaining) {
                 Ok(b) => b,
-                Err(wasi::io::streams::StreamError::Closed) => {
-                    eprintln!("[RPC-ADAPTER] receive_raw: stream closed");
-                    return Err(ErrorCode::Io);
-                }
-                Err(e) => {
-                    eprintln!("[RPC-ADAPTER] receive_raw: blocking_read error: {:?}", e);
-                    return Err(ErrorCode::Io);
-                }
+                Err(_) => return Err(ErrorCode::Io),
             };
             if bytes.is_empty() {
-                // Use subscribe() + poll() for efficient waiting
                 let pollable = input_stream.subscribe();
                 poll(&[&pollable]);
                 continue;
@@ -205,29 +160,17 @@ impl PersistentConnection {
         }
 
         let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
-        eprintln!("[RPC-ADAPTER] receive_raw: message length is {} bytes", len);
 
-        // Read message body using poll() for efficient waiting
+        // Read message body
         let mut data = Vec::new();
 
         while (data.len() as u64) < len {
             let remaining = len - data.len() as u64;
             let bytes = match input_stream.blocking_read(remaining) {
                 Ok(b) => b,
-                Err(wasi::io::streams::StreamError::Closed) => {
-                    eprintln!("[RPC-ADAPTER] receive_raw: stream closed during body read");
-                    return Err(ErrorCode::Io);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[RPC-ADAPTER] receive_raw: blocking_read body error: {:?}",
-                        e
-                    );
-                    return Err(ErrorCode::Io);
-                }
+                Err(_) => return Err(ErrorCode::Io),
             };
             if bytes.is_empty() {
-                // Use subscribe() + poll() for efficient waiting
                 let pollable = input_stream.subscribe();
                 poll(&[&pollable]);
                 continue;
@@ -235,21 +178,10 @@ impl PersistentConnection {
             data.extend_from_slice(&bytes);
         }
 
-        eprintln!(
-            "[RPC-ADAPTER] receive_raw: parsing {} bytes of JSON",
-            data.len()
-        );
-        serde_json::from_slice(&data).map_err(|e| {
-            eprintln!("[RPC-ADAPTER] receive_raw: JSON parse error: {:?}", e);
-            ErrorCode::Io
-        })
+        protocol::from_proto_response_bytes(&data).map_err(rpc_error_to_wasi)
     }
 
     fn send(&mut self, request: &Request) -> Result<(), ErrorCode> {
-        eprintln!(
-            "[RPC-ADAPTER] send: calling send_raw with session_id={}",
-            self.session_id
-        );
         Self::send_raw(
             &mut self.output_stream,
             Some(self.session_id.clone()),
@@ -258,15 +190,49 @@ impl PersistentConnection {
     }
 
     fn receive(&mut self) -> Result<Response, ErrorCode> {
-        eprintln!("[RPC-ADAPTER] receive: calling receive_raw");
         Self::receive_raw(&mut self.input_stream)
     }
 
     fn call(&mut self, request: &Request) -> Result<Response, ErrorCode> {
-        eprintln!("[RPC-ADAPTER] call: sending request");
+        let start = wasi::clocks::monotonic_clock::now();
         self.send(request)?;
-        eprintln!("[RPC-ADAPTER] call: request sent, receiving response");
-        self.receive()
+        let after_send = wasi::clocks::monotonic_clock::now();
+        let response = self.receive()?;
+        let after_recv = wasi::clocks::monotonic_clock::now();
+
+        let send_ms = (after_send - start) / 1_000_000;
+        let recv_ms = (after_recv - after_send) / 1_000_000;
+        let total_ms = (after_recv - start) / 1_000_000;
+
+        // Log timing for debugging
+        let req_name = match request {
+            Request::Connect { .. } => "Connect",
+            Request::OpenPath { .. } => "OpenPath",
+            Request::OpenAt { .. } => "OpenAt",
+            Request::Read { .. } => "Read",
+            Request::Write { .. } => "Write",
+            Request::Seek { .. } => "Seek",
+            Request::Close { .. } => "Close",
+            Request::Stat { .. } => "Stat",
+            Request::Fstat { .. } => "Fstat",
+            Request::Mkdir { .. } => "Mkdir",
+            Request::MkdirP { .. } => "MkdirP",
+            Request::Unlink { .. } => "Unlink",
+            Request::Rmdir { .. } => "Rmdir",
+            Request::Readdir { .. } => "Readdir",
+            Request::ReaddirFd { .. } => "ReaddirFd",
+            Request::AppendWrite { .. } => "AppendWrite",
+            Request::Ftruncate { .. } => "Ftruncate",
+        };
+        log::debug!(
+            "[RPC] {}: send={}ms recv={}ms total={}ms",
+            req_name,
+            send_ms,
+            recv_ms,
+            total_ms
+        );
+
+        Ok(response)
     }
 }
 
@@ -277,26 +243,14 @@ where
 {
     unsafe {
         CONN_INIT.call_once(|| {
-            match PersistentConnection::connect() {
-                Ok(conn) => {
-                    RPC_CONNECTION = Some(conn);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[RPC-ADAPTER] Failed to establish persistent connection: {:?}",
-                        e
-                    );
-                    // Connection will be None, subsequent calls will fail
-                }
+            if let Ok(conn) = PersistentConnection::connect() {
+                RPC_CONNECTION = Some(conn);
             }
         });
 
         match RPC_CONNECTION.as_mut() {
             Some(conn) => f(conn),
-            None => {
-                eprintln!("[RPC-ADAPTER] No connection available");
-                Err(ErrorCode::Io)
-            }
+            None => Err(ErrorCode::Io),
         }
     }
 }
@@ -370,17 +324,16 @@ where
 }
 
 // Convert RPC error to WASI error code
-fn rpc_error_to_wasi(code: vfs_rpc_protocol::ErrorCode) -> ErrorCode {
-    use vfs_rpc_protocol::ErrorCode as RpcError;
+fn rpc_error_to_wasi(code: RpcErrorCode) -> ErrorCode {
     match code {
-        RpcError::NotFound => ErrorCode::NoEntry,
-        RpcError::NotADirectory => ErrorCode::NotDirectory,
-        RpcError::IsADirectory => ErrorCode::IsDirectory,
-        RpcError::InvalidArgument => ErrorCode::Invalid,
-        RpcError::BadFileDescriptor => ErrorCode::BadDescriptor,
-        RpcError::PermissionDenied => ErrorCode::Access,
-        RpcError::AlreadyExists => ErrorCode::Exist,
-        RpcError::NotEmpty => ErrorCode::NotEmpty,
+        RpcErrorCode::NotFound => ErrorCode::NoEntry,
+        RpcErrorCode::NotADirectory => ErrorCode::NotDirectory,
+        RpcErrorCode::IsADirectory => ErrorCode::IsDirectory,
+        RpcErrorCode::InvalidArgument => ErrorCode::Invalid,
+        RpcErrorCode::BadFileDescriptor => ErrorCode::BadDescriptor,
+        RpcErrorCode::PermissionDenied => ErrorCode::Access,
+        RpcErrorCode::AlreadyExists => ErrorCode::Exist,
+        RpcErrorCode::NotEmpty => ErrorCode::NotEmpty,
         _ => ErrorCode::Io,
     }
 }
@@ -418,22 +371,13 @@ struct RpcAdapter;
 
 impl exports::wasi::filesystem::preopens::Guest for RpcAdapter {
     fn get_directories() -> Vec<(Descriptor, String)> {
-        // Initialize state (no connection stored, just descriptor mappings)
         let fd = with_rpc_state(|state| state.descriptor_to_fd.borrow().get(&0).copied());
-
         match fd {
-            Some(fd) => {
-                eprintln!("[RPC-ADAPTER] State verified: descriptor 0 -> fd {}", fd);
-                // Descriptor 0 is mapped to root directory
+            Some(_) => {
                 let desc = Descriptor::new(DescriptorImpl { handle: 0 });
-                eprintln!("[RPC-ADAPTER] Returning descriptor 0 for path /");
                 vec![(desc, "/".to_string())]
             }
-            None => {
-                eprintln!("[RPC-ADAPTER] ERROR: descriptor 0 not mapped");
-                // State exists but descriptor 0 not mapped. This shouldn't happen
-                vec![]
-            }
+            None => vec![],
         }
     }
 }
@@ -476,11 +420,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
         Ok(exports::wasi::filesystem::types::OutputStream::new(
-            UnifiedOutputStream::File(FileOutputStream {
-                handle: self.handle,
-                offset: Cell::new(offset),
-                append: false,
-            }),
+            UnifiedOutputStream::File(FileOutputStream::new(self.handle, offset, false)),
         ))
     }
 
@@ -491,11 +431,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
         Ok(exports::wasi::filesystem::types::OutputStream::new(
-            UnifiedOutputStream::File(FileOutputStream {
-                handle: self.handle,
-                offset: Cell::new(0),
-                append: true,
-            }),
+            UnifiedOutputStream::File(FileOutputStream::new(self.handle, 0, true)),
         ))
     }
 
@@ -597,12 +533,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn write(&self, buffer: Vec<u8>, offset: Filesize) -> Result<Filesize, ErrorCode> {
-        eprintln!(
-            "[RPC-ADAPTER] write called for handle={}, buffer.len()={}, offset={}",
-            self.handle,
-            buffer.len(),
-            offset
-        );
         let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
         // Use persistent connection to perform seek + write atomically
@@ -777,18 +707,11 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         open_flags: OpenFlags,
         flags: DescriptorFlags,
     ) -> Result<Descriptor, ErrorCode> {
-        eprintln!(
-            "[RPC-ADAPTER] open_at called: handle={}, path={}",
-            self.handle, path
-        );
-
         let full_path = if self.handle == 0 {
             format!("/{}", path.trim_start_matches('/'))
         } else {
             path
         };
-
-        eprintln!("[RPC-ADAPTER] open_at: full_path={}", full_path);
         let fs_flags = convert_flags(open_flags, flags);
 
         let request = Request::OpenPath {
@@ -893,9 +816,8 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
 
     fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
         let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle)).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
+            // Use Closed error since we can't create a valid Error resource
+            exports::wasi::io::streams::StreamError::Closed
         })?;
 
         let current_offset = self.offset.get();
@@ -938,11 +860,7 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
                     Ok(bytes)
                 }
             }
-            Err(_) => Err(
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                }),
-            ),
+            Err(_) => Err(exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -964,9 +882,117 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
 
 // File output stream implementation for write_via_stream
 struct FileOutputStream {
-    handle: u32,       // Descriptor handle
-    offset: Cell<u64>, // Current write position
-    append: bool,      // Append mode - seek to end before each write
+    handle: u32,              // Descriptor handle
+    offset: Cell<u64>,        // Current write position
+    append: bool,             // Append mode - seek to end before each write
+    buffer: RefCell<Vec<u8>>, // Write buffer - flushed on drop
+}
+
+impl FileOutputStream {
+    fn new(handle: u32, offset: u64, append: bool) -> Self {
+        Self {
+            handle,
+            offset: Cell::new(offset),
+            append,
+            buffer: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn flush_buffer(&self) -> Result<(), ErrorCode> {
+        let data: Vec<u8> = self.buffer.borrow_mut().drain(..).collect();
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        let data_len = data.len();
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
+        let start_offset = self.offset.get();
+
+        if self.append {
+            with_connection(|conn| {
+                let start = wasi::clocks::monotonic_clock::now();
+                let request = Request::AppendWrite {
+                    fd: server_fd,
+                    data,
+                };
+                conn.send(&request)?;
+                let after_send = wasi::clocks::monotonic_clock::now();
+                match conn.receive()? {
+                    Response::Written { .. } => {
+                        let after_recv = wasi::clocks::monotonic_clock::now();
+                        let send_ms = (after_send - start) / 1_000_000;
+                        let recv_ms = (after_recv - after_send) / 1_000_000;
+                        log::debug!(
+                            "[RPC] AppendWrite {} bytes: send={}ms recv={}ms",
+                            data_len,
+                            send_ms,
+                            recv_ms
+                        );
+                        Ok(())
+                    }
+                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                    _ => Err(ErrorCode::Io),
+                }
+            })
+        } else {
+            with_connection(|conn| {
+                // Seek to start offset
+                let seek_start = wasi::clocks::monotonic_clock::now();
+                let seek_request = Request::Seek {
+                    fd: server_fd,
+                    offset: start_offset as i64,
+                    whence: 0,
+                };
+                conn.send(&seek_request)?;
+                let seek_after_send = wasi::clocks::monotonic_clock::now();
+                match conn.receive()? {
+                    Response::Position { .. } => {
+                        let seek_after_recv = wasi::clocks::monotonic_clock::now();
+                        let seek_send_ms = (seek_after_send - seek_start) / 1_000_000;
+                        let seek_recv_ms = (seek_after_recv - seek_after_send) / 1_000_000;
+                        log::debug!(
+                            "[RPC] Seek: send={}ms recv={}ms",
+                            seek_send_ms,
+                            seek_recv_ms
+                        );
+                    }
+                    Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
+                    _ => return Err(ErrorCode::Io),
+                }
+
+                // Write all data at once
+                let write_start = wasi::clocks::monotonic_clock::now();
+                let write_request = Request::Write {
+                    fd: server_fd,
+                    data,
+                };
+                conn.send(&write_request)?;
+                let write_after_send = wasi::clocks::monotonic_clock::now();
+                match conn.receive()? {
+                    Response::Written { .. } => {
+                        let write_after_recv = wasi::clocks::monotonic_clock::now();
+                        let write_send_ms = (write_after_send - write_start) / 1_000_000;
+                        let write_recv_ms = (write_after_recv - write_after_send) / 1_000_000;
+                        log::debug!(
+                            "[RPC] Write {} bytes: send={}ms recv={}ms",
+                            data_len,
+                            write_send_ms,
+                            write_recv_ms
+                        );
+                        Ok(())
+                    }
+                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+                    _ => Err(ErrorCode::Io),
+                }
+            })
+        }
+    }
+}
+
+impl Drop for FileOutputStream {
+    fn drop(&mut self) {
+        let _ = self.flush_buffer(); // Ignore errors on drop
+    }
 }
 
 impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
@@ -983,73 +1009,17 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         &self,
         contents: Vec<u8>,
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
-        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle)).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })?;
+        // Just buffer the data - actual write happens on drop
+        let len = contents.len() as u64;
+        self.buffer.borrow_mut().extend(contents);
 
-        let current_offset = self.offset.get();
-
-        let result = if self.append {
-            // Use atomic AppendWrite for append mode (no separate Seek needed)
-            with_connection(|conn| {
-                let request = Request::AppendWrite {
-                    fd: server_fd,
-                    data: contents,
-                };
-                conn.send(&request)?;
-
-                match conn.receive()? {
-                    Response::Written { count } => Ok(count as u64),
-                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                    _ => Err(ErrorCode::Io),
-                }
-            })
-        } else {
-            // Non-append mode: Seek + Write
-            with_connection(|conn| {
-                let seek_request = Request::Seek {
-                    fd: server_fd,
-                    offset: current_offset as i64,
-                    whence: 0, // SEEK_SET
-                };
-                conn.send(&seek_request)?;
-
-                match conn.receive()? {
-                    Response::Position { .. } => {}
-                    Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                    _ => return Err(ErrorCode::Io),
-                }
-
-                let write_request = Request::Write {
-                    fd: server_fd,
-                    data: contents,
-                };
-                conn.send(&write_request)?;
-
-                match conn.receive()? {
-                    Response::Written { count } => Ok(count as u64),
-                    Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
-                    _ => Err(ErrorCode::Io),
-                }
-            })
-        };
-
-        match result {
-            Ok(written) => {
-                // Don't update offset for append mode (always seek to end)
-                if !self.append {
-                    self.offset.set(current_offset + written);
-                }
-                Ok(())
-            }
-            Err(_) => Err(
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                }),
-            ),
+        // Update offset for non-append mode
+        if !self.append {
+            let current = self.offset.get();
+            self.offset.set(current + len);
         }
+
+        Ok(())
     }
 
     fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
@@ -1082,11 +1052,7 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
         _len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_splice(
@@ -1094,11 +1060,7 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
         _len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 }
 
@@ -1212,44 +1174,36 @@ impl exports::wasi::io::streams::GuestInputStream for UnifiedInputStream {
     fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedInputStream::File(f) => f.read(len),
-            UnifiedInputStream::Passthrough(p) => p.read(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedInputStream::Passthrough(p) => p
+                .read(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedInputStream::File(f) => f.blocking_read(len),
-            UnifiedInputStream::Passthrough(p) => p.blocking_read(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedInputStream::Passthrough(p) => p
+                .blocking_read(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedInputStream::File(f) => f.skip(len),
-            UnifiedInputStream::Passthrough(p) => p.skip(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedInputStream::Passthrough(p) => p
+                .skip(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn blocking_skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedInputStream::File(f) => f.blocking_skip(len),
-            UnifiedInputStream::Passthrough(p) => p.blocking_skip(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedInputStream::Passthrough(p) => p
+                .blocking_skip(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -1274,22 +1228,18 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
     fn check_write(&self) -> Result<u64, exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.check_write(),
-            UnifiedOutputStream::Passthrough(p) => p.check_write().map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedOutputStream::Passthrough(p) => p
+                .check_write()
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.write(contents),
-            UnifiedOutputStream::Passthrough(p) => p.write(&contents).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedOutputStream::Passthrough(p) => p
+                .write(&contents)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -1299,35 +1249,27 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.blocking_write_and_flush(contents),
-            UnifiedOutputStream::Passthrough(p) => {
-                p.blocking_write_and_flush(&contents).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
-                })
-            }
+            UnifiedOutputStream::Passthrough(p) => p
+                .blocking_write_and_flush(&contents)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.flush(),
-            UnifiedOutputStream::Passthrough(p) => p.flush().map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedOutputStream::Passthrough(p) => p
+                .flush()
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
     fn blocking_flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.blocking_flush(),
-            UnifiedOutputStream::Passthrough(p) => p.blocking_flush().map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedOutputStream::Passthrough(p) => p
+                .blocking_flush()
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -1345,11 +1287,9 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
     fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.write_zeroes(len),
-            UnifiedOutputStream::Passthrough(p) => p.write_zeroes(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            }),
+            UnifiedOutputStream::Passthrough(p) => p
+                .write_zeroes(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -1359,13 +1299,9 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             UnifiedOutputStream::File(f) => f.blocking_write_zeroes_and_flush(len),
-            UnifiedOutputStream::Passthrough(p) => {
-                p.blocking_write_zeroes_and_flush(len).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
-                })
-            }
+            UnifiedOutputStream::Passthrough(p) => p
+                .blocking_write_zeroes_and_flush(len)
+                .map_err(|_| exports::wasi::io::streams::StreamError::Closed),
         }
     }
 
@@ -1374,11 +1310,7 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
         _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
         _len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_splice(
@@ -1386,11 +1318,7 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
         _src: exports::wasi::io::streams::InputStreamBorrow<'_>,
         _len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 }
 
@@ -1401,35 +1329,27 @@ struct PassthroughInputStream {
 
 impl exports::wasi::io::streams::GuestInputStream for PassthroughInputStream {
     fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
-        self.inner.read(len).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .read(len)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
-        self.inner.blocking_read(len).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .blocking_read(len)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner.skip(len).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .skip(len)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner.blocking_skip(len).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .blocking_skip(len)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
@@ -1445,46 +1365,36 @@ struct PassthroughOutputStream {
 
 impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
     fn check_write(&self) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner.check_write().map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .check_write()
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner.write(&contents).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .write(&contents)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_write_and_flush(
         &self,
         contents: Vec<u8>,
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner.blocking_write_and_flush(&contents).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .blocking_write_and_flush(&contents)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner.flush().map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .flush()
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner.blocking_flush().map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .blocking_flush()
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
@@ -1494,11 +1404,9 @@ impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
     }
 
     fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner.write_zeroes(len).map_err(|_| {
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            })
-        })
+        self.inner
+            .write_zeroes(len)
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_write_zeroes_and_flush(
@@ -1507,11 +1415,7 @@ impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
         self.inner
             .blocking_write_zeroes_and_flush(len)
-            .map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
-            })
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn splice(
@@ -1520,11 +1424,7 @@ impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
         len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
         // Not yet implemented
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 
     fn blocking_splice(
@@ -1533,11 +1433,7 @@ impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
         len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
         // Not yet implemented
-        Err(
-            exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                exports::wasi::io::error::Error::from_handle(0)
-            }),
-        )
+        Err(exports::wasi::io::streams::StreamError::Closed)
     }
 }
 
