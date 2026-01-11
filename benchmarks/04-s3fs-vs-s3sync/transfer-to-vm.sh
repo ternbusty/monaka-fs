@@ -57,7 +57,6 @@ echo ""
 echo "=== Transferring scripts ==="
 multipass transfer "$BENCH_DIR/run-bench-vm.sh" "$VM_NAME:/home/ubuntu/halycon-bench/04/"
 multipass transfer "$BENCH_DIR/run-bench-vm-realtime.sh" "$VM_NAME:/home/ubuntu/halycon-bench/04/"
-multipass transfer "$BENCH_DIR/run-bench-sync-modes.sh" "$VM_NAME:/home/ubuntu/halycon-bench/04/"
 multipass transfer "$BENCH_DIR/docker-compose.yml" "$VM_NAME:/home/ubuntu/halycon-bench/04/"
 
 # Transfer .env if exists
@@ -66,8 +65,8 @@ if [ -f "$BENCH_DIR/.env" ]; then
     multipass transfer "$BENCH_DIR/.env" "$VM_NAME:/home/ubuntu/halycon-bench/04/"
 fi
 
-# Make scripts executable
-multipass exec "$VM_NAME" -- chmod +x /home/ubuntu/halycon-bench/04/*.sh
+# Make scripts executable (use bash -c to expand glob on VM, not locally)
+multipass exec "$VM_NAME" -- bash -c 'chmod +x /home/ubuntu/halycon-bench/04/*.sh'
 
 echo ""
 echo "=== Transfer complete ==="
@@ -76,7 +75,7 @@ echo "WASM files:"
 multipass exec "$VM_NAME" -- ls -lh /home/ubuntu/halycon-bench/wasm/
 echo ""
 echo "Scripts:"
-multipass exec "$VM_NAME" -- ls -lh /home/ubuntu/halycon-bench/04/*.sh
+multipass exec "$VM_NAME" -- bash -c 'ls -lh /home/ubuntu/halycon-bench/04/*.sh'
 echo ""
 echo "To run benchmarks:"
 echo "  multipass shell $VM_NAME"
@@ -87,5 +86,3 @@ echo ""
 echo "  # RealTime mode (blocking S3 writes) vs s3fs:"
 echo "  bash /home/ubuntu/halycon-bench/04/run-bench-vm-realtime.sh"
 echo ""
-echo "  # Compare Batch vs RealTime modes:"
-echo "  bash /home/ubuntu/halycon-bench/04/run-bench-sync-modes.sh"

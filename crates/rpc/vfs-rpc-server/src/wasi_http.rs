@@ -22,10 +22,12 @@ use aws_smithy_runtime_api::{
 use aws_smithy_types::body::SdkBody;
 use bytes::{Bytes, BytesMut};
 
+use crate::wasi::clocks::monotonic_clock::subscribe_duration;
 use crate::wasi::http::{
     outgoing_handler,
     types::{self as wasi_http, OutgoingBody, RequestOptions},
 };
+use crate::wasi::io::poll::poll;
 
 /// Builder for [`ChunkedWasiHttpClient`].
 #[derive(Default, Debug)]
@@ -80,17 +82,18 @@ struct ChunkedWasiHttpConnector {
 
 impl HttpConnector for ChunkedWasiHttpConnector {
     fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
-        let client = WasiClient::new(self.options.clone());
-        let http_req = request.try_into_http1x().expect("Http request invalid");
-        let converted_req = http_req.map(|body| match body.bytes() {
-            Some(value) => Bytes::copy_from_slice(value),
-            None => Bytes::new(),
-        });
-
-        let fut_result = client.handle(converted_req);
+        let options = self.options.clone();
 
         HttpConnectorFuture::new(async move {
-            let fut = fut_result?;
+            let client = WasiClient::new(options);
+            let http_req = request.try_into_http1x().expect("Http request invalid");
+            let converted_req = http_req.map(|body| match body.bytes() {
+                Some(value) => Bytes::copy_from_slice(value),
+                None => Bytes::new(),
+            });
+
+            // Now handle_async can yield to other tasks
+            let fut = client.handle_async(converted_req).await?;
             let response = fut.map(|body| {
                 if body.is_empty() {
                     SdkBody::empty()
@@ -107,6 +110,9 @@ impl HttpConnector for ChunkedWasiHttpConnector {
     }
 }
 
+/// Poll timeout for async HTTP (1ms in nanoseconds)
+const HTTP_POLL_TIMEOUT_NS: u64 = 1_000_000;
+
 /// WASI HTTP client with streaming body writes
 struct WasiClient {
     options: WasiRequestOptions,
@@ -117,7 +123,11 @@ impl WasiClient {
         Self { options }
     }
 
-    fn handle(&self, req: http::Request<Bytes>) -> Result<http::Response<Bytes>, ConnectorError> {
+    /// Async version of handle that yields to tokio while waiting for response
+    async fn handle_async(
+        &self,
+        req: http::Request<Bytes>,
+    ) -> Result<http::Response<Bytes>, ConnectorError> {
         let (parts, body) = req.into_parts();
 
         // 1. Create request with headers only (no body yet)
@@ -134,8 +144,9 @@ impl WasiClient {
         let future_response = outgoing_handler::handle(request, self.options.clone().0)
             .map_err(|err| ConnectorError::other(err.into(), None))?;
 
-        // 3. Now write body chunks - connection is consuming data
-        write_body_streaming(&request_stream, &body)
+        // 3. Now write body chunks - connection is consuming data (async)
+        write_body_streaming_async(&request_stream, &body)
+            .await
             .map_err(|err| ConnectorError::other(err.into(), None))?;
 
         // 4. Finish body
@@ -143,9 +154,20 @@ impl WasiClient {
         OutgoingBody::finish(request_body, None)
             .map_err(|err| ConnectorError::other(err.into(), None))?;
 
-        // 5. Wait for response
+        // 5. Wait for response ASYNCHRONOUSLY using poll + yield
         let subscription = future_response.subscribe();
-        subscription.block();
+        loop {
+            let timeout = subscribe_duration(HTTP_POLL_TIMEOUT_NS);
+            let ready = poll(&[&subscription, &timeout]);
+
+            // ready[0] = subscription is ready
+            if ready.iter().any(|&i| i == 0) {
+                break;
+            }
+
+            // Not ready yet, yield to other tasks (like other parallel uploads)
+            tokio::task::yield_now().await;
+        }
 
         let incoming_res = future_response
             .get()
@@ -191,8 +213,12 @@ fn create_outgoing_request(
     Ok(request)
 }
 
-/// Write body using streaming with check-write for optimal buffer usage
-fn write_body_streaming(stream: &wasi_http::OutputStream, body: &Bytes) -> Result<(), ParseError> {
+/// Write body using streaming with check-write for optimal buffer usage (async version)
+/// Yields to other tasks when waiting for write capacity or flush
+async fn write_body_streaming_async(
+    stream: &wasi_http::OutputStream,
+    body: &Bytes,
+) -> Result<(), ParseError> {
     if body.is_empty() {
         return Ok(());
     }
@@ -205,9 +231,16 @@ fn write_body_streaming(stream: &wasi_http::OutputStream, body: &Bytes) -> Resul
             .map_err(|_| ParseError::new("Failed to check write capacity"))?;
 
         if permitted == 0 {
-            // Wait for stream to be ready
+            // Wait for stream to be ready - ASYNC with poll + yield
             let pollable = stream.subscribe();
-            pollable.block();
+            loop {
+                let timeout = subscribe_duration(HTTP_POLL_TIMEOUT_NS);
+                let ready = poll(&[&pollable, &timeout]);
+                if ready.iter().any(|&i| i == 0) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
             continue;
         }
 
@@ -222,10 +255,21 @@ fn write_body_streaming(stream: &wasi_http::OutputStream, body: &Bytes) -> Resul
         offset = end;
     }
 
-    // Flush all written data
+    // Start flush (non-blocking)
     stream
-        .blocking_flush()
-        .map_err(|_| ParseError::new("Failed to flush HTTP body"))?;
+        .flush()
+        .map_err(|_| ParseError::new("Failed to start flush"))?;
+
+    // Wait for flush to complete - ASYNC with poll + yield
+    let pollable = stream.subscribe();
+    loop {
+        let timeout = subscribe_duration(HTTP_POLL_TIMEOUT_NS);
+        let ready = poll(&[&pollable, &timeout]);
+        if ready.iter().any(|&i| i == 0) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 
     Ok(())
 }
