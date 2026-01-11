@@ -27,5 +27,8 @@ aws-smithy-types = "1"
 http = "1"
 bytes = "1"
 
+# Async utilities for parallel uploads
+futures = "0.3"
+
 [build-dependencies]
 wit-bindgen = "0.36"
