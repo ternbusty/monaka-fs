@@ -981,14 +981,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "direct-rpc-demo"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "vfs-rpc-protocol",
-]
-
-[[package]]
 name = "directories-next"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
