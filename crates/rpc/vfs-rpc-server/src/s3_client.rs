@@ -5,7 +5,8 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_smithy_async::rt::sleep::TokioSleep;
-use aws_smithy_wasm::wasi::WasiHttpClientBuilder;
+
+use crate::wasi_http::ChunkedWasiHttpClient;
 
 /// S3 object info from listing
 #[derive(Debug, Clone)]
@@ -38,7 +39,7 @@ impl S3Storage {
     /// * `AWS_ENDPOINT_URL` - Custom endpoint URL (e.g., http://localhost:4566 for LocalStack)
     /// * `AWS_REGION` - AWS region (default: us-east-1)
     pub async fn new(bucket: String, prefix: String) -> Self {
-        let http_client = WasiHttpClientBuilder::new().build();
+        let http_client = ChunkedWasiHttpClient::new();
         let sleep = TokioSleep::new();
 
         let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
@@ -47,7 +48,7 @@ impl S3Storage {
 
         // Check for custom endpoint (LocalStack, MinIO, etc.)
         if let Ok(endpoint) = std::env::var("AWS_ENDPOINT_URL") {
-            println!("[s3] Using custom endpoint: {}", endpoint);
+            log::debug!("[s3] Using custom endpoint: {}", endpoint);
             config_loader = config_loader.endpoint_url(&endpoint);
         }
 
