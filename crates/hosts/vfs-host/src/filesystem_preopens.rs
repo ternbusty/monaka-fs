@@ -15,13 +15,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
         )>,
         anyhow::Error,
     > {
-        eprintln!("[VFS-HOST] get_directories() called");
+        log::debug!("[VFS-HOST] get_directories() called");
 
         // Get VFS directories
         let vfs_dirs = {
             // Lock shared VFS core
             let core = self.lock_vfs_core()?;
-            eprintln!("[VFS-HOST] Locked VFS core");
+            log::debug!("[VFS-HOST] Locked VFS core");
 
             // Call VFS adapter's get_directories
             let vfs_store_arc = core.vfs_store.clone();
@@ -33,14 +33,14 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
                 .vfs_instance
                 .wasi_filesystem_preopens()
                 .call_get_directories(&mut *vfs_store)?;
-            eprintln!(
+            log::debug!(
                 "[VFS-HOST] VFS adapter returned {} directories",
                 result.len()
             );
             result
         };
 
-        eprintln!(
+        log::debug!(
             "[VFS-HOST] Mapping {} VFS descriptors to host descriptors",
             vfs_dirs.len()
         );

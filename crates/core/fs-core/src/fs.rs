@@ -11,9 +11,6 @@ use crate::types::*;
 #[cfg(feature = "logging")]
 use crate::{debug, error, trace};
 
-#[cfg(not(feature = "logging"))]
-use crate::{debug, error, trace};
-
 /// Main filesystem structure
 pub struct Fs<T: TimeProvider = MonotonicCounter> {
     pub(crate) next_inode: InodeId,

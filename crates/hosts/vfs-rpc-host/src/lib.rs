@@ -145,12 +145,12 @@ impl VfsRpcHostState {
 
 impl WasiView for VfsRpcHostState {
     fn ctx(&mut self) -> &mut WasiCtx {
-        eprintln!("[VFS-RPC-HOST] WasiView::ctx() called");
+        log::debug!("[VFS-RPC-HOST] WasiView::ctx() called");
         &mut self.wasi_ctx
     }
 
     fn table(&mut self) -> &mut ResourceTable {
-        eprintln!("[VFS-RPC-HOST] WasiView::table() called");
+        log::debug!("[VFS-RPC-HOST] WasiView::table() called");
         &mut self.table
     }
 }

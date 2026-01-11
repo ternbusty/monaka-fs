@@ -15,13 +15,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
         )>,
         anyhow::Error,
     > {
-        eprintln!("[VFS-RPC-HOST] get_directories() called");
+        log::debug!("[VFS-RPC-HOST] get_directories() called");
 
         // Get RPC directories
         let rpc_dirs = {
             // Lock shared RPC core
             let core = self.lock_rpc_core()?;
-            eprintln!("[VFS-RPC-HOST] Locked RPC core");
+            log::debug!("[VFS-RPC-HOST] Locked RPC core");
 
             // Call RPC adapter's get_directories
             let rpc_store_arc = core.rpc_store.clone();
@@ -31,14 +31,14 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsRpcHostSta
                 .rpc_instance
                 .wasi_filesystem_preopens()
                 .call_get_directories(&mut *rpc_store)?;
-            eprintln!(
+            log::debug!(
                 "[VFS-RPC-HOST] RPC adapter returned {} directories",
                 result.len()
             );
             result
         };
 
-        eprintln!(
+        log::debug!(
             "[VFS-RPC-HOST] Mapping {} RPC descriptors to host descriptors",
             rpc_dirs.len()
         );
