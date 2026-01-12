@@ -5,8 +5,10 @@
 // VFS instance at runtime, unlike wasi-virt which creates isolated VFS per app.
 
 use anyhow::Result;
-use fs_core::Fs;
 use std::sync::Arc;
+
+// Re-export Fs so users don't need to depend on fs-core directly
+pub use fs_core::Fs;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 

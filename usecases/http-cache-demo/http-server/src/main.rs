@@ -10,7 +10,8 @@ use axum::{
     routing::get,
     Router,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use vfs_host::Fs;
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
@@ -18,7 +19,7 @@ use wasmtime::{Config, Engine, Store};
 struct AppState {
     engine: Engine,
     handler_component: Component,
-    shared_vfs: Arc<Mutex<vfs_host::SharedVfsCore>>,
+    shared_vfs: Arc<Fs>,
 }
 
 /// Handle API requests
@@ -48,7 +49,7 @@ async fn handle_api_request(
 fn run_wasm_handler(
     engine: &Engine,
     handler_component: &Component,
-    shared_vfs: Arc<Mutex<vfs_host::SharedVfsCore>>,
+    shared_vfs: Arc<Fs>,
     api_path: &str,
 ) -> Result<String> {
     println!("[SERVER] Handling request: {}", api_path);
