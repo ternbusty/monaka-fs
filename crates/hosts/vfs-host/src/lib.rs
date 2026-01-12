@@ -7,13 +7,21 @@
 use anyhow::Result;
 use std::sync::Arc;
 
-// Re-export Fs so users don't need to depend on fs-core directly
-pub use fs_core::Fs;
+// Re-export fs-core types so users don't need to depend on fs-core directly
+pub use fs_core::{Fs, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
 pub mod filesystem_preopens;
 pub mod filesystem_types;
+
+// S3 sync support (optional)
+#[cfg(feature = "s3-sync")]
+mod sync_hooks;
+#[cfg(feature = "s3-sync")]
+pub use sync_hooks::{NoOpSyncHooks, S3SyncHooks, SyncHooks};
+#[cfg(feature = "s3-sync")]
+pub use vfs_sync::{init_from_s3, HostSyncManager, S3Storage, SyncConfig};
 
 /// Wrapper for fs-core file descriptor stored in ResourceTable.
 /// Contains the fd and optionally the path for directory descriptors.
@@ -50,6 +58,18 @@ pub struct VfsHostState {
     /// Shared VFS: multiple VfsHostState instances can reference the same VFS
     /// No external lock needed - fs-core uses DashMap for internal thread safety
     pub shared_vfs: Arc<Fs>,
+
+    /// Optional sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub sync_hooks: Option<Arc<dyn SyncHooks>>,
+
+    /// Optional sync manager for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub sync_manager: Option<Arc<HostSyncManager>>,
+
+    /// Background sync thread handle
+    #[cfg(feature = "s3-sync")]
+    sync_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl VfsHostState {
@@ -65,6 +85,90 @@ impl VfsHostState {
             wasi_ctx,
             table: ResourceTable::new(),
             shared_vfs: Arc::new(Fs::new()),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+            #[cfg(feature = "s3-sync")]
+            sync_manager: None,
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None,
+        })
+    }
+
+    /// Create a new VfsHostState with S3 synchronization enabled
+    ///
+    /// This will:
+    /// 1. Initialize S3 storage client
+    /// 2. Load existing files from S3
+    /// 3. Start a background sync thread
+    ///
+    /// # Arguments
+    /// * `bucket` - S3 bucket name
+    /// * `prefix` - S3 key prefix (e.g., "vfs/")
+    #[cfg(feature = "s3-sync")]
+    pub async fn new_with_s3(bucket: String, prefix: String) -> Result<Self> {
+        use std::time::Duration;
+
+        log::info!(
+            "[vfs-host] Initializing with S3 sync: bucket={}, prefix={}",
+            bucket,
+            prefix
+        );
+
+        // Initialize S3 storage
+        let s3 = S3Storage::new(bucket, prefix).await;
+
+        // Load existing files from S3
+        let (fs, metadata_cache) = init_from_s3(&s3)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize from S3: {}", e))?;
+
+        let fs = Arc::new(fs);
+        let config = SyncConfig::from_env();
+
+        log::info!("[vfs-host] Sync mode: {:?}", config.mode);
+
+        // Create sync manager
+        let sync_manager = Arc::new(HostSyncManager::new(s3, fs.clone(), metadata_cache, config));
+
+        // Create sync hooks
+        let sync_hooks: Arc<dyn SyncHooks> = Arc::new(S3SyncHooks::new(sync_manager.clone()));
+
+        // Spawn background sync thread
+        let sync_thread = {
+            let sync = sync_manager.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for sync thread");
+
+                rt.block_on(async {
+                    log::info!("[vfs-host] Background sync thread started");
+                    while !sync.is_shutdown() {
+                        sync.maybe_sync().await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    // Final flush before exit
+                    if let Err(e) = sync.force_flush().await {
+                        log::error!("[vfs-host] Final flush failed: {}", e);
+                    }
+                    log::info!("[vfs-host] Background sync thread stopped");
+                });
+            })
+        };
+
+        let wasi_ctx = WasiCtxBuilder::new()
+            .inherit_stdio()
+            .inherit_stderr()
+            .build();
+
+        Ok(Self {
+            wasi_ctx,
+            table: ResourceTable::new(),
+            shared_vfs: fs,
+            sync_hooks: Some(sync_hooks),
+            sync_manager: Some(sync_manager),
+            sync_thread: Some(sync_thread),
         })
     }
 
@@ -80,6 +184,12 @@ impl VfsHostState {
             wasi_ctx,
             table: ResourceTable::new(),
             shared_vfs: Arc::clone(&self.shared_vfs),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: self.sync_hooks.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_manager: self.sync_manager.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None, // Don't clone the thread handle
         }
     }
 
@@ -97,6 +207,12 @@ impl VfsHostState {
             wasi_ctx: builder.build(),
             table: ResourceTable::new(),
             shared_vfs: Arc::clone(&self.shared_vfs),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: self.sync_hooks.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_manager: self.sync_manager.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None, // Don't clone the thread handle
         }
     }
 
@@ -114,12 +230,37 @@ impl VfsHostState {
             wasi_ctx: builder.build(),
             table: ResourceTable::new(),
             shared_vfs,
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+            #[cfg(feature = "s3-sync")]
+            sync_manager: None,
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None,
         }
     }
 
     /// Get the shared VFS for external use (e.g., sharing across threads)
     pub fn get_shared_vfs(&self) -> Arc<Fs> {
         Arc::clone(&self.shared_vfs)
+    }
+
+    /// Gracefully shutdown S3 sync
+    #[cfg(feature = "s3-sync")]
+    pub fn shutdown_sync(&mut self) {
+        if let Some(ref sync) = self.sync_manager {
+            log::info!("[vfs-host] Shutting down S3 sync...");
+            sync.shutdown();
+        }
+        if let Some(handle) = self.sync_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(feature = "s3-sync")]
+impl Drop for VfsHostState {
+    fn drop(&mut self) {
+        self.shutdown_sync();
     }
 }
 

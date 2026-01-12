@@ -10,6 +10,8 @@ default = []
 # Use external Mutex for VFS access (for benchmarking comparison)
 # When enabled, all VFS operations go through Arc<Mutex<Fs>> instead of Arc<Fs>
 external-mutex = []
+# Enable S3 synchronization support
+s3-sync = ["dep:vfs-sync", "dep:tokio"]
 
 [dependencies]
 fs-core = { path = "../../core/fs-core" }
@@ -19,6 +21,10 @@ anyhow = "1.0"
 bytes = "1.9"
 async-trait = "0.1"
 log = "0.4"
+
+# S3 sync (optional)
+vfs-sync = { path = "../../sync/vfs-sync", optional = true }
+tokio = { version = "1", features = ["rt", "time", "sync"], optional = true }
 
 [lib]
 crate-type = ["rlib"]

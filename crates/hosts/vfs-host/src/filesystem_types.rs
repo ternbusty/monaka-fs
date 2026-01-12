@@ -12,6 +12,9 @@ use wasmtime_wasi::{
     HostInputStream, HostOutputStream, StreamError, StreamResult, Subscribe, TrappableError,
 };
 
+#[cfg(feature = "s3-sync")]
+use super::SyncHooks;
+
 // fs-core open flags
 const O_RDONLY: u32 = 0;
 const O_WRONLY: u32 = 1;
@@ -50,6 +53,11 @@ pub struct FsOutputStreamWrapper {
     fd: u32,
     /// Current offset position (None means append mode)
     offset: Option<u64>,
+    /// File path for sync hooks
+    path: Option<String>,
+    /// Optional sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    sync_hooks: Option<Arc<dyn SyncHooks>>,
 }
 
 impl FsOutputStreamWrapper {
@@ -58,6 +66,44 @@ impl FsOutputStreamWrapper {
             shared_vfs,
             fd,
             offset,
+            path: None,
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+        }
+    }
+
+    /// Create with path and sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub fn new_with_sync(
+        shared_vfs: Arc<Fs>,
+        fd: u32,
+        offset: Option<u64>,
+        path: Option<String>,
+        sync_hooks: Option<Arc<dyn SyncHooks>>,
+    ) -> Self {
+        Self {
+            shared_vfs,
+            fd,
+            offset,
+            path,
+            sync_hooks,
+        }
+    }
+
+    /// Create with path (without sync hooks)
+    pub fn new_with_path(
+        shared_vfs: Arc<Fs>,
+        fd: u32,
+        offset: Option<u64>,
+        path: Option<String>,
+    ) -> Self {
+        Self {
+            shared_vfs,
+            fd,
+            offset,
+            path,
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
         }
     }
 }
@@ -224,6 +270,12 @@ impl HostOutputStream for FsOutputStreamWrapper {
             }
         }
 
+        // Trigger sync hook after successful write
+        #[cfg(feature = "s3-sync")]
+        if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &self.path) {
+            hooks.on_write(path);
+        }
+
         Ok(())
     }
 
@@ -334,11 +386,26 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        let (fd, _) = self
+        let (fd, path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        let wrapper = FsOutputStreamWrapper::new(Arc::clone(&self.shared_vfs), fd, Some(offset));
+        #[cfg(feature = "s3-sync")]
+        let wrapper = FsOutputStreamWrapper::new_with_sync(
+            Arc::clone(&self.shared_vfs),
+            fd,
+            Some(offset),
+            path,
+            self.sync_hooks.clone(),
+        );
+        #[cfg(not(feature = "s3-sync"))]
+        let wrapper = FsOutputStreamWrapper::new_with_path(
+            Arc::clone(&self.shared_vfs),
+            fd,
+            Some(offset),
+            path,
+        );
+
         let resource = self
             .table
             .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
@@ -354,12 +421,23 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        let (fd, _) = self
+        let (fd, path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
         // None offset means append mode
-        let wrapper = FsOutputStreamWrapper::new(Arc::clone(&self.shared_vfs), fd, None);
+        #[cfg(feature = "s3-sync")]
+        let wrapper = FsOutputStreamWrapper::new_with_sync(
+            Arc::clone(&self.shared_vfs),
+            fd,
+            None,
+            path,
+            self.sync_hooks.clone(),
+        );
+        #[cfg(not(feature = "s3-sync"))]
+        let wrapper =
+            FsOutputStreamWrapper::new_with_path(Arc::clone(&self.shared_vfs), fd, None, path);
+
         let resource = self
             .table
             .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
@@ -630,13 +708,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .open_path_with_flags(&full_path, fs_flags)
             .map_err(convert_fs_error_to_trappable)?;
 
-        // Check if opened path is a directory
-        let is_dir = self.shared_vfs.fstat(fd).map(|m| m.is_dir).unwrap_or(false);
-
-        // Create wrapper
+        // Create wrapper - store path for both files and directories
+        // (needed for S3 sync hooks and directory operations)
         let wrapper = FsDescriptorWrapper {
             fd,
-            path: if is_dir { Some(full_path) } else { None },
+            path: Some(full_path),
         };
         let wrapper_resource: Resource<FsDescriptorWrapper> = self.table.push(wrapper)?;
 
@@ -723,6 +799,12 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         self.shared_vfs
             .unlink(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
+
+        // Trigger sync hook after successful delete
+        #[cfg(feature = "s3-sync")]
+        if let Some(ref hooks) = self.sync_hooks {
+            hooks.on_delete(&full_path);
+        }
 
         Ok(())
     }

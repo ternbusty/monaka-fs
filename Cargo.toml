@@ -11,6 +11,9 @@ members = [
   "crates/hosts/vfs-host",
   "crates/hosts/vfs-rpc-host",
 
+  # Sync
+  "crates/sync/vfs-sync",
+
   # RPC
   "crates/rpc/vfs-rpc-protocol",
   "crates/rpc/vfs-rpc-server",
@@ -25,6 +28,7 @@ members = [
 
   # Examples - Component Model
   "examples/component-model/runtime-linker",
+  "examples/component-model/runtime-linker-s3",
 
   # Use Cases
   "usecases/sensor-pipeline/sensor-ingest",
