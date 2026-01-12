@@ -1,0 +1,10 @@
+[package]
+name = "fs-unsafe"
+version = "0.1.0"
+edition = "2021"
+description = "No-lock VFS for benchmarking (HashMap + UnsafeCell, no synchronization)"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[dependencies]

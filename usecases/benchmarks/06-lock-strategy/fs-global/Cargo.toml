@@ -1,0 +1,10 @@
+[package]
+name = "fs-global"
+version = "0.1.0"
+edition = "2021"
+description = "Global-lock VFS for benchmarking (HashMap + single RwLock)"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[dependencies]

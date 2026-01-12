@@ -1,0 +1,33 @@
+[package]
+name = "bench-lock-runtime"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[[bin]]
+name = "bench-lock-runtime"
+path = "src/main.rs"
+
+[dependencies]
+# WASM runtime
+wasmtime = { version = "27.0", features = ["component-model"] }
+wasmtime-wasi = "27.0"
+
+# VFS host implementations (selected by feature)
+vfs-host = { path = "../../../../crates/hosts/vfs-host", optional = true }
+vfs-host-global = { path = "../vfs-host-global", optional = true }
+vfs-host-unsafe = { path = "../vfs-host-unsafe", optional = true }
+
+# Utilities
+anyhow = "1.0"
+
+[features]
+default = ["lock-fine"]
+lock-fine = ["vfs-host"]
+lock-global = ["vfs-host-global"]
+lock-none = ["vfs-host-unsafe"]
+
+[profile.release]
+opt-level = 3
