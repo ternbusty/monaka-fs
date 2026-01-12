@@ -1,8 +1,8 @@
 // WASI Filesystem Preopens Host Implementation
 //
-// Implements wasi:filesystem/preopens interface by forwarding to VFS adapter
+// Implements wasi:filesystem/preopens interface using fs-core directly
 
-use super::{VfsDescriptorWrapper, VfsHostState};
+use super::{FsDescriptorWrapper, VfsHostState};
 use wasmtime::component::Resource;
 
 impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState {
@@ -17,69 +17,57 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
     > {
         log::debug!("[VFS-HOST] get_directories() called");
 
-        // Get VFS directories
-        let vfs_dirs = {
-            // Lock shared VFS core
-            let core = self.lock_vfs_core()?;
-            log::debug!("[VFS-HOST] Locked VFS core");
-
-            // Call VFS adapter's get_directories
-            let vfs_store_arc = core.vfs_store.clone();
-            let mut vfs_store = vfs_store_arc
+        // Open root directory using fs-core directly
+        let fd = {
+            let mut core = self
+                .shared_vfs
                 .lock()
-                .map_err(|e| anyhow::anyhow!("VFS store lock poisoned: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("VFS lock poisoned: {}", e))?;
 
-            let result = core
-                .vfs_instance
-                .wasi_filesystem_preopens()
-                .call_get_directories(&mut *vfs_store)?;
-            log::debug!(
-                "[VFS-HOST] VFS adapter returned {} directories",
-                result.len()
-            );
-            result
+            // O_RDONLY | O_DIRECTORY flags
+            const O_RDONLY: u32 = 0;
+            const O_DIRECTORY: u32 = 0x10000;
+
+            core.fs
+                .open_path_with_flags("/", O_RDONLY | O_DIRECTORY)
+                .map_err(|e| anyhow::anyhow!("Failed to open root directory: {:?}", e))?
         };
 
-        log::debug!(
-            "[VFS-HOST] Mapping {} VFS descriptors to host descriptors",
-            vfs_dirs.len()
-        );
+        log::debug!("[VFS-HOST] Opened root directory with fd={}", fd);
 
-        // Map VFS descriptors to host descriptors
-        let mut host_dirs = Vec::new();
-        for (vfs_descriptor, path) in vfs_dirs {
-            // Push VfsDescriptorWrapper to ResourceTable (proper typed storage)
-            let wrapper = VfsDescriptorWrapper(vfs_descriptor);
-            let wrapper_resource: Resource<VfsDescriptorWrapper> = self.table.push(wrapper)?;
+        // Create wrapper with directory path for relative path resolution
+        let wrapper = FsDescriptorWrapper {
+            fd,
+            path: Some("/".to_string()),
+        };
 
-            // Transmute Resource<VfsDescriptorWrapper> to Resource<Descriptor>
-            // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
-            // Compile-time checks ensure size and alignment match
-            const _: () = {
-                use std::mem::{align_of, size_of};
-                assert!(
-                    size_of::<Resource<VfsDescriptorWrapper>>()
-                        == size_of::<
-                            Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                        >()
-                );
-                assert!(
-                    align_of::<Resource<VfsDescriptorWrapper>>()
-                        == align_of::<
-                            Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                        >()
-                );
-            };
-            let host_descriptor = unsafe {
-                std::mem::transmute::<
-                    Resource<VfsDescriptorWrapper>,
-                    Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-                >(wrapper_resource)
-            };
+        // Push to ResourceTable
+        let wrapper_resource: Resource<FsDescriptorWrapper> = self.table.push(wrapper)?;
 
-            host_dirs.push((host_descriptor, path));
-        }
+        // Transmute Resource<FsDescriptorWrapper> to Resource<Descriptor>
+        // SAFETY: Resource<T> is a transparent u32 wrapper, so transmute is safe
+        // Compile-time checks ensure size and alignment match
+        const _: () = {
+            use std::mem::{align_of, size_of};
+            assert!(
+                size_of::<Resource<FsDescriptorWrapper>>()
+                    == size_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
+                    )
+            );
+            assert!(
+                align_of::<Resource<FsDescriptorWrapper>>()
+                    == align_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
+                    )
+            );
+        };
+        let host_descriptor = unsafe {
+            std::mem::transmute::<
+                Resource<FsDescriptorWrapper>,
+                Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+            >(wrapper_resource)
+        };
 
-        Ok(host_dirs)
+        log::debug!("[VFS-HOST] Returning preopened root directory");
+        Ok(vec![(host_descriptor, "/".to_string())])
     }
 }

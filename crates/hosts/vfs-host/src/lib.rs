@@ -1,22 +1,14 @@
 // VFS Host Trait Implementation
 //
-// This library implements wasmtime Host traits that wrap a VfsAdapter component instance.
+// This library implements wasmtime Host traits using fs-core directly.
 // This enables true dynamic linking where multiple applications can share a single
 // VFS instance at runtime, unlike wasi-virt which creates isolated VFS per app.
 
 use anyhow::Result;
-use std::collections::HashMap;
+use fs_core::Fs;
 use std::sync::{Arc, Mutex};
-use wasmtime::component::{bindgen, ResourceTable};
-use wasmtime::{Engine, Store};
+use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
-
-// Generate bindings for the VFS adapter world
-bindgen!({
-    path: "../../../wit",
-    world: "vfs-adapter",
-    async: false,
-});
 
 pub mod filesystem_preopens;
 pub mod filesystem_types;
@@ -24,38 +16,37 @@ pub mod filesystem_types;
 /// Core VFS state that is shared across multiple applications
 /// This is wrapped in Arc<Mutex<>> to enable concurrent access
 pub struct SharedVfsCore {
-    /// The VFS adapter component instance
-    pub vfs_instance: VfsAdapter,
-
-    /// Dedicated store for VFS adapter operations (separately locked to avoid borrow issues)
-    pub vfs_store: Arc<Mutex<Store<VfsStoreData>>>,
-
-    /// Maps host Descriptor resources (rep) to VFS Descriptor resources
-    pub descriptor_map: HashMap<u32, crate::exports::wasi::filesystem::types::Descriptor>,
-
-    /// Maps host DirectoryEntryStream resources (rep) to VFS DirectoryEntryStream resources
-    pub dir_stream_map: HashMap<u32, crate::exports::wasi::filesystem::types::DirectoryEntryStream>,
-
-    /// Maps host InputStream resources (rep) to VFS InputStream resources
-    pub input_stream_map: HashMap<u32, crate::exports::wasi::io::streams::InputStream>,
-
-    /// Maps host OutputStream resources (rep) to VFS OutputStream resources
-    pub output_stream_map: HashMap<u32, crate::exports::wasi::io::streams::OutputStream>,
+    /// The fs-core filesystem instance
+    pub fs: Fs,
 }
 
-/// Wrapper for VFS Descriptor stored in ResourceTable.
-/// This allows proper type tracking in ResourceTable instead of using () with unsafe transmute.
-#[derive(Clone, Copy)]
-pub struct VfsDescriptorWrapper(pub crate::exports::wasi::filesystem::types::Descriptor);
+// SAFETY: SharedVfsCore is always accessed through Arc<Mutex<>>, which ensures
+// that only one thread can access the Fs at a time. The Rc<RefCell<>> inside Fs
+// is only accessed while the Mutex is held, making it effectively thread-safe.
+unsafe impl Send for SharedVfsCore {}
+unsafe impl Sync for SharedVfsCore {}
 
-/// Wrapper for VFS DirectoryEntryStream stored in ResourceTable.
-#[derive(Clone, Copy)]
-pub struct VfsDirectoryEntryStreamWrapper(
-    pub crate::exports::wasi::filesystem::types::DirectoryEntryStream,
-);
+/// Wrapper for fs-core file descriptor stored in ResourceTable.
+/// Contains the fd and optionally the path for directory descriptors.
+#[derive(Clone)]
+pub struct FsDescriptorWrapper {
+    /// fs-core file descriptor
+    pub fd: u32,
+    /// Path for directory descriptors (used for relative path resolution)
+    pub path: Option<String>,
+}
 
-/// Host state that wraps a VfsAdapter component instance
-/// and implements WASI Host traits to forward calls to the VFS component.
+/// Wrapper for directory entry stream stored in ResourceTable.
+/// Caches the directory listing and tracks iteration position.
+#[derive(Clone)]
+pub struct FsDirectoryEntryStreamWrapper {
+    /// Cached directory entries: (name, is_dir)
+    pub entries: Vec<(String, bool)>,
+    /// Current position in the entries list
+    pub position: usize,
+}
+
+/// Host state that uses fs-core directly for filesystem operations.
 /// Multiple instances can share the same VFS core via Arc<Mutex<>>.
 pub struct VfsHostState {
     /// WASI context for host operations (stdio, env, etc.)
@@ -68,55 +59,11 @@ pub struct VfsHostState {
     pub shared_vfs: Arc<Mutex<SharedVfsCore>>,
 }
 
-/// Data stored in the VFS-specific store
-pub struct VfsStoreData {
-    pub wasi_ctx: WasiCtx,
-    pub table: ResourceTable,
-}
-
-impl WasiView for VfsStoreData {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
-
 impl VfsHostState {
-    /// Create a new VfsHostState by instantiating a VFS adapter component
-    pub fn new(engine: &Engine, vfs_adapter_path: &str) -> Result<Self> {
-        // Create WASI context for the VFS store
-        let vfs_wasi_ctx = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .inherit_stderr()
-            .build();
-
-        let vfs_store_data = VfsStoreData {
-            wasi_ctx: vfs_wasi_ctx,
-            table: ResourceTable::new(),
-        };
-
-        let mut vfs_store = Store::new(engine, vfs_store_data);
-
-        // Create linker for VFS adapter
-        let mut vfs_linker = wasmtime::component::Linker::new(engine);
-        wasmtime_wasi::add_to_linker_sync(&mut vfs_linker)?;
-
-        // Load and instantiate VFS adapter
-        let vfs_component = wasmtime::component::Component::from_file(engine, vfs_adapter_path)?;
-        let vfs_instance = VfsAdapter::instantiate(&mut vfs_store, &vfs_component, &vfs_linker)?;
-
-        // Create shared VFS core
-        let shared_vfs_core = SharedVfsCore {
-            vfs_instance,
-            vfs_store: Arc::new(Mutex::new(vfs_store)),
-            descriptor_map: HashMap::new(),
-            dir_stream_map: HashMap::new(),
-            input_stream_map: HashMap::new(),
-            output_stream_map: HashMap::new(),
-        };
+    /// Create a new VfsHostState with a fresh fs-core filesystem
+    pub fn new() -> Result<Self> {
+        // Create shared VFS core with fs-core
+        let shared_vfs_core = SharedVfsCore { fs: Fs::new() };
 
         // Create host WASI context
         let wasi_ctx = WasiCtxBuilder::new()
@@ -189,6 +136,12 @@ impl VfsHostState {
     }
 }
 
+impl Default for VfsHostState {
+    fn default() -> Self {
+        Self::new().expect("Failed to create VfsHostState")
+    }
+}
+
 impl WasiView for VfsHostState {
     fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi_ctx
@@ -199,51 +152,22 @@ impl WasiView for VfsHostState {
     }
 }
 
-/// Helper function to convert VFS error codes to WASI error codes
-pub fn convert_vfs_error(
-    error: crate::exports::wasi::filesystem::types::ErrorCode,
+/// Helper function to convert fs-core error to WASI error code
+pub fn convert_fs_error(
+    error: fs_core::FsError,
 ) -> wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode {
-    use crate::exports::wasi::filesystem::types::ErrorCode as VfsError;
-    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode as WasiError;
+    use fs_core::FsError;
+    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
 
     match error {
-        VfsError::Access => WasiError::Access,
-        VfsError::WouldBlock => WasiError::WouldBlock,
-        VfsError::Already => WasiError::Already,
-        VfsError::BadDescriptor => WasiError::BadDescriptor,
-        VfsError::Busy => WasiError::Busy,
-        VfsError::Deadlock => WasiError::Deadlock,
-        VfsError::Quota => WasiError::Quota,
-        VfsError::Exist => WasiError::Exist,
-        VfsError::FileTooLarge => WasiError::FileTooLarge,
-        VfsError::IllegalByteSequence => WasiError::IllegalByteSequence,
-        VfsError::InProgress => WasiError::InProgress,
-        VfsError::Interrupted => WasiError::Interrupted,
-        VfsError::Invalid => WasiError::Invalid,
-        VfsError::Io => WasiError::Io,
-        VfsError::IsDirectory => WasiError::IsDirectory,
-        VfsError::Loop => WasiError::Loop,
-        VfsError::TooManyLinks => WasiError::TooManyLinks,
-        VfsError::MessageSize => WasiError::MessageSize,
-        VfsError::NameTooLong => WasiError::NameTooLong,
-        VfsError::NoDevice => WasiError::NoDevice,
-        VfsError::NoEntry => WasiError::NoEntry,
-        VfsError::NoLock => WasiError::NoLock,
-        VfsError::InsufficientMemory => WasiError::InsufficientMemory,
-        VfsError::InsufficientSpace => WasiError::InsufficientSpace,
-        VfsError::NotDirectory => WasiError::NotDirectory,
-        VfsError::NotEmpty => WasiError::NotEmpty,
-        VfsError::NotRecoverable => WasiError::NotRecoverable,
-        VfsError::Unsupported => WasiError::Unsupported,
-        VfsError::NoTty => WasiError::NoTty,
-        VfsError::NoSuchDevice => WasiError::NoSuchDevice,
-        VfsError::Overflow => WasiError::Overflow,
-        VfsError::NotPermitted => WasiError::NotPermitted,
-        VfsError::Pipe => WasiError::Pipe,
-        VfsError::ReadOnly => WasiError::ReadOnly,
-        VfsError::InvalidSeek => WasiError::InvalidSeek,
-        VfsError::TextFileBusy => WasiError::TextFileBusy,
-        VfsError::CrossDevice => WasiError::CrossDevice,
+        FsError::NotFound => ErrorCode::NoEntry,
+        FsError::NotADirectory => ErrorCode::NotDirectory,
+        FsError::IsADirectory => ErrorCode::IsDirectory,
+        FsError::AlreadyExists => ErrorCode::Exist,
+        FsError::NotEmpty => ErrorCode::NotEmpty,
+        FsError::BadFileDescriptor => ErrorCode::BadDescriptor,
+        FsError::PermissionDenied => ErrorCode::Access,
+        FsError::InvalidArgument => ErrorCode::Invalid,
     }
 }
 
@@ -269,7 +193,7 @@ where
 ///
 /// This function registers all standard WASI interfaces but replaces the
 /// filesystem implementation with VfsHostState's custom Host trait implementation.
-/// This allows std::fs to work transparently through the VFS adapter.
+/// This allows std::fs to work transparently through the VFS.
 pub fn add_to_linker_with_vfs(
     linker: &mut wasmtime::component::Linker<VfsHostState>,
 ) -> Result<()> {

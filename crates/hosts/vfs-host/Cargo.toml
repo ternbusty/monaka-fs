@@ -6,6 +6,7 @@ description = "Host trait implementation for VFS adapter - enables multiple appl
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+fs-core = { path = "../../core/fs-core" }
 wasmtime = "27.0.0"
 wasmtime-wasi = "27.0.0"
 anyhow = "1.0"

@@ -5,15 +5,14 @@ use wasmtime::{Config, Engine, Store};
 // Import VFS Host trait implementations from vfs-host crate
 use vfs_host::{self};
 
-fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
+fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     println!("Demonstrating that multiple WASM applications can share the same VFS instance.");
     println!("App1 (demo-writer) creates a file, App2 (demo-reader) reads it.");
     println!();
 
-    // Create shared VfsHostState
+    // Create shared VfsHostState (now uses fs-core directly, no WASM adapter needed)
     println!("Creating shared VfsHostState...");
-    let vfs_host_state1 = vfs_host::VfsHostState::new(engine, vfs_adapter_path)
-        .context("Failed to create VfsHostState")?;
+    let vfs_host_state1 = vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
     let vfs_host_state2 = vfs_host_state1.clone_shared();
 
     // Run demo-writer (App1)
@@ -63,15 +62,12 @@ fn test_shared_vfs_across_apps(engine: &Engine, vfs_adapter_path: &str) -> Resul
 }
 
 fn main() -> Result<()> {
-    // File paths
-    let vfs_adapter_path = "../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
-
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
 
     // Shared VFS across multiple WASM applications
-    test_shared_vfs_across_apps(&engine, vfs_adapter_path)?;
+    test_shared_vfs_across_apps(&engine)?;
 
     Ok(())
 }
