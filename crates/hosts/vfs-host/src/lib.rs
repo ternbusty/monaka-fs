@@ -6,25 +6,12 @@
 
 use anyhow::Result;
 use fs_core::Fs;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
 pub mod filesystem_preopens;
 pub mod filesystem_types;
-
-/// Core VFS state that is shared across multiple applications
-/// This is wrapped in Arc<Mutex<>> to enable concurrent access
-pub struct SharedVfsCore {
-    /// The fs-core filesystem instance
-    pub fs: Fs,
-}
-
-// SAFETY: SharedVfsCore is always accessed through Arc<Mutex<>>, which ensures
-// that only one thread can access the Fs at a time. The Rc<RefCell<>> inside Fs
-// is only accessed while the Mutex is held, making it effectively thread-safe.
-unsafe impl Send for SharedVfsCore {}
-unsafe impl Sync for SharedVfsCore {}
 
 /// Wrapper for fs-core file descriptor stored in ResourceTable.
 /// Contains the fd and optionally the path for directory descriptors.
@@ -47,7 +34,10 @@ pub struct FsDirectoryEntryStreamWrapper {
 }
 
 /// Host state that uses fs-core directly for filesystem operations.
-/// Multiple instances can share the same VFS core via Arc<Mutex<>>.
+/// Multiple instances can share the same VFS via `Arc<Fs>`.
+///
+/// Since fs-core uses DashMap internally with fine-grained locking,
+/// no external lock is required. All Fs methods take `&self`.
 pub struct VfsHostState {
     /// WASI context for host operations (stdio, env, etc.)
     pub wasi_ctx: WasiCtx,
@@ -55,16 +45,14 @@ pub struct VfsHostState {
     /// Resource table for managing WASM resources
     pub table: ResourceTable,
 
-    /// Shared VFS core: multiple VfsHostState instances can reference the same VFS
-    pub shared_vfs: Arc<Mutex<SharedVfsCore>>,
+    /// Shared VFS: multiple VfsHostState instances can reference the same VFS
+    /// No external lock needed - fs-core uses DashMap for internal thread safety
+    pub shared_vfs: Arc<Fs>,
 }
 
 impl VfsHostState {
     /// Create a new VfsHostState with a fresh fs-core filesystem
     pub fn new() -> Result<Self> {
-        // Create shared VFS core with fs-core
-        let shared_vfs_core = SharedVfsCore { fs: Fs::new() };
-
         // Create host WASI context
         let wasi_ctx = WasiCtxBuilder::new()
             .inherit_stdio()
@@ -74,7 +62,7 @@ impl VfsHostState {
         Ok(Self {
             wasi_ctx,
             table: ResourceTable::new(),
-            shared_vfs: Arc::new(Mutex::new(shared_vfs_core)),
+            shared_vfs: Arc::new(Fs::new()),
         })
     }
 
@@ -110,12 +98,9 @@ impl VfsHostState {
         }
     }
 
-    /// Create a new VfsHostState from an existing shared VFS core with custom environment variables
+    /// Create a new VfsHostState from an existing shared VFS with custom environment variables
     /// This is useful when sharing VFS across threads (e.g., in HTTP server handlers)
-    pub fn from_shared_vfs_with_env(
-        shared_vfs: Arc<Mutex<SharedVfsCore>>,
-        env_vars: &[(&str, &str)],
-    ) -> Self {
+    pub fn from_shared_vfs_with_env(shared_vfs: Arc<Fs>, env_vars: &[(&str, &str)]) -> Self {
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stdio().inherit_stderr();
 
@@ -130,8 +115,8 @@ impl VfsHostState {
         }
     }
 
-    /// Get the shared VFS core for external use (e.g., sharing across threads)
-    pub fn get_shared_vfs(&self) -> Arc<Mutex<SharedVfsCore>> {
+    /// Get the shared VFS for external use (e.g., sharing across threads)
+    pub fn get_shared_vfs(&self) -> Arc<Fs> {
         Arc::clone(&self.shared_vfs)
     }
 }

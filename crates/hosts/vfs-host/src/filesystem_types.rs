@@ -2,9 +2,10 @@
 //
 // Implements wasi:filesystem/types interface using fs-core directly
 
-use super::{FsDescriptorWrapper, FsDirectoryEntryStreamWrapper, SharedVfsCore, VfsHostState};
+use super::{FsDescriptorWrapper, FsDirectoryEntryStreamWrapper, VfsHostState};
 use bytes::Bytes;
-use std::sync::{Arc, Mutex};
+use fs_core::Fs;
+use std::sync::Arc;
 use wasmtime::component::Resource;
 use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
 use wasmtime_wasi::{
@@ -23,8 +24,8 @@ const SEEK_SET: i32 = 0;
 
 /// Wrapper for fs-core InputStream that implements HostInputStream
 pub struct FsInputStreamWrapper {
-    /// Reference to shared VFS core
-    shared_vfs: Arc<Mutex<SharedVfsCore>>,
+    /// Reference to shared VFS (no external lock needed)
+    shared_vfs: Arc<Fs>,
     /// The fs-core file descriptor
     fd: u32,
     /// Current offset position
@@ -32,25 +33,19 @@ pub struct FsInputStreamWrapper {
 }
 
 impl FsInputStreamWrapper {
-    pub fn new(shared_vfs: Arc<Mutex<SharedVfsCore>>, fd: u32, offset: u64) -> Self {
+    pub fn new(shared_vfs: Arc<Fs>, fd: u32, offset: u64) -> Self {
         Self {
             shared_vfs,
             fd,
             offset,
         }
     }
-
-    fn lock_vfs_core(&self) -> Result<std::sync::MutexGuard<'_, SharedVfsCore>, StreamError> {
-        self.shared_vfs.lock().map_err(|e| {
-            StreamError::LastOperationFailed(anyhow::anyhow!("VFS core lock poisoned: {}", e))
-        })
-    }
 }
 
 /// Wrapper for fs-core OutputStream that implements HostOutputStream
 pub struct FsOutputStreamWrapper {
-    /// Reference to shared VFS core
-    shared_vfs: Arc<Mutex<SharedVfsCore>>,
+    /// Reference to shared VFS (no external lock needed)
+    shared_vfs: Arc<Fs>,
     /// The fs-core file descriptor
     fd: u32,
     /// Current offset position (None means append mode)
@@ -58,18 +53,12 @@ pub struct FsOutputStreamWrapper {
 }
 
 impl FsOutputStreamWrapper {
-    pub fn new(shared_vfs: Arc<Mutex<SharedVfsCore>>, fd: u32, offset: Option<u64>) -> Self {
+    pub fn new(shared_vfs: Arc<Fs>, fd: u32, offset: Option<u64>) -> Self {
         Self {
             shared_vfs,
             fd,
             offset,
         }
-    }
-
-    fn lock_vfs_core(&self) -> Result<std::sync::MutexGuard<'_, SharedVfsCore>, StreamError> {
-        self.shared_vfs.lock().map_err(|e| {
-            StreamError::LastOperationFailed(anyhow::anyhow!("VFS core lock poisoned: {}", e))
-        })
     }
 }
 
@@ -162,15 +151,6 @@ impl VfsHostState {
             None => format!("/{}", relative_path.trim_start_matches('/')),
         }
     }
-
-    /// Lock shared VFS core
-    pub(crate) fn lock_vfs_core(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, SharedVfsCore>, anyhow::Error> {
-        self.shared_vfs
-            .lock()
-            .map_err(|e| anyhow::anyhow!("VFS core lock poisoned: {}", e))
-    }
 }
 
 #[async_trait::async_trait]
@@ -183,28 +163,23 @@ impl Subscribe for FsInputStreamWrapper {
 impl HostInputStream for FsInputStreamWrapper {
     fn read(&mut self, size: usize) -> StreamResult<Bytes> {
         let offset = self.offset;
-        let n = {
-            let mut core = self.lock_vfs_core()?;
 
-            // Seek to offset
-            core.fs
-                .seek(self.fd, offset as i64, SEEK_SET)
-                .map_err(|e| {
-                    StreamError::LastOperationFailed(anyhow::anyhow!("seek failed: {:?}", e))
-                })?;
-
-            // Read data
-            let mut buf = vec![0u8; size];
-            let n = core.fs.read(self.fd, &mut buf).map_err(|e| {
-                StreamError::LastOperationFailed(anyhow::anyhow!("read failed: {:?}", e))
+        // Seek to offset
+        self.shared_vfs
+            .seek(self.fd, offset as i64, SEEK_SET)
+            .map_err(|e| {
+                StreamError::LastOperationFailed(anyhow::anyhow!("seek failed: {:?}", e))
             })?;
 
-            buf.truncate(n);
-            (n, buf)
-        };
+        // Read data
+        let mut buf = vec![0u8; size];
+        let n = self.shared_vfs.read(self.fd, &mut buf).map_err(|e| {
+            StreamError::LastOperationFailed(anyhow::anyhow!("read failed: {:?}", e))
+        })?;
 
-        self.offset += n.0 as u64;
-        Ok(Bytes::from(n.1))
+        buf.truncate(n);
+        self.offset += n as u64;
+        Ok(Bytes::from(buf))
     }
 
     fn skip(&mut self, nelem: usize) -> StreamResult<usize> {
@@ -223,42 +198,32 @@ impl Subscribe for FsOutputStreamWrapper {
 
 impl HostOutputStream for FsOutputStreamWrapper {
     fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
-        let current_offset = self.offset;
-        let new_offset = {
-            let mut core = self.lock_vfs_core()?;
-
-            match current_offset {
-                Some(offset) => {
-                    // Positioned write: seek to offset first
-                    core.fs
-                        .seek(self.fd, offset as i64, SEEK_SET)
-                        .map_err(|e| {
-                            StreamError::LastOperationFailed(anyhow::anyhow!(
-                                "seek failed: {:?}",
-                                e
-                            ))
-                        })?;
-
-                    let n = core.fs.write(self.fd, &bytes).map_err(|e| {
-                        StreamError::LastOperationFailed(anyhow::anyhow!("write failed: {:?}", e))
+        match self.offset {
+            Some(offset) => {
+                // Positioned write: seek to offset first
+                self.shared_vfs
+                    .seek(self.fd, offset as i64, SEEK_SET)
+                    .map_err(|e| {
+                        StreamError::LastOperationFailed(anyhow::anyhow!("seek failed: {:?}", e))
                     })?;
 
-                    Some(offset + n as u64)
-                }
-                None => {
-                    // Append mode: use append_write
-                    core.fs.append_write(self.fd, &bytes).map_err(|e| {
-                        StreamError::LastOperationFailed(anyhow::anyhow!(
-                            "append_write failed: {:?}",
-                            e
-                        ))
-                    })?;
-                    None
-                }
+                let n = self.shared_vfs.write(self.fd, &bytes).map_err(|e| {
+                    StreamError::LastOperationFailed(anyhow::anyhow!("write failed: {:?}", e))
+                })?;
+
+                self.offset = Some(offset + n as u64);
             }
-        };
+            None => {
+                // Append mode: use append_write
+                self.shared_vfs.append_write(self.fd, &bytes).map_err(|e| {
+                    StreamError::LastOperationFailed(anyhow::anyhow!(
+                        "append_write failed: {:?}",
+                        e
+                    ))
+                })?;
+            }
+        }
 
-        self.offset = new_offset;
         Ok(())
     }
 
@@ -286,17 +251,16 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
         // Seek to offset
-        core.fs
+        self.shared_vfs
             .seek(fd, offset as i64, SEEK_SET)
             .map_err(convert_fs_error_to_trappable)?;
 
         // Read data
         let mut buf = vec![0u8; len as usize];
-        let n = core
-            .fs
+        let n = self
+            .shared_vfs
             .read(fd, &mut buf)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -314,16 +278,15 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
         // Seek to offset
-        core.fs
+        self.shared_vfs
             .seek(fd, offset as i64, SEEK_SET)
             .map_err(convert_fs_error_to_trappable)?;
 
         // Write data
-        let n = core
-            .fs
+        let n = self
+            .shared_vfs
             .write(fd, &buffer)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -338,8 +301,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let wrapper = self.table.delete(wrapper_resource)?;
 
         // Close the fd in fs-core
-        let mut core = self.lock_vfs_core()?;
-        let _ = core.fs.close(wrapper.fd); // Ignore close errors
+        let _ = self.shared_vfs.close(wrapper.fd); // Ignore close errors
         Ok(())
     }
 
@@ -447,9 +409,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
-        let meta = core.fs.fstat(fd).map_err(convert_fs_error_to_trappable)?;
+        let meta = self
+            .shared_vfs
+            .fstat(fd)
+            .map_err(convert_fs_error_to_trappable)?;
 
         use wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType;
         if meta.is_dir {
@@ -467,9 +431,8 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
-        core.fs
+        self.shared_vfs
             .ftruncate(fd, size)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -509,13 +472,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Get directory entries from fs-core (drop lock before using self.table)
-        let entries = {
-            let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-            core.fs
-                .readdir_fd(fd)
-                .map_err(convert_fs_error_to_trappable)?
-        };
+        // Get directory entries from fs-core
+        let entries = self
+            .shared_vfs
+            .readdir_fd(fd)
+            .map_err(convert_fs_error_to_trappable)?;
 
         // Create stream wrapper
         let wrapper = FsDirectoryEntryStreamWrapper {
@@ -566,9 +527,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        core.fs
+        self.shared_vfs
             .mkdir(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -585,9 +544,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
-        let meta = core.fs.fstat(fd).map_err(convert_fs_error_to_trappable)?;
+        let meta = self
+            .shared_vfs
+            .fstat(fd)
+            .map_err(convert_fs_error_to_trappable)?;
 
         Ok(convert_metadata_to_stat(&meta))
     }
@@ -606,10 +567,8 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        let meta = core
-            .fs
+        let meta = self
+            .shared_vfs
             .stat(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -666,20 +625,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             fs_flags |= O_TRUNC;
         }
 
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        let fd = core
-            .fs
+        let fd = self
+            .shared_vfs
             .open_path_with_flags(&full_path, fs_flags)
             .map_err(convert_fs_error_to_trappable)?;
 
-        drop(core);
-
         // Check if opened path is a directory
-        let is_dir = {
-            let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-            core.fs.fstat(fd).map(|m| m.is_dir).unwrap_or(false)
-        };
+        let is_dir = self.shared_vfs.fstat(fd).map(|m| m.is_dir).unwrap_or(false);
 
         // Create wrapper
         let wrapper = FsDescriptorWrapper {
@@ -730,9 +682,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        core.fs
+        self.shared_vfs
             .rmdir(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -770,9 +720,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        let mut core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        core.fs
+        self.shared_vfs
             .unlink(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
 
@@ -799,9 +747,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
-        let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
 
-        let meta = core.fs.fstat(fd).map_err(convert_fs_error_to_trappable)?;
+        let meta = self
+            .shared_vfs
+            .fstat(fd)
+            .map_err(convert_fs_error_to_trappable)?;
 
         // Simple hash based on size and timestamps
         let lower = meta.size;
@@ -824,10 +774,8 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        let core = self.lock_vfs_core().map_err(TrappableError::trap)?;
-
-        let meta = core
-            .fs
+        let meta = self
+            .shared_vfs
             .stat(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
 

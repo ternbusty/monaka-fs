@@ -1,0 +1,11 @@
+[package]
+name = "bench-runtime"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vfs-host = { path = "../../../../crates/hosts/vfs-host" }
+fs-core = { path = "../../../../crates/core/fs-core" }
+wasmtime = { version = "27.0.0", features = ["component-model"] }
+wasmtime-wasi = "27.0.0"
+anyhow = "1.0"

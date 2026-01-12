@@ -1,0 +1,10 @@
+[package]
+name = "bench-wasm-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bench-wasm-app"
+path = "src/main.rs"
+
+[dependencies]

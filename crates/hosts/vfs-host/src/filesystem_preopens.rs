@@ -17,21 +17,15 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
     > {
         log::debug!("[VFS-HOST] get_directories() called");
 
-        // Open root directory using fs-core directly
-        let fd = {
-            let mut core = self
-                .shared_vfs
-                .lock()
-                .map_err(|e| anyhow::anyhow!("VFS lock poisoned: {}", e))?;
+        // Open root directory using fs-core directly (no external lock needed)
+        // O_RDONLY | O_DIRECTORY flags
+        const O_RDONLY: u32 = 0;
+        const O_DIRECTORY: u32 = 0x10000;
 
-            // O_RDONLY | O_DIRECTORY flags
-            const O_RDONLY: u32 = 0;
-            const O_DIRECTORY: u32 = 0x10000;
-
-            core.fs
-                .open_path_with_flags("/", O_RDONLY | O_DIRECTORY)
-                .map_err(|e| anyhow::anyhow!("Failed to open root directory: {:?}", e))?
-        };
+        let fd = self
+            .shared_vfs
+            .open_path_with_flags("/", O_RDONLY | O_DIRECTORY)
+            .map_err(|e| anyhow::anyhow!("Failed to open root directory: {:?}", e))?;
 
         log::debug!("[VFS-HOST] Opened root directory with fd={}", fd);
 

@@ -50,6 +50,7 @@ exclude = [
   "test-simple",
   "vfs-rpc-client",
   "vfs-tcp-server",
+  "usecases/benchmarks",
 ]
 resolver="3"
 

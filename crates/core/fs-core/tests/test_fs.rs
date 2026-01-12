@@ -7,7 +7,7 @@ mod open {
     #[test]
     fn success_basic_open_write_read() {
         // given
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create parent directories explicitly
         fs.mkdir_p("/tmp/foo").unwrap();
         let fd = fs.open_path("/tmp/foo/bar.txt").unwrap();
@@ -24,7 +24,7 @@ mod open {
 
     #[test]
     fn success_open_existing_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"Original").unwrap();
@@ -40,7 +40,7 @@ mod open {
 
     #[test]
     fn success_with_rdonly_flag() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file first
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"Hello").unwrap();
@@ -60,7 +60,7 @@ mod open {
 
     #[test]
     fn success_with_wronly_flag() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Open with O_WRONLY
         let fd = fs
             .open_path_with_flags("/test.txt", O_WRONLY | O_CREAT)
@@ -79,7 +79,7 @@ mod open {
 
     #[test]
     fn success_with_rdwr_flag() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Open with O_RDWR
         let fd = fs
             .open_path_with_flags("/test.txt", O_RDWR | O_CREAT)
@@ -96,7 +96,7 @@ mod open {
 
     #[test]
     fn error_opening_directory() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a directory
         fs.mkdir("/testdir").unwrap();
         // Trying to open a directory should fail with IsADirectory error
@@ -106,7 +106,7 @@ mod open {
 
     #[test]
     fn error_without_create_flag() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Opening non-existent file without O_CREAT should fail
         let result = fs.open_path_with_flags("/nonexistent.txt", O_RDWR);
         assert!(matches!(result, Err(FsError::NotFound)));
@@ -119,7 +119,7 @@ mod open {
 
     #[test]
     fn error_parent_not_exists() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // open should fail if parent directory doesn't exist
         let result = fs.open_path("/nonexistent/file.txt");
         assert!(matches!(result, Err(FsError::NotFound)));
@@ -131,7 +131,7 @@ mod open {
 
     #[test]
     fn error_using_closed_fd() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Open and close a file
         let fd = fs.open_path("/test.txt").unwrap();
         fs.close(fd).unwrap();
@@ -149,7 +149,7 @@ mod read_write {
 
     #[test]
     fn success_multiple_fds_independent_positions() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create and write to a file
         let fd1 = fs.open_path("/shared.txt").unwrap();
         fs.write(fd1, b"0123456789").unwrap();
@@ -181,7 +181,7 @@ mod read_write {
 
     #[test]
     fn success_write_at_specific_position() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Write initial data
         fs.write(fd, b"0123456789").unwrap();
@@ -199,7 +199,7 @@ mod read_write {
 
     #[test]
     fn success_write_beyond_eof() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Write initial data
         fs.write(fd, b"Hello").unwrap();
@@ -225,7 +225,7 @@ mod read_write {
 
     #[test]
     fn edge_case_empty_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create an empty file
         let fd = fs.open_path("/empty.txt").unwrap();
         // Reading from empty file should return 0
@@ -240,7 +240,7 @@ mod read_write {
 
     #[test]
     fn edge_case_read_past_eof() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Write 5 bytes
         fs.write(fd, b"Hello").unwrap();
@@ -258,7 +258,7 @@ mod read_write {
 
     #[test]
     fn edge_case_read_after_write_without_seek() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Write data
         fs.write(fd, b"Hello").unwrap();
@@ -281,7 +281,7 @@ mod seek {
 
     #[test]
     fn success_seek_cur() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/seek_test.txt").unwrap();
         // Write some data
         fs.write(fd, b"0123456789").unwrap();
@@ -308,7 +308,7 @@ mod seek {
 
     #[test]
     fn success_seek_end() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/seek_end.txt").unwrap();
         // Write data
         fs.write(fd, b"Hello World").unwrap();
@@ -327,7 +327,7 @@ mod seek {
 
     #[test]
     fn error_invalid_whence() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Invalid whence value should return error
         let result = fs.seek(fd, 0, 99);
@@ -337,7 +337,7 @@ mod seek {
 
     #[test]
     fn error_negative_offsets() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         // Write some data
         fs.write(fd, b"0123456789").unwrap();
@@ -368,7 +368,7 @@ mod stat_fstat {
 
     #[test]
     fn success_stat_and_fstat() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create directory and file
         fs.mkdir("/data").unwrap();
         let fd = fs.open_path("/data/file.txt").unwrap();
@@ -392,7 +392,7 @@ mod mkdir {
 
     #[test]
     fn success_mkdir_and_mkdir_p() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // mkdir should succeed
         assert!(fs.mkdir("/test").is_ok());
         // mkdir should fail if already exists
@@ -409,7 +409,7 @@ mod mkdir {
 
     #[test]
     fn success_parent_mtime_updates() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create parent directory
         fs.mkdir("/parent").unwrap();
         let initial_metadata = fs.stat("/parent").unwrap();
@@ -459,7 +459,7 @@ mod unlink {
 
     #[test]
     fn success_delete_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"content").unwrap();
@@ -474,7 +474,7 @@ mod unlink {
 
     #[test]
     fn success_parent_mtime_updates() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create directory and file
         fs.mkdir("/dir").unwrap();
         let fd = fs.open_path("/dir/file.txt").unwrap();
@@ -493,7 +493,7 @@ mod unlink {
 
     #[test]
     fn error_various_cases() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Unlink non-existent file should fail
         let result = fs.unlink("/nonexistent.txt");
         assert!(matches!(result, Err(FsError::NotFound)));
@@ -524,7 +524,7 @@ mod readdir {
 
     #[test]
     fn success_with_files() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create some files and directories
         fs.mkdir("/dir1").unwrap();
         fs.mkdir("/dir2").unwrap();
@@ -541,7 +541,7 @@ mod readdir {
 
     #[test]
     fn success_subdirectory() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create subdirectory with files
         fs.mkdir("/subdir").unwrap();
         let fd1 = fs.open_path("/subdir/a.txt").unwrap();
@@ -560,7 +560,7 @@ mod readdir {
 
     #[test]
     fn error_various_cases() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // readdir on non-existent directory
         let result = fs.readdir("/nonexistent");
         assert!(matches!(result, Err(FsError::NotFound)));
@@ -581,7 +581,7 @@ mod ftruncate {
 
     #[test]
     fn success_shrink_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"0123456789").unwrap();
@@ -604,7 +604,7 @@ mod ftruncate {
 
     #[test]
     fn success_expand_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"12345").unwrap();
@@ -625,7 +625,7 @@ mod ftruncate {
 
     #[test]
     fn success_truncate_to_zero() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"some content").unwrap();
@@ -643,7 +643,7 @@ mod ftruncate {
 
     #[test]
     fn success_updates_mtime() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"content").unwrap();
         let metadata_before = fs.fstat(fd).unwrap();
@@ -659,7 +659,7 @@ mod ftruncate {
 
     #[test]
     fn error_invalid_fd_and_permissions() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Truncate invalid fd
         let result = fs.ftruncate(999, 100);
         assert!(matches!(result, Err(FsError::BadFileDescriptor)));
@@ -680,7 +680,7 @@ mod timestamps {
 
     #[test]
     fn success_file_creation() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file
         let fd = fs.open_path("/test.txt").unwrap();
         // Get metadata
@@ -696,7 +696,7 @@ mod timestamps {
 
     #[test]
     fn success_write_updates_mtime() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file and get initial metadata
         let fd = fs.open_path("/test.txt").unwrap();
         let metadata1 = fs.fstat(fd).unwrap();
@@ -715,7 +715,7 @@ mod timestamps {
 
     #[test]
     fn success_mkdir_timestamps() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a directory
         fs.mkdir("/testdir").unwrap();
         // Get directory metadata
@@ -730,7 +730,7 @@ mod timestamps {
 
     #[test]
     fn success_multiple_writes() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         let metadata1 = fs.fstat(fd).unwrap();
         // First write
@@ -748,7 +748,7 @@ mod timestamps {
 
     #[test]
     fn success_read_does_not_update() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"data").unwrap();
         let metadata1 = fs.fstat(fd).unwrap();
@@ -765,7 +765,7 @@ mod timestamps {
 
     #[test]
     fn success_seek_does_not_update() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"data").unwrap();
         let metadata1 = fs.fstat(fd).unwrap();
@@ -784,7 +784,7 @@ mod permissions {
 
     #[test]
     fn error_write_to_readonly() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file first, then open with O_RDONLY flag
         let fd_create = fs.open_path("/readonly.txt").unwrap();
         fs.write(fd_create, b"initial").unwrap();
@@ -799,7 +799,7 @@ mod permissions {
 
     #[test]
     fn error_read_from_writeonly() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Open file with O_WRONLY flag (need O_CREAT to create)
         let fd = fs
             .open_path_with_flags("/writeonly.txt", O_WRONLY | O_CREAT)
@@ -822,7 +822,7 @@ mod error_handling {
 
     #[test]
     fn error_bad_file_descriptor() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Invalid file descriptor should return BadFileDescriptor
         let result = fs.read(999, &mut [0u8; 10]);
         assert!(matches!(result, Err(FsError::BadFileDescriptor)));
@@ -838,7 +838,7 @@ mod error_handling {
 
     #[test]
     fn error_invalid_arguments() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Empty path should return InvalidArgument
         let result = fs.open_path("");
         assert!(matches!(result, Err(FsError::InvalidArgument)));
@@ -850,7 +850,7 @@ mod error_handling {
 
     #[test]
     fn error_not_a_directory() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file
         let fd = fs.open_path("/file.txt").unwrap();
         fs.write(fd, b"content").unwrap();
@@ -870,7 +870,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_append_mode() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file with initial content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"Hello").unwrap();
@@ -895,7 +895,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_append_multiple_writes() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Open in append mode from the start
         let fd = fs
             .open_path_with_flags("/test.txt", O_WRONLY | O_CREAT | O_APPEND)
@@ -918,7 +918,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_append_after_seek() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs
             .open_path_with_flags("/test.txt", O_RDWR | O_CREAT | O_APPEND)
             .unwrap();
@@ -942,7 +942,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_trunc_on_open() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"This will be truncated").unwrap();
@@ -965,7 +965,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_trunc_then_write() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create file with old content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"Old content that is very long").unwrap();
@@ -988,7 +988,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_append_and_trunc_combined() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"Old content").unwrap();
@@ -1013,7 +1013,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn success_trunc_new_file() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // O_TRUNC on new file (with O_CREAT) should work
         let fd = fs
             .open_path_with_flags("/new.txt", O_RDWR | O_CREAT | O_TRUNC)
@@ -1031,7 +1031,7 @@ mod file_flags_append_trunc {
 
     #[test]
     fn error_trunc_with_rdonly() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         // Create a file with content
         let fd = fs.open_path("/test.txt").unwrap();
         fs.write(fd, b"data").unwrap();
@@ -1049,7 +1049,7 @@ mod open_at {
 
     #[test]
     fn success_open_at_basic() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create a directory structure
         fs.mkdir_p("/testdir").unwrap();
@@ -1091,7 +1091,7 @@ mod open_at {
 
     #[test]
     fn success_open_at_nested() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create nested directory structure
         fs.mkdir_p("/parent/child").unwrap();
@@ -1112,7 +1112,7 @@ mod open_at {
 
     #[test]
     fn error_open_at_absolute_path() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create a directory
         fs.mkdir_p("/testdir").unwrap();
@@ -1127,7 +1127,7 @@ mod open_at {
 
     #[test]
     fn error_open_at_not_directory() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create a regular file
         let fd = fs.open_path("/regular.txt").unwrap();
@@ -1142,7 +1142,7 @@ mod open_at {
 
     #[test]
     fn error_open_at_bad_fd() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Try to use invalid fd with open_at
         let result = fs.open_at(999, "test.txt", O_CREAT | O_RDWR);
@@ -1151,7 +1151,7 @@ mod open_at {
 
     #[test]
     fn error_open_at_absolute_path_rejected() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create a file to get a valid fd (even though it's not a directory)
         let fd = fs.open_path("/test.txt").unwrap();

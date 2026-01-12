@@ -3,17 +3,49 @@
 //! This module provides types and functions for serializing the filesystem
 //! state to a snapshot format that can be stored externally (e.g., S3).
 
-use alloc::{collections::BTreeMap, rc::Rc, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::sync::{Arc, RwLock};
+
+#[cfg(not(feature = "std"))]
+use alloc::rc::Rc;
+#[cfg(not(feature = "std"))]
 use core::cell::RefCell;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::fs::Fs;
+use crate::fs::{Fs, InodeRef};
 use crate::inode::{FileContent, Inode, Metadata};
 use crate::storage::BlockStorage;
 use crate::time::TimeProvider;
 use crate::types::InodeId;
+
+/// Macro for read access to inode (uses RwLock::read for std, RefCell::borrow for no_std)
+macro_rules! inode_read {
+    ($inode:expr) => {{
+        #[cfg(feature = "std")]
+        {
+            $inode.read().unwrap()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            $inode.borrow()
+        }
+    }};
+}
+
+/// Helper to create a new InodeRef
+#[cfg(feature = "std")]
+fn new_inode_ref(inode: Inode) -> InodeRef {
+    Arc::new(RwLock::new(inode))
+}
+
+#[cfg(not(feature = "std"))]
+fn new_inode_ref(inode: Inode) -> InodeRef {
+    Rc::new(RefCell::new(inode))
+}
 
 /// Snapshot of the entire filesystem state
 #[derive(Clone)]
@@ -104,12 +136,44 @@ impl From<&BlockStorage> for FileDataSnapshot {
 
 impl<T: TimeProvider> Fs<T> {
     /// Create a snapshot of the current filesystem state
+    #[cfg(feature = "std")]
+    pub fn to_snapshot(&self) -> FsSnapshot {
+        use std::sync::atomic::Ordering;
+
+        let inodes: Vec<InodeSnapshot> = self
+            .inode_table
+            .iter()
+            .map(|entry| {
+                let id = *entry.key();
+                let inode_rc = entry.value();
+                let inode = inode_read!(inode_rc);
+                InodeSnapshot {
+                    id,
+                    metadata: MetadataSnapshot::from(&inode.metadata),
+                    content: match &inode.content {
+                        FileContent::File(storage) => {
+                            FileContentSnapshot::File(FileDataSnapshot::from(storage))
+                        }
+                        FileContent::Dir(entries) => FileContentSnapshot::Dir(entries.clone()),
+                    },
+                }
+            })
+            .collect();
+
+        FsSnapshot {
+            next_inode: self.next_inode.load(Ordering::Relaxed),
+            root_inode: self.root_inode,
+            inodes,
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
     pub fn to_snapshot(&self) -> FsSnapshot {
         let inodes: Vec<InodeSnapshot> = self
             .inode_table
             .iter()
             .map(|(&id, inode_rc)| {
-                let inode = inode_rc.borrow();
+                let inode = inode_read!(inode_rc);
                 InodeSnapshot {
                     id,
                     metadata: MetadataSnapshot::from(&inode.metadata),
@@ -131,8 +195,13 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     /// Restore filesystem state from a snapshot
+    #[cfg(feature = "std")]
     pub fn from_snapshot(snapshot: FsSnapshot, time_provider: T) -> Self {
-        let mut inode_table: BTreeMap<InodeId, Rc<RefCell<Inode>>> = BTreeMap::new();
+        use dashmap::DashMap;
+        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::AtomicU64;
+
+        let inode_table: DashMap<InodeId, InodeRef> = DashMap::new();
 
         for inode_snap in snapshot.inodes {
             let content = match inode_snap.content {
@@ -156,7 +225,46 @@ impl<T: TimeProvider> Fs<T> {
                 content,
             };
 
-            inode_table.insert(inode_snap.id, Rc::new(RefCell::new(inode)));
+            inode_table.insert(inode_snap.id, new_inode_ref(inode));
+        }
+
+        Self {
+            next_inode: AtomicU64::new(snapshot.next_inode),
+            next_fd: AtomicU32::new(3),
+            fd_table: DashMap::new(),
+            inode_table,
+            root_inode: snapshot.root_inode,
+            time_provider,
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn from_snapshot(snapshot: FsSnapshot, time_provider: T) -> Self {
+        let mut inode_table: BTreeMap<InodeId, InodeRef> = BTreeMap::new();
+
+        for inode_snap in snapshot.inodes {
+            let content = match inode_snap.content {
+                FileContentSnapshot::File(file_data) => {
+                    let mut storage = BlockStorage::new();
+                    if !file_data.data.is_empty() {
+                        storage.write(0, &file_data.data);
+                    }
+                    // Ensure size is correct (handles sparse files)
+                    if storage.size() != file_data.size {
+                        storage.truncate(file_data.size);
+                    }
+                    FileContent::File(storage)
+                }
+                FileContentSnapshot::Dir(entries) => FileContent::Dir(entries),
+            };
+
+            let inode = Inode {
+                id: inode_snap.id,
+                metadata: Metadata::from(&inode_snap.metadata),
+                content,
+            };
+
+            inode_table.insert(inode_snap.id, new_inode_ref(inode));
         }
 
         Self {
@@ -176,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_roundtrip() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
 
         // Create some files and directories
         fs.mkdir("/test").unwrap();
@@ -196,7 +304,7 @@ mod tests {
         let restored_snapshot: FsSnapshot = serde_json::from_str(&json).unwrap();
 
         // Restore filesystem
-        let mut restored_fs = Fs::from_snapshot(restored_snapshot, MonotonicCounter::new());
+        let restored_fs = Fs::from_snapshot(restored_snapshot, MonotonicCounter::new());
 
         // Verify structure
         assert!(restored_fs.stat("/test").is_ok());
@@ -214,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_json_format() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         fs.mkdir("/data").unwrap();
         let fd = fs.open_path("/data/test.txt").unwrap();
         fs.write(fd, b"test content").unwrap();
