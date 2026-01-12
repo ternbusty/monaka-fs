@@ -90,8 +90,7 @@ async fn main() -> Result<()> {
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
 
-    // Paths to WASM components
-    let vfs_adapter_path = "../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
+    // Path to WASM handler
     let handler_path = "../../../target/wasm32-wasip2/debug/http-cache-handler.wasm";
 
     // Load handler component
@@ -99,10 +98,10 @@ async fn main() -> Result<()> {
     let handler_component =
         Component::from_file(&engine, handler_path).context("Failed to load handler component")?;
 
-    // Create initial VFS state and extract shared VFS
+    // Create initial VFS state and extract shared VFS (no WASM adapter needed)
     println!("Initializing VFS...");
-    let initial_vfs_state = vfs_host::VfsHostState::new(&engine, vfs_adapter_path)
-        .context("Failed to create VfsHostState")?;
+    let initial_vfs_state =
+        vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
     let shared_vfs = initial_vfs_state.get_shared_vfs();
 
     // Create app state
