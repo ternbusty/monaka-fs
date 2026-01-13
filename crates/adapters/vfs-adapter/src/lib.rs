@@ -4,6 +4,8 @@
 // and delegates to fs-core for the actual filesystem implementation.
 //
 // Initial filesystem content can be embedded using halycon-virt tool.
+//
+// Optional S3 sync feature enables automatic synchronization with S3.
 
 #![no_main]
 #![allow(warnings)]
@@ -15,9 +17,22 @@ use std::rc::Rc;
 use fs_core::snapshot::FsSnapshot;
 use fs_core::{Fd, Fs, FsError};
 
+// S3 sync module (only when feature enabled)
+#[cfg(feature = "s3-sync")]
+mod s3_sync;
+
 // WIT bindgen generates the bindings
+// Use different world based on feature
+#[cfg(not(feature = "s3-sync"))]
 wit_bindgen::generate!({
     world: "vfs-adapter",
+    path: "../../../wit",
+    generate_all,
+});
+
+#[cfg(feature = "s3-sync")]
+wit_bindgen::generate!({
+    world: "vfs-adapter-s3",
     path: "../../../wit",
     generate_all,
 });
@@ -87,6 +102,9 @@ struct VfsState {
     descriptor_to_fd: BTreeMap<u32, Fd>,
     // Map FD to descriptor handle
     fd_to_descriptor: BTreeMap<Fd, u32>,
+    // Map descriptor handle to path (for S3 sync)
+    #[cfg(feature = "s3-sync")]
+    descriptor_to_path: BTreeMap<u32, String>,
     next_descriptor: u32,
 }
 
@@ -102,10 +120,16 @@ impl VfsState {
             Rc::new(RefCell::new(Fs::with_time_provider(SystemTimeProvider)))
         };
 
+        // Initialize S3 sync if enabled
+        #[cfg(feature = "s3-sync")]
+        s3_sync::init_s3_sync(fs.clone());
+
         let mut state = Self {
             fs,
             descriptor_to_fd: BTreeMap::new(),
             fd_to_descriptor: BTreeMap::new(),
+            #[cfg(feature = "s3-sync")]
+            descriptor_to_path: BTreeMap::new(),
             next_descriptor: 1, // 0 is reserved for root
         };
 
@@ -128,6 +152,18 @@ impl VfsState {
         desc
     }
 
+    #[cfg(feature = "s3-sync")]
+    fn allocate_descriptor_with_path(&mut self, fd: Fd, path: String) -> u32 {
+        let desc = self.allocate_descriptor(fd);
+        self.descriptor_to_path.insert(desc, path);
+        desc
+    }
+
+    #[cfg(feature = "s3-sync")]
+    fn get_path(&self, descriptor: u32) -> Option<&String> {
+        self.descriptor_to_path.get(&descriptor)
+    }
+
     fn get_fd(&self, descriptor: u32) -> Result<Fd, ErrorCode> {
         self.descriptor_to_fd
             .get(&descriptor)
@@ -143,6 +179,8 @@ impl VfsState {
         if let Some(fd) = self.descriptor_to_fd.remove(&descriptor) {
             self.fd_to_descriptor.remove(&fd);
         }
+        #[cfg(feature = "s3-sync")]
+        self.descriptor_to_path.remove(&descriptor);
     }
 }
 
@@ -263,13 +301,23 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         &self,
         offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        let fd = with_vfs_state(|state| state.get_fd(self.handle))?;
+        let handle = self.handle;
+        let (fd, _path) = with_vfs_state(|state| {
+            let fd = state.get_fd(handle)?;
+            #[cfg(feature = "s3-sync")]
+            let path = state.get_path(handle).map(|s| s.to_string());
+            #[cfg(not(feature = "s3-sync"))]
+            let path: Option<String> = None;
+            Ok((fd, path))
+        })?;
 
         // Create OutputStream using enum design (wasi-virt style)
         Ok(exports::wasi::io::streams::OutputStream::new(
             VfsOutputStream::File {
                 fd,
                 offset: Cell::new(offset),
+                #[cfg(feature = "s3-sync")]
+                path: _path,
             },
         ))
     }
@@ -277,8 +325,9 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn append_via_stream(
         &self,
     ) -> Result<exports::wasi::filesystem::types::OutputStream, ErrorCode> {
-        let (fd, offset) = with_vfs_state(|state| {
-            let fd = state.get_fd(self.handle)?;
+        let handle = self.handle;
+        let (fd, offset, _path) = with_vfs_state(|state| {
+            let fd = state.get_fd(handle)?;
 
             // Get file size for append mode
             let offset = state
@@ -287,7 +336,12 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .seek(fd, 0, 2) // SEEK_END
                 .map_err(to_error_code)? as u64;
 
-            Ok((fd, offset))
+            #[cfg(feature = "s3-sync")]
+            let path = state.get_path(handle).map(|s| s.to_string());
+            #[cfg(not(feature = "s3-sync"))]
+            let path: Option<String> = None;
+
+            Ok((fd, offset, path))
         })?;
 
         // Create OutputStream using enum design (wasi-virt style)
@@ -295,6 +349,8 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             VfsOutputStream::File {
                 fd,
                 offset: Cell::new(offset),
+                #[cfg(feature = "s3-sync")]
+                path: _path,
             },
         ))
     }
@@ -347,7 +403,15 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .fs
                 .borrow_mut()
                 .ftruncate(fd, size)
-                .map_err(to_error_code)
+                .map_err(to_error_code)?;
+
+            // Notify S3 sync of the truncate (treated as write)
+            #[cfg(feature = "s3-sync")]
+            if let Some(path) = state.get_path(self.handle) {
+                s3_sync::on_write(path);
+            }
+
+            Ok(())
         })
     }
 
@@ -403,6 +467,12 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .borrow_mut()
                 .write(fd, &buffer)
                 .map_err(to_error_code)?;
+
+            // Notify S3 sync of the write
+            #[cfg(feature = "s3-sync")]
+            if let Some(path) = state.get_path(self.handle) {
+                s3_sync::on_write(path);
+            }
 
             Ok(n as Filesize)
         })
@@ -613,24 +683,30 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             let core_flags = convert_flags(open_flags, flags);
 
             // Use open_at if available, otherwise fall back to absolute path for root
-            let fd = if self.handle == 0 {
+            let (fd, full_path) = if self.handle == 0 {
                 // Root directory: use absolute path
                 let full_path = format!("/{}", path.trim_start_matches('/'));
-                state
+                let fd = state
                     .fs
                     .borrow_mut()
                     .open_path_with_flags(&full_path, core_flags)
-                    .map_err(to_error_code)?
+                    .map_err(to_error_code)?;
+                (fd, full_path)
             } else {
                 // Use open_at
-                state
+                let fd = state
                     .fs
                     .borrow_mut()
                     .open_at(dir_fd, &path, core_flags)
-                    .map_err(to_error_code)?
+                    .map_err(to_error_code)?;
+                (fd, path.clone())
             };
 
+            #[cfg(feature = "s3-sync")]
+            let handle = state.allocate_descriptor_with_path(fd, full_path);
+            #[cfg(not(feature = "s3-sync"))]
             let handle = state.allocate_descriptor(fd);
+
             Ok(Descriptor::new(DescriptorImpl { handle }))
         })
     }
@@ -683,7 +759,13 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .fs
                 .borrow_mut()
                 .unlink(&full_path)
-                .map_err(to_error_code)
+                .map_err(to_error_code)?;
+
+            // Notify S3 sync of the deletion
+            #[cfg(feature = "s3-sync")]
+            s3_sync::on_delete(&full_path);
+
+            Ok(())
         })
     }
 
@@ -845,7 +927,12 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
 // OutputStream implementation for wasi:io/streams
 // Using enum design like wasi-virt
 pub enum VfsOutputStream {
-    File { fd: Fd, offset: Cell<u64> },
+    File {
+        fd: Fd,
+        offset: Cell<u64>,
+        #[cfg(feature = "s3-sync")]
+        path: Option<String>,
+    },
     Host(wasi::io::streams::OutputStream),
 }
 
@@ -866,6 +953,37 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
 
     fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
+            #[cfg(feature = "s3-sync")]
+            Self::File { fd, offset, path } => {
+                let fs = get_vfs_fs();
+                let current_offset = offset.get();
+
+                // Seek to offset
+                fs.borrow_mut()
+                    .seek(*fd, current_offset as i64, 0) // SEEK_SET
+                    .map_err(|_| {
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                            exports::wasi::io::error::Error::from_handle(0)
+                        })
+                    })?;
+
+                // Write to fs-core
+                let n = fs.borrow_mut().write(*fd, &contents).map_err(|_| {
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                        exports::wasi::io::error::Error::from_handle(0)
+                    })
+                })?;
+
+                offset.set(current_offset + n as u64);
+
+                // Notify S3 sync of the write
+                if let Some(p) = path {
+                    s3_sync::on_write(p);
+                }
+
+                Ok(())
+            }
+            #[cfg(not(feature = "s3-sync"))]
             Self::File { fd, offset } => {
                 let fs = get_vfs_fs();
                 let current_offset = offset.get();
