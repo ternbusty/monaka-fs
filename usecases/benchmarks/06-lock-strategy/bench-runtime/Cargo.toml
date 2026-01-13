@@ -7,27 +7,38 @@ edition = "2021"
 [workspace]
 
 [[bin]]
-name = "bench-lock-runtime"
-path = "src/main.rs"
+name = "bench-fine"
+path = "src/bench_fine.rs"
+
+[[bin]]
+name = "bench-global"
+path = "src/bench_global.rs"
+
+[[bin]]
+name = "bench-unsafe"
+path = "src/bench_unsafe.rs"
+
+[[bin]]
+name = "test-correctness"
+path = "src/test_correctness.rs"
 
 [dependencies]
 # WASM runtime
 wasmtime = { version = "27.0", features = ["component-model"] }
 wasmtime-wasi = "27.0"
 
-# VFS host implementations (selected by feature)
-vfs-host = { path = "../../../../crates/hosts/vfs-host", optional = true }
-vfs-host-global = { path = "../vfs-host-global", optional = true }
-vfs-host-unsafe = { path = "../vfs-host-unsafe", optional = true }
+# VFS host implementations (all included, selected by binary)
+vfs-host = { path = "../../../../crates/hosts/vfs-host" }
+vfs-host-global = { path = "../vfs-host-global" }
+vfs-host-unsafe = { path = "../vfs-host-unsafe" }
+
+# Underlying FS implementations (for test-correctness)
+fs-core = { path = "../../../../crates/core/fs-core" }
+fs-global = { path = "../fs-global" }
+fs-unsafe = { path = "../fs-unsafe" }
 
 # Utilities
 anyhow = "1.0"
-
-[features]
-default = ["lock-fine"]
-lock-fine = ["vfs-host"]
-lock-global = ["vfs-host-global"]
-lock-none = ["vfs-host-unsafe"]
 
 [profile.release]
 opt-level = 3

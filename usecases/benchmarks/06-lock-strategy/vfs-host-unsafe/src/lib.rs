@@ -126,7 +126,6 @@ pub fn convert_fs_error(
         FsError::BadFileDescriptor => ErrorCode::BadDescriptor,
         FsError::PermissionDenied => ErrorCode::Access,
         FsError::InvalidArgument => ErrorCode::Invalid,
-        FsError::IoError => ErrorCode::Io,
     }
 }
 

@@ -81,6 +81,9 @@ name = "bench-lock-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs-core",
+ "fs-global",
+ "fs-unsafe",
  "vfs-host",
  "vfs-host-global",
  "vfs-host-unsafe",
@@ -592,6 +595,9 @@ dependencies = [
 [[package]]
 name = "fs-unsafe"
 version = "0.1.0"
+dependencies = [
+ "fs-core",
+]
 
 [[package]]
 name = "futures"

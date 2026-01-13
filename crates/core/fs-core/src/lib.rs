@@ -48,6 +48,7 @@ mod types;
 // Re-export public API
 pub use error::FsError;
 pub use fs::Fs;
-pub use inode::Metadata;
+pub use inode::{FileContent, Inode, Metadata};
+pub use storage::BlockStorage;
 pub use time::{MonotonicCounter, TimeProvider};
 pub use types::{BLOCK_SIZE, Fd, InodeId, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
