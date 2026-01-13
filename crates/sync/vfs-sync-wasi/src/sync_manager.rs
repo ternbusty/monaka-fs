@@ -7,73 +7,13 @@ use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
-use crate::file_metadata::MetadataCache;
-use crate::s3_client::{S3Error, S3ObjectInfo, S3Storage};
+use crate::s3_client::S3Storage;
 use fs_core::Fs;
-
-/// Pending sync operation
-#[derive(Debug, Clone)]
-pub enum SyncOperation {
-    /// Upload file to S3
-    Upload { path: String },
-    /// Delete file from S3
-    Delete { path: String },
-}
-
-/// Sync mode configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SyncMode {
-    /// Batch mode: sync every N seconds or N operations (default)
-    #[default]
-    Batch,
-    /// Real-time mode: sync immediately after each write operation
-    RealTime,
-}
-
-impl SyncMode {
-    /// Parse sync mode from environment variable
-    pub fn from_env() -> Self {
-        match std::env::var("VFS_SYNC_MODE").as_deref() {
-            Ok("realtime") | Ok("real-time") | Ok("immediate") => SyncMode::RealTime,
-            _ => SyncMode::Batch,
-        }
-    }
-}
-
-/// Sync manager configuration
-pub struct SyncConfig {
-    /// Sync mode (batch or realtime)
-    pub mode: SyncMode,
-    /// Interval for S3 polling (inbound)
-    pub poll_interval: Duration,
-    /// Interval for outbound queue flush (batch mode only)
-    pub flush_interval: Duration,
-    /// Maximum operations per outbound flush (batch mode only)
-    pub outbound_batch_size: usize,
-}
-
-impl Default for SyncConfig {
-    fn default() -> Self {
-        Self {
-            mode: SyncMode::from_env(),
-            poll_interval: Duration::from_secs(30),
-            flush_interval: Duration::from_secs(5),
-            outbound_batch_size: 10,
-        }
-    }
-}
-
-impl SyncConfig {
-    /// Create config from environment variables
-    pub fn from_env() -> Self {
-        Self {
-            mode: SyncMode::from_env(),
-            ..Default::default()
-        }
-    }
-}
+pub use vfs_sync_core::{
+    MetadataCache, S3Error, S3ObjectInfo, SyncConfig, SyncMode, SyncOperation,
+};
 
 /// Manages bidirectional S3 synchronization
 ///

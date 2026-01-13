@@ -12,6 +12,7 @@ members = [
   "crates/hosts/vfs-rpc-host",
 
   # Sync
+  "crates/sync/vfs-sync-core",
   "crates/sync/vfs-sync",
   "crates/sync/vfs-sync-wasi",
 

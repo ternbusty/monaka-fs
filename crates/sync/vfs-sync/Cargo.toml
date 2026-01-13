@@ -5,6 +5,7 @@ edition = "2021"
 description = "S3 synchronization for Halycon VFS (native environment)"
 
 [dependencies]
+vfs-sync-core = { path = "../vfs-sync-core" }
 fs-core = { path = "../../core/fs-core" }
 log = "0.4"
 

@@ -1,19 +1,11 @@
 //! S3 synchronization module for vfs-adapter
 //!
-//! Provides S3 sync capabilities using WASI HTTP.
-
-mod file_metadata;
-mod s3_client;
-mod sync_manager;
-mod wasi_http;
-
-pub use file_metadata::{MetadataCache, SyncedFileMetadata};
-pub use s3_client::{S3Error, S3ObjectInfo, S3Storage};
-pub use sync_manager::{SyncConfig, SyncManager, SyncMode};
-pub use wasi_http::ChunkedWasiHttpClient;
+//! Thin wrapper around vfs-sync-wasi for S3 sync capabilities.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use vfs_sync_wasi::{MetadataCache, S3Storage, SyncConfig, SyncManager};
 
 use crate::Fs;
 use crate::SystemTimeProvider;
@@ -96,6 +88,7 @@ pub fn maybe_sync() {
 }
 
 /// Force flush all pending sync operations
+#[allow(dead_code)]
 pub fn force_flush() {
     unsafe {
         if let Some(ref mut state) = SYNC_STATE {

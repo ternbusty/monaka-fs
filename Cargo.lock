@@ -3678,19 +3678,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vfs-adapter"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
  "fs-core",
- "futures",
- "http 1.4.0",
  "log",
  "serde_json",
  "spin",
  "tokio",
+ "vfs-sync-wasi",
  "wit-bindgen 0.36.0",
 ]
 
@@ -3734,19 +3727,12 @@ dependencies = [
 name = "vfs-rpc-server"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "aws-smithy-async",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "bytes",
  "fs-core",
- "futures",
- "http 1.4.0",
  "log",
  "prost",
  "tokio",
  "vfs-rpc-protocol",
+ "vfs-sync-wasi",
  "wit-bindgen 0.36.0",
 ]
 
@@ -3760,7 +3746,12 @@ dependencies = [
  "futures",
  "log",
  "tokio",
+ "vfs-sync-core",
 ]
+
+[[package]]
+name = "vfs-sync-core"
+version = "0.1.0"
 
 [[package]]
 name = "vfs-sync-wasi"
@@ -3777,6 +3768,7 @@ dependencies = [
  "http 1.4.0",
  "log",
  "tokio",
+ "vfs-sync-core",
  "wit-bindgen 0.36.0",
 ]
 

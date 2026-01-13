@@ -1,8 +1,3 @@
-// WIT world for vfs-sync-wasi crate
-// Imports WASI interfaces needed for S3 HTTP communication
-
-package halycon:sync-wasi@0.1.0;
-
 world vfs-sync-wasi {
     // Clocks for timeouts and timestamps
     import wasi:clocks/monotonic-clock@0.2.6;

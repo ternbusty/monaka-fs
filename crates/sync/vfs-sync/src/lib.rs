@@ -42,12 +42,15 @@
 //! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (for LocalStack, MinIO)
 //! - `AWS_REGION`: AWS region (default from SDK config)
 
-mod config;
-mod file_metadata;
 mod s3_client;
 mod sync_manager;
 
-pub use config::{SyncConfig, SyncMode};
-pub use file_metadata::{MetadataCache, SyncedFileMetadata};
-pub use s3_client::{S3Error, S3ObjectInfo, S3Storage};
-pub use sync_manager::{init_from_s3, HostSyncManager, LoadError, SyncOperation, SyncStats};
+// Re-export common types from vfs-sync-core
+pub use vfs_sync_core::{
+    InboundMode, MetadataCache, MetadataMode, S3Error, S3ObjectInfo, SyncConfig, SyncMode,
+    SyncOperation, SyncedFileMetadata,
+};
+
+// Re-export s3_client and sync_manager types
+pub use s3_client::S3Storage;
+pub use sync_manager::{init_from_s3, HostSyncManager, LoadError, SyncStats};

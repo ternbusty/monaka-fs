@@ -9,26 +9,13 @@ crate-type = ["cdylib"]
 [dependencies]
 fs-core = { path = "../../core/fs-core", features = ["serde"] }
 vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
+vfs-sync-wasi = { path = "../../sync/vfs-sync-wasi" }
 prost = "0.13"
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 log = "0.4"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
-
-# AWS SDK for S3
-aws-sdk-s3 = { version = "1", default-features = false }
-aws-config = { version = "1", default-features = false }
-aws-smithy-async = { version = "1", features = ["rt-tokio"] }
-aws-smithy-runtime-api = "1"
-aws-smithy-types = "1"
-
-# HTTP types for custom WASI HTTP client
-http = "1"
-bytes = "1"
-
-# Async utilities for parallel uploads
-futures = "0.3"
 
 [build-dependencies]
 wit-bindgen = "0.36"

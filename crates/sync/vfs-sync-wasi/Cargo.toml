@@ -8,6 +8,7 @@ description = "S3 synchronization for Halycon VFS (WASI environment)"
 crate-type = ["rlib"]
 
 [dependencies]
+vfs-sync-core = { path = "../vfs-sync-core" }
 fs-core = { path = "../../core/fs-core" }
 log = "0.4"
 

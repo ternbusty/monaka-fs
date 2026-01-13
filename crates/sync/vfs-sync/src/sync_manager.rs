@@ -12,19 +12,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::time::Instant;
 
-use crate::config::{SyncConfig, SyncMode};
-use crate::file_metadata::MetadataCache;
-use crate::s3_client::{S3Error, S3ObjectInfo, S3Storage};
+use crate::s3_client::S3Storage;
 use fs_core::Fs;
-
-/// Pending sync operation
-#[derive(Debug, Clone)]
-pub enum SyncOperation {
-    /// Upload file to S3
-    Upload { path: String },
-    /// Delete file from S3
-    Delete { path: String },
-}
+pub use vfs_sync_core::{
+    MetadataCache, S3Error, S3ObjectInfo, SyncConfig, SyncMode, SyncOperation,
+};
 
 /// Manages bidirectional S3 synchronization (thread-safe)
 ///

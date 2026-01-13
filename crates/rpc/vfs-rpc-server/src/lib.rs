@@ -7,11 +7,7 @@
 #![no_main]
 #![allow(warnings)]
 
-mod file_metadata;
 mod protocol;
-mod s3_client;
-mod sync_manager;
-mod wasi_http;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -20,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fs_core::{Fs, FsError};
+use fs_core::{Fs, FsError, MonotonicCounter};
 use prost::Message;
 use vfs_rpc_protocol::{ErrorCode, RpcRequest as ProtoRpcRequest, PROTOCOL_VERSION};
 
@@ -28,9 +24,7 @@ use protocol::{
     from_proto_request, to_proto_response, DirEntry, Metadata, Request, Response, RpcRequest,
 };
 
-use file_metadata::MetadataCache;
-use s3_client::S3Storage;
-use sync_manager::{init_from_s3, SyncConfig, SyncManager};
+use vfs_sync_wasi::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -125,8 +119,8 @@ fn generate_session_id() -> String {
 
 /// Server context holding shared state
 struct ServerContext {
-    fs: Rc<RefCell<Fs>>,
-    sync_manager: Option<SyncManager>,
+    fs: Rc<RefCell<Fs<MonotonicCounter>>>,
+    sync_manager: Option<SyncManager<MonotonicCounter>>,
     /// Map from file descriptor to path for sync tracking
     fd_path_map: RefCell<HashMap<u32, String>>,
 }
