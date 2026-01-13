@@ -18,10 +18,6 @@ path = "src/bench_global.rs"
 name = "bench-unsafe"
 path = "src/bench_unsafe.rs"
 
-[[bin]]
-name = "test-correctness"
-path = "src/test_correctness.rs"
-
 [dependencies]
 # WASM runtime
 wasmtime = { version = "27.0", features = ["component-model"] }
@@ -31,11 +27,6 @@ wasmtime-wasi = "27.0"
 vfs-host = { path = "../../../../crates/hosts/vfs-host" }
 vfs-host-global = { path = "../vfs-host-global" }
 vfs-host-unsafe = { path = "../vfs-host-unsafe" }
-
-# Underlying FS implementations (for test-correctness)
-fs-core = { path = "../../../../crates/core/fs-core" }
-fs-global = { path = "../fs-global" }
-fs-unsafe = { path = "../fs-unsafe" }
 
 # Utilities
 anyhow = "1.0"

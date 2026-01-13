@@ -4,8 +4,8 @@ mod common;
 
 use anyhow::{Context, Result};
 use common::{
-    print_csv_header, run_correctness_check, setup_test_data, BenchConfig, BenchResult, BenchTimer,
-    VfsOps, DATA_SIZES, OPS_PER_THREAD, SCENARIOS, THREAD_COUNTS,
+    print_csv_header, setup_test_data, verify_benchmark_results, BenchConfig, BenchResult,
+    BenchTimer, VfsOps, DATA_SIZES, OPS_PER_THREAD, SCENARIOS, THREAD_COUNTS,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -60,12 +60,14 @@ fn main() -> Result<()> {
         eprintln!();
         eprintln!("--- Data size: {} bytes ---", data_size);
         for thread_count in THREAD_COUNTS {
-            for config in &SCENARIOS {
-                let result = run_benchmark(&engine, &component, config, thread_count, data_size)?;
+            for scenario in &SCENARIOS {
+                let (result, shared_vfs) =
+                    run_benchmark(&engine, &component, scenario, thread_count, data_size)?;
 
-                let integrity = if config.scenario == "write" && config.file_scope == "same" {
-                    let shared_vfs = Arc::new(Fs::new());
-                    let correctness = run_correctness_check(shared_vfs)?;
+                // Verify data integrity for write/same scenario
+                let integrity = if scenario.scenario == "write" && scenario.file_scope == "same" {
+                    let correctness =
+                        verify_benchmark_results(&*shared_vfs, thread_count, OPS_PER_THREAD)?;
                     format!("{:.1}%", correctness.integrity_percent())
                 } else {
                     "N/A".to_string()
@@ -74,8 +76,8 @@ fn main() -> Result<()> {
                 println!(
                     "{},{},{},{},{},{},{:.2},{:.0},{},{}",
                     STRATEGY_NAME,
-                    config.scenario,
-                    config.file_scope,
+                    scenario.scenario,
+                    scenario.file_scope,
                     thread_count,
                     data_size,
                     result.total_ops,
@@ -88,23 +90,6 @@ fn main() -> Result<()> {
         }
     }
 
-    eprintln!();
-    eprintln!("=== Correctness Verification ===");
-    let shared_vfs = Arc::new(Fs::new());
-    let correctness = run_correctness_check(shared_vfs)?;
-
-    if correctness.is_pass() {
-        eprintln!(
-            "PASS: All {} appends recorded correctly (strategy: {})",
-            correctness.expected_lines, STRATEGY_NAME
-        );
-    } else {
-        eprintln!(
-            "WARN: Expected {} lines, found {} (errors: {}, strategy: {})",
-            correctness.expected_lines, correctness.actual_lines, correctness.errors, STRATEGY_NAME
-        );
-    }
-
     Ok(())
 }
 
@@ -114,7 +99,7 @@ fn run_benchmark(
     config: &BenchConfig,
     thread_count: usize,
     data_size: usize,
-) -> Result<BenchResult> {
+) -> Result<(BenchResult, Arc<Fs>)> {
     let shared_vfs = Arc::new(Fs::new());
     setup_test_data(&*shared_vfs, thread_count, data_size)?;
 
@@ -125,7 +110,7 @@ fn run_benchmark(
     for thread_id in 0..thread_count {
         let engine = Arc::clone(engine);
         let component = Arc::clone(component);
-        let shared_vfs = Arc::clone(&shared_vfs);
+        let vfs = Arc::clone(&shared_vfs);
         let scenario = config.scenario.to_string();
         let file_scope = config.file_scope.to_string();
         let errors = Arc::clone(&error_count);
@@ -134,7 +119,7 @@ fn run_benchmark(
             run_wasm_instance(
                 &engine,
                 &component,
-                shared_vfs,
+                vfs,
                 thread_id,
                 OPS_PER_THREAD,
                 &scenario,
@@ -151,12 +136,15 @@ fn run_benchmark(
 
     let total_ops = thread_count * OPS_PER_THREAD;
 
-    Ok(BenchResult {
-        total_ops,
-        duration_ms: timer.elapsed_ms(),
-        throughput: timer.throughput(total_ops),
-        error_count: error_count.load(Ordering::Relaxed),
-    })
+    Ok((
+        BenchResult {
+            total_ops,
+            duration_ms: timer.elapsed_ms(),
+            throughput: timer.throughput(total_ops),
+            error_count: error_count.load(Ordering::Relaxed),
+        },
+        shared_vfs,
+    ))
 }
 
 fn run_wasm_instance(

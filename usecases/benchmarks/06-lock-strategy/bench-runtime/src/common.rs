@@ -1,8 +1,6 @@
 //! Common benchmark code shared by all lock strategy binaries
 
 use anyhow::Result;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 
 pub const THREAD_COUNTS: [usize; 4] = [1, 4, 8, 16];
@@ -108,60 +106,34 @@ pub fn setup_test_data<V: VfsOps>(fs: &V, thread_count: usize, data_size: usize)
     Ok(())
 }
 
-/// Run correctness verification using append_write (atomic operation)
-pub fn run_correctness_check<V: VfsOps + 'static>(fs: Arc<V>) -> Result<CorrectnessResult> {
-    fs.mkdir("/verify")?;
-
-    let fd = fs.open_path("/verify/append_test.txt")?;
-    fs.close(fd)?;
-
-    let num_threads = 8;
-    let appends_per_thread = 50;
-    let error_count = Arc::new(AtomicUsize::new(0));
-
-    let mut handles = vec![];
-    for thread_id in 0..num_threads {
-        let vfs = Arc::clone(&fs);
-        let errors = Arc::clone(&error_count);
-
-        handles.push(std::thread::spawn(move || {
-            for i in 0..appends_per_thread {
-                let fd = match vfs.open_path("/verify/append_test.txt") {
-                    Ok(fd) => fd,
-                    Err(_) => {
-                        errors.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-
-                // Use append_write (atomic) instead of seek+write (non-atomic)
-                let marker = format!("T{}I{}\n", thread_id, i);
-                if let Err(_) = vfs.append_write(fd, marker.as_bytes()) {
-                    errors.fetch_add(1, Ordering::Relaxed);
-                }
-
-                let _ = vfs.close(fd);
-            }
-        }));
-    }
-
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    let fd = fs.open_path("/verify/append_test.txt")?;
-    let mut content = vec![0u8; 1024 * 1024];
-    let bytes_read = fs.read(fd, &mut content)?;
-    fs.close(fd)?;
+/// Verify benchmark results by reading the write_target.txt file
+/// This checks if all append operations were recorded correctly
+pub fn verify_benchmark_results<V: VfsOps>(
+    vfs: &V,
+    thread_count: usize,
+    ops_per_thread: usize,
+) -> Result<CorrectnessResult> {
+    let fd = vfs.open_path("/bench/shared/write_target.txt")?;
+    // Buffer size: worst case is 16 threads * 500 ops * 1MB per line
+    // But typically lines are much smaller, so 64MB should be enough
+    let mut content = vec![0u8; 64 * 1024 * 1024];
+    let bytes_read = vfs.read(fd, &mut content)?;
+    vfs.close(fd)?;
 
     let content = String::from_utf8_lossy(&content[..bytes_read]);
     let line_count = content.lines().count();
-    let expected_lines = num_threads * appends_per_thread;
+    let expected_lines = thread_count * ops_per_thread;
+
+    // Each line should start with "T{digit}:" format
+    let valid_lines = content
+        .lines()
+        .filter(|line| line.starts_with("T") && line.contains(":"))
+        .count();
 
     Ok(CorrectnessResult {
         expected_lines,
         actual_lines: line_count,
-        errors: error_count.load(Ordering::Relaxed),
+        errors: line_count.saturating_sub(valid_lines),
     })
 }
 

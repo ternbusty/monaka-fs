@@ -4,7 +4,6 @@
 #
 # Commands:
 #   build       - Build all binaries
-#   test        - Run quick correctness test
 #   fine        - Run lock-fine benchmark
 #   global      - Run lock-global benchmark
 #   unsafe      - Run lock-none benchmark
@@ -24,7 +23,7 @@ NC='\033[0m' # No Color
 
 build() {
     echo -e "${GREEN}Building all binaries...${NC}"
-    cargo build --release --bin bench-fine --bin bench-global --bin bench-unsafe --bin test-correctness 2>&1 | grep -v "^warning:"
+    cargo build --release --bin bench-fine --bin bench-global --bin bench-unsafe 2>&1 | grep -v "^warning:"
     echo -e "${GREEN}Build complete.${NC}"
 }
 
@@ -34,11 +33,6 @@ build_wasm() {
     cargo build --release --target wasm32-wasip2
     cd "$SCRIPT_DIR"
     echo -e "${GREEN}WASM build complete.${NC}"
-}
-
-test_correctness() {
-    echo -e "${YELLOW}Running correctness test...${NC}"
-    cargo run --release --bin test-correctness 2>&1 | grep -v "^warning:"
 }
 
 run_fine() {
@@ -75,7 +69,6 @@ show_help() {
     echo "Commands:"
     echo "  build       - Build all binaries"
     echo "  build-wasm  - Build WASM benchmark app"
-    echo "  test        - Run quick correctness test (recommended first)"
     echo "  fine        - Run lock-fine benchmark (DashMap + per-inode RwLock)"
     echo "  global      - Run lock-global benchmark (single RwLock)"
     echo "  unsafe      - Run lock-none benchmark (no locking, UNSAFE)"
@@ -83,7 +76,7 @@ show_help() {
     echo "  help        - Show this help"
     echo ""
     echo "Examples:"
-    echo "  $0 build && $0 test    # Build and run correctness test"
+    echo "  $0 build && $0 fine"
     echo "  $0 fine 2>&1 | tee results-fine.csv"
     echo ""
     echo "Expected results:"
@@ -98,9 +91,6 @@ case "${1:-help}" in
         ;;
     build-wasm)
         build_wasm
-        ;;
-    test)
-        test_correctness
         ;;
     fine)
         run_fine
