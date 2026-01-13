@@ -1,16 +1,18 @@
-//! S3 Client for native environment
+//! S3 Client for WASI environment
 //!
 //! Provides S3 operations for per-file synchronization with bidirectional sync support.
-//! Uses the default AWS SDK HTTP client (hyper-based).
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
+use aws_smithy_async::rt::sleep::TokioSleep;
 
 /// Multipart upload threshold (10MB)
 const MULTIPART_THRESHOLD: usize = 10 * 1024 * 1024;
 /// Part size for multipart upload (10MB)
 const PART_SIZE: usize = 10 * 1024 * 1024;
+
+use crate::wasi_http::ChunkedWasiHttpClient;
 
 /// S3 object info from listing
 #[derive(Debug, Clone)]
@@ -43,8 +45,12 @@ impl S3Storage {
     /// * `AWS_ENDPOINT_URL` - Custom endpoint URL (e.g., http://localhost:4566 for LocalStack)
     /// * `AWS_REGION` - AWS region (default: us-east-1)
     pub async fn new(bucket: String, prefix: String) -> Self {
-        // Use default HTTP client (hyper-based) for native environment
-        let mut config_loader = aws_config::defaults(BehaviorVersion::latest());
+        let http_client = ChunkedWasiHttpClient::new();
+        let sleep = TokioSleep::new();
+
+        let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
+            .http_client(http_client)
+            .sleep_impl(sleep);
 
         // Check for custom endpoint (LocalStack, MinIO, etc.)
         if let Ok(endpoint) = std::env::var("AWS_ENDPOINT_URL") {
@@ -145,45 +151,6 @@ impl S3Storage {
         Ok(objects)
     }
 
-    /// Get file metadata from S3 (HEAD request, no content download)
-    ///
-    /// Returns (etag, last_modified, size) or None if not found
-    pub async fn head_file(&self, path: &str) -> Result<Option<(String, u64, u64)>, S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                let etag = output
-                    .e_tag
-                    .unwrap_or_default()
-                    .trim_matches('"')
-                    .to_string();
-                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
-                let size = output.content_length.unwrap_or(0) as u64;
-
-                Ok(Some((etag, last_modified, size)))
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                if error_str.contains("NotFound") || error_str.contains("404") {
-                    Ok(None)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
     /// Get a single file from S3
     ///
     /// Returns (content, etag, last_modified) or None if not found
@@ -228,7 +195,7 @@ impl S3Storage {
     }
 
     /// Upload a file and return the ETag
-    /// Uses multipart upload for files >= 10MB
+    /// Uses multipart upload for files >= 5MB
     pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {
         let key = self.key(&format!("files{}", path));
 

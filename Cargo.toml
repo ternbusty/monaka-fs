@@ -13,6 +13,7 @@ members = [
 
   # Sync
   "crates/sync/vfs-sync",
+  "crates/sync/vfs-sync-wasi",
 
   # RPC
   "crates/rpc/vfs-rpc-protocol",
