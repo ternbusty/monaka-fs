@@ -31,6 +31,8 @@ echo "=========================================="
 echo ""
 echo "Measuring: write start → S3 arrival"
 echo "Sync Mode: REALTIME (immediate S3 sync)"
+echo "Read Mode: ${VFS_READ_MODE:-memory}"
+echo "Metadata Mode: ${VFS_METADATA_MODE:-memory}"
 echo ""
 
 # Verify required tools
@@ -132,96 +134,40 @@ if [ "$USE_LOCALSTACK" = true ]; then
         -o url="$S3FS_URL" \
         -o use_path_request_style
 else
-    # For real S3/GCS
+    # For real S3/GCS (with debug logging)
     s3fs "$S3_BUCKET" "$S3FS_MOUNT" \
         -o passwd_file=~/.passwd-s3fs \
         -o url="$S3FS_URL" \
         -o sigv4 \
+        -o dbglevel=info \
+        -o curldbg \
         -o allow_other 2>/dev/null || \
     s3fs "$S3_BUCKET" "$S3FS_MOUNT" \
         -o passwd_file=~/.passwd-s3fs \
         -o url="$S3FS_URL" \
-        -o sigv4
+        -o sigv4 \
+        -o dbglevel=info \
+        -o curldbg
 fi
 
 sleep 2
 echo "s3fs mounted at $S3FS_MOUNT"
 
 # ==========================================
-#   s3fs Benchmark
+#   s3fs Benchmark (using same WASM app)
 # ==========================================
 echo ""
 echo "=========================================="
-echo "  Running: s3fs-fuse benchmark"
+echo "  Running: s3fs-fuse benchmark (WASM)"
 echo "=========================================="
 echo ""
 
-S3FS_RESULTS=""
+# Use wasmtime to run the same WASM app with s3fs mount as /data
 S3FS_TOTAL_START=$(date +%s%N)
 
-# Test sizes
-for size_kb in 1 10 100 1024 10240; do
-    if [ $size_kb -lt 1024 ]; then
-        label="${size_kb}KB"
-        size_bytes=$((size_kb * 1024))
-        dd_count=$size_kb
-        dd_bs="1K"
-    else
-        size_mb=$((size_kb / 1024))
-        label="${size_mb}MB"
-        size_bytes=$((size_kb * 1024))
-        dd_count=$size_mb
-        dd_bs="1M"
-    fi
-
-    file="$S3FS_MOUNT/benchmark_${label}.dat"
-
-    echo "--- File Size: $label ---"
-
-    # Sequential Write (end-to-end: write + sync to S3)
-    write_times=()
-    for i in $(seq 1 $ITERATIONS); do
-        rm -f "$file" 2>/dev/null || true
-
-        start_ns=$(date +%s%N)
-        timeout 120 dd if=/dev/urandom of="$file" bs=$dd_bs count=$dd_count 2>/dev/null || true
-        sync || true
-        end_ns=$(date +%s%N)
-
-        duration_ms=$(echo "scale=3; ($end_ns - $start_ns) / 1000000" | bc)
-        write_times+=($duration_ms)
-        sleep 1
-    done
-
-    write_median=$(printf '%s\n' "${write_times[@]}" | sort -n | sed -n "$((($ITERATIONS + 1) / 2))p")
-    write_throughput=$(echo "scale=2; ($size_bytes / 1048576) / ($write_median / 1000)" | bc)
-    echo "[RESULT] s3fs_write,$label,$write_median,$write_throughput"
-    S3FS_RESULTS="$S3FS_RESULTS
-[RESULT] s3fs_write,$label,$write_median,$write_throughput"
-
-    # Sequential Read
-    read_times=()
-    for i in $(seq 1 $ITERATIONS); do
-        echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
-
-        start_ns=$(date +%s%N)
-        timeout 120 cat "$file" > /dev/null || true
-        end_ns=$(date +%s%N)
-
-        duration_ms=$(echo "scale=3; ($end_ns - $start_ns) / 1000000" | bc)
-        read_times+=($duration_ms)
-        sleep 1
-    done
-
-    read_median=$(printf '%s\n' "${read_times[@]}" | sort -n | sed -n "$((($ITERATIONS + 1) / 2))p")
-    read_throughput=$(echo "scale=2; ($size_bytes / 1048576) / ($read_median / 1000)" | bc)
-    echo "[RESULT] s3fs_read,$label,$read_median,$read_throughput"
-    S3FS_RESULTS="$S3FS_RESULTS
-[RESULT] s3fs_read,$label,$read_median,$read_throughput"
-
-    rm -f "$file" 2>/dev/null || true
-    echo ""
-done
+~/.wasmtime/bin/wasmtime run \
+    --dir="${S3FS_MOUNT}::/data" \
+    "$WASM_DIR/bench-s3fs-vs-vfshost.wasm" 2>&1 | tee /tmp/s3fs-bench.log
 
 S3FS_TOTAL_END=$(date +%s%N)
 S3FS_TOTAL_MS=$(echo "scale=3; ($S3FS_TOTAL_END - $S3FS_TOTAL_START) / 1000000" | bc)
@@ -254,6 +200,8 @@ TOTAL_START=$(date +%s%N)
 VFS_S3_BUCKET="$VFS_S3_BUCKET" \
 VFS_S3_PREFIX="$VFS_S3_PREFIX" \
 VFS_SYNC_MODE=realtime \
+VFS_READ_MODE="${VFS_READ_MODE:-memory}" \
+VFS_METADATA_MODE="${VFS_METADATA_MODE:-memory}" \
 AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost:4566}" \
 AWS_REGION="${AWS_REGION:-ap-northeast-1}" \
 AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}" \
@@ -276,8 +224,8 @@ echo ""
 echo "Format: method,operation,size,time_ms,throughput_mb_s"
 echo ""
 
-echo "--- s3fs-fuse (E2E: write → S3) ---"
-echo "$S3FS_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
+echo "--- s3fs-fuse (WASM via wasmtime) ---"
+grep "^\[RESULT\]" /tmp/s3fs-bench.log | sed 's/\[RESULT\] //' || true
 echo ""
 
 echo "--- vfs-host S3 Sync (REALTIME) ---"
@@ -293,8 +241,35 @@ echo "vfs-host total: ${TOTAL_MS}ms"
 echo ""
 
 echo "Note: "
-echo "  s3fs: synchronous (write blocks until S3 confirms)"
+echo "  s3fs: synchronous (write blocks until S3 confirms, HEAD on every open)"
 echo "  vfs-host REALTIME: immediate S3 sync after each write"
+echo "  VFS_READ_MODE=s3: read-through (GET from S3 on first read)"
+echo "  VFS_METADATA_MODE=s3: HEAD request on every open (like s3fs)"
 
 echo ""
+echo "=========================================="
+echo "  S3 Request Count Analysis"
+echo "=========================================="
+echo ""
+
+# Count s3fs S3 requests from syslog
+echo "--- s3fs S3 Requests (from syslog) ---"
+S3FS_PUT_COUNT=$(grep s3fs /var/log/syslog 2>/dev/null | grep -c "PUT" || echo "0")
+S3FS_GET_COUNT=$(grep s3fs /var/log/syslog 2>/dev/null | grep -c "GET" || echo "0")
+S3FS_DELETE_COUNT=$(grep s3fs /var/log/syslog 2>/dev/null | grep -c "DELETE" || echo "0")
+echo "PUT requests:    $S3FS_PUT_COUNT"
+echo "GET requests:    $S3FS_GET_COUNT"
+echo "DELETE requests: $S3FS_DELETE_COUNT"
+echo ""
+
+# Count vfs-host S3 requests from log
+echo "--- vfs-host S3 Requests (from log) ---"
+VFS_UPLOAD_COUNT=$(grep -c "Uploaded:" /tmp/vfshost-bench.log 2>/dev/null || echo "0")
+VFS_REFRESH_COUNT=$(grep -c "Refreshed from S3:" /tmp/vfshost-bench.log 2>/dev/null || echo "0")
+VFS_DELETE_COUNT=$(grep -c "Deleted from S3:" /tmp/vfshost-bench.log 2>/dev/null || echo "0")
+echo "Upload (PUT):    $VFS_UPLOAD_COUNT"
+echo "Refresh (GET):   $VFS_REFRESH_COUNT"
+echo "Delete:          $VFS_DELETE_COUNT"
+echo ""
+
 echo "=== Benchmark 07 Complete ==="

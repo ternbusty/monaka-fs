@@ -33,6 +33,14 @@ pub struct FsInputStreamWrapper {
     fd: u32,
     /// Current offset position
     offset: u64,
+    /// File path for sync hooks
+    path: Option<String>,
+    /// Optional sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    sync_hooks: Option<Arc<dyn SyncHooks>>,
+    /// Whether S3 refresh has been performed (to avoid repeated refreshes)
+    #[cfg(feature = "s3-sync")]
+    s3_refreshed: bool,
 }
 
 impl FsInputStreamWrapper {
@@ -41,6 +49,30 @@ impl FsInputStreamWrapper {
             shared_vfs,
             fd,
             offset,
+            path: None,
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+            #[cfg(feature = "s3-sync")]
+            s3_refreshed: false,
+        }
+    }
+
+    /// Create with path and sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub fn new_with_sync(
+        shared_vfs: Arc<Fs>,
+        fd: u32,
+        offset: u64,
+        path: Option<String>,
+        sync_hooks: Option<Arc<dyn SyncHooks>>,
+    ) -> Self {
+        Self {
+            shared_vfs,
+            fd,
+            offset,
+            path,
+            sync_hooks,
+            s3_refreshed: false,
         }
     }
 }
@@ -208,6 +240,15 @@ impl Subscribe for FsInputStreamWrapper {
 
 impl HostInputStream for FsInputStreamWrapper {
     fn read(&mut self, size: usize) -> StreamResult<Bytes> {
+        // S3 refresh (once per stream, on first read)
+        #[cfg(feature = "s3-sync")]
+        if !self.s3_refreshed {
+            if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &self.path) {
+                hooks.on_read(path);
+            }
+            self.s3_refreshed = true;
+        }
+
         let offset = self.offset;
 
         // Seek to offset
@@ -270,11 +311,8 @@ impl HostOutputStream for FsOutputStreamWrapper {
             }
         }
 
-        // Trigger sync hook after successful write
-        #[cfg(feature = "s3-sync")]
-        if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &self.path) {
-            hooks.on_write(path);
-        }
+        // Note: Sync hook is NOT called here - it's called in Drop to avoid
+        // triggering multiple uploads when writing large files in chunks
 
         Ok(())
     }
@@ -287,6 +325,17 @@ impl HostOutputStream for FsOutputStreamWrapper {
     fn check_write(&mut self) -> StreamResult<usize> {
         // In-memory FS: can always write
         Ok(1024 * 1024) // 1MB buffer
+    }
+}
+
+/// Trigger sync hook when the output stream is dropped (file closed)
+#[cfg(feature = "s3-sync")]
+impl Drop for FsOutputStreamWrapper {
+    fn drop(&mut self) {
+        // Trigger sync hook when stream is closed
+        if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &self.path) {
+            hooks.on_write(path);
+        }
     }
 }
 
@@ -365,11 +414,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        let (fd, _) = self
+        let (fd, path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
+        #[cfg(feature = "s3-sync")]
+        let wrapper = FsInputStreamWrapper::new_with_sync(
+            Arc::clone(&self.shared_vfs),
+            fd,
+            offset,
+            path,
+            self.sync_hooks.clone(),
+        );
+
+        #[cfg(not(feature = "s3-sync"))]
         let wrapper = FsInputStreamWrapper::new(Arc::clone(&self.shared_vfs), fd, offset);
+
         let resource = self
             .table
             .push(Box::new(wrapper) as Box<dyn HostInputStream>)
@@ -680,6 +740,13 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
+
+        // Trigger on_open hook for metadata sync (like s3fs HEAD request)
+        // This checks S3 for updates before opening the file
+        #[cfg(feature = "s3-sync")]
+        if let Some(ref hooks) = self.sync_hooks {
+            hooks.on_open(&full_path);
+        }
 
         // Convert flags to fs-core flags
         let mut fs_flags = 0u32;

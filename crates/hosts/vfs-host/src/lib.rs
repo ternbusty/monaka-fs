@@ -127,11 +127,35 @@ impl VfsHostState {
 
         log::info!("[vfs-host] Sync mode: {:?}", config.mode);
 
+        // Check if read-from-S3 mode is enabled
+        let read_from_s3 = std::env::var("VFS_READ_MODE")
+            .map(|v| v == "s3")
+            .unwrap_or(false);
+        if read_from_s3 {
+            log::info!("[vfs-host] Read mode: S3 (read-through)");
+        } else {
+            log::info!("[vfs-host] Read mode: memory (default)");
+        }
+
+        // Check if metadata sync mode is enabled (like s3fs HEAD requests)
+        let metadata_sync = std::env::var("VFS_METADATA_MODE")
+            .map(|v| v == "s3")
+            .unwrap_or(false);
+        if metadata_sync {
+            log::info!("[vfs-host] Metadata mode: S3 (HEAD on every open, like s3fs)");
+        } else {
+            log::info!("[vfs-host] Metadata mode: memory (default)");
+        }
+
         // Create sync manager
         let sync_manager = Arc::new(HostSyncManager::new(s3, fs.clone(), metadata_cache, config));
 
         // Create sync hooks
-        let sync_hooks: Arc<dyn SyncHooks> = Arc::new(S3SyncHooks::new(sync_manager.clone()));
+        let sync_hooks: Arc<dyn SyncHooks> = Arc::new(S3SyncHooks::new_with_options(
+            sync_manager.clone(),
+            read_from_s3,
+            metadata_sync,
+        ));
 
         // Spawn background sync thread
         let sync_thread = {
