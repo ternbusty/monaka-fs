@@ -18,6 +18,10 @@ path = "src/bench_global.rs"
 name = "bench-unsafe"
 path = "src/bench_unsafe.rs"
 
+[[bin]]
+name = "bench-main"
+path = "src/bench_main.rs"
+
 [dependencies]
 # WASM runtime
 wasmtime = { version = "27.0", features = ["component-model"] }
@@ -27,6 +31,9 @@ wasmtime-wasi = "27.0"
 vfs-host = { path = "../../../../crates/hosts/vfs-host" }
 vfs-host-global = { path = "../vfs-host-global" }
 vfs-host-unsafe = { path = "../vfs-host-unsafe" }
+
+# Main-branch fs-core (for direct comparison benchmark)
+fs-main = { path = "../fs-main" }
 
 # Utilities
 anyhow = "1.0"

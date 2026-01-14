@@ -3,11 +3,12 @@
 //! This app performs file operations based on environment variables:
 //! - BENCH_THREAD_ID: Thread/instance identifier
 //! - BENCH_OPS: Number of operations to perform
-//! - BENCH_SCENARIO: read, write, or mixed
+//! - BENCH_SCENARIO: read, write, or mixed (or "setup" for initialization)
 //! - BENCH_FILE_SCOPE: same (shared file) or different (per-thread file)
 //! - BENCH_DATA_SIZE: Data size in bytes for read/write operations (default: 1024)
+//! - BENCH_THREAD_COUNT: Number of threads (for setup only, default: 8)
 
-use std::fs::File;
+use std::fs::{create_dir_all, File};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::Instant;
@@ -18,9 +19,11 @@ fn main() {
     let scenario = env("BENCH_SCENARIO");
     let file_scope = env("BENCH_FILE_SCOPE");
     let data_size: usize = env("BENCH_DATA_SIZE").parse().unwrap_or(1024);
+    let thread_count: usize = env("BENCH_THREAD_COUNT").parse().unwrap_or(8);
 
     let start = Instant::now();
     let result = match (scenario.as_str(), file_scope.as_str()) {
+        ("setup", _) => setup_bench_files(thread_count, data_size),
         ("read", "same") => bench_read_same_file(ops, data_size),
         ("read", "different") => bench_read_different_files(thread_id, ops, data_size),
         ("write", "same") => bench_write_same_file(thread_id, ops, data_size),
@@ -118,7 +121,7 @@ fn bench_write_different_files(thread_id: usize, ops: usize, data_size: usize) -
 }
 
 /// Mixed read/write on same file - tests read/write lock interaction
-fn bench_mixed_same_file(thread_id: usize, ops: usize, data_size: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn bench_mixed_same_file(_thread_id: usize, ops: usize, data_size: usize) -> Result<(), Box<dyn std::error::Error>> {
     let path = "/bench/shared/mixed.txt";
     let mut buf = vec![0u8; data_size];
     let write_data = vec![b'W'; data_size];
@@ -134,5 +137,31 @@ fn bench_mixed_same_file(thread_id: usize, ops: usize, data_size: usize) -> Resu
             let _ = file.read(&mut buf)?;
         }
     }
+    Ok(())
+}
+
+/// Setup benchmark files - creates directories and initial test files
+fn setup_bench_files(thread_count: usize, data_size: usize) -> Result<(), Box<dyn std::error::Error>> {
+    // Create directories
+    create_dir_all("/bench/shared")?;
+    create_dir_all("/bench/files")?;
+
+    // Create shared files with initial content
+    let content = vec![b'D'; data_size.max(4096)];
+    for name in ["data.txt", "write_target.txt", "mixed.txt"] {
+        let path = format!("/bench/shared/{}", name);
+        let mut file = File::create(&path)?;
+        file.write_all(&content)?;
+    }
+
+    // Create per-thread files
+    let thread_content = vec![b'T'; data_size.max(1024)];
+    for i in 0..thread_count {
+        let path = format!("/bench/files/thread_{}.txt", i);
+        let mut file = File::create(&path)?;
+        file.write_all(&thread_content)?;
+    }
+
+    eprintln!("Setup complete: created {} thread files", thread_count);
     Ok(())
 }

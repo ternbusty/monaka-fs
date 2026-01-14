@@ -81,6 +81,7 @@ name = "bench-lock-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs-main",
  "vfs-host",
  "vfs-host-global",
  "vfs-host-unsafe",
@@ -576,6 +577,10 @@ dependencies = [
 
 [[package]]
 name = "fs-global"
+version = "0.1.0"
+
+[[package]]
+name = "fs-main"
 version = "0.1.0"
 
 [[package]]
