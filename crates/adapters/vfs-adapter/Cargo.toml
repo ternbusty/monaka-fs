@@ -8,6 +8,9 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
+# Enable thread-safe fs-core (Arc<RwLock> + DashMap instead of Rc<RefCell> + HashMap)
+# This is for benchmarking lock overhead - not needed in production (WASM is single-threaded)
+thread-safe = ["fs-core/thread-safe"]
 s3-sync = [
     "dep:vfs-sync-wasi",
     "dep:tokio",

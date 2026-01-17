@@ -281,6 +281,25 @@ struct DescriptorImpl {
     handle: u32,
 }
 
+// Implement Drop to properly close file descriptors when the resource is dropped
+impl Drop for DescriptorImpl {
+    fn drop(&mut self) {
+        // Don't close the root directory (handle 0)
+        if self.handle == 0 {
+            return;
+        }
+
+        with_vfs_state(|state| {
+            if let Some(fd) = state.descriptor_to_fd.get(&self.handle).copied() {
+                // Close the fd in fs-core
+                let _ = state.fs.borrow_mut().close(fd);
+            }
+            // Release the descriptor from our mappings
+            state.release_descriptor(self.handle);
+        });
+    }
+}
+
 impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn read_via_stream(
         &self,
