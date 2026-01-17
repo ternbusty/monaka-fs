@@ -21,6 +21,12 @@ fn main() {
     let data_size: usize = env("BENCH_DATA_SIZE").parse().unwrap_or(1024);
     let thread_count: usize = env("BENCH_THREAD_COUNT").parse().unwrap_or(8);
 
+    // For static composition: each WASM run has isolated VFS, so always setup first
+    // (Setup is not timed - only the actual benchmark is measured)
+    if scenario != "setup" {
+        let _ = setup_bench_files(thread_count, data_size);
+    }
+
     let start = Instant::now();
     let result = match (scenario.as_str(), file_scope.as_str()) {
         ("setup", _) => setup_bench_files(thread_count, data_size),

@@ -112,11 +112,19 @@ pub fn verify_benchmark_results<V: VfsOps>(
     vfs: &V,
     thread_count: usize,
     ops_per_thread: usize,
+    data_size: usize,
 ) -> Result<CorrectnessResult> {
     let fd = vfs.open_path("/bench/shared/write_target.txt")?;
-    // Buffer size: worst case is 16 threads * 500 ops * 1MB per line
-    // But typically lines are much smaller, so 64MB should be enough
-    let mut content = vec![0u8; 64 * 1024 * 1024];
+
+    // Calculate expected file size:
+    // - Initial content from setup: data_size.max(4096) bytes
+    // - Each write: data_size bytes per line
+    // - Total writes: thread_count * ops_per_thread
+    let initial_size = data_size.max(4096);
+    let expected_write_size = thread_count * ops_per_thread * data_size;
+    let buffer_size = initial_size + expected_write_size + 1024; // Extra margin
+
+    let mut content = vec![0u8; buffer_size];
     let bytes_read = vfs.read(fd, &mut content)?;
     vfs.close(fd)?;
 

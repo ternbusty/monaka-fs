@@ -67,7 +67,7 @@ fn main() -> Result<()> {
                 // Verify data integrity for write/same scenario
                 let integrity = if scenario.scenario == "write" && scenario.file_scope == "same" {
                     let correctness =
-                        verify_benchmark_results(&*shared_vfs, thread_count, OPS_PER_THREAD)?;
+                        verify_benchmark_results(&*shared_vfs, thread_count, OPS_PER_THREAD, data_size)?;
                     format!("{:.1}%", correctness.integrity_percent())
                 } else {
                     "N/A".to_string()
