@@ -14,7 +14,8 @@ external-mutex = []
 s3-sync = ["dep:vfs-sync", "dep:tokio"]
 
 [dependencies]
-fs-core = { path = "../../core/fs-core" }
+# vfs-host requires thread-safe fs-core (wasmtime Host trait requires Send+Sync)
+fs-core = { path = "../../core/fs-core", features = ["thread-safe"] }
 wasmtime = "27.0.0"
 wasmtime-wasi = "27.0.0"
 anyhow = "1.0"
