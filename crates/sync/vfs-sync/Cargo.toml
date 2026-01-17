@@ -1,0 +1,18 @@
+[package]
+name = "vfs-sync"
+version = "0.1.0"
+edition = "2021"
+description = "S3 synchronization for Halycon VFS (native environment)"
+
+[dependencies]
+vfs-sync-core = { path = "../vfs-sync-core" }
+fs-core = { path = "../../core/fs-core" }
+log = "0.4"
+
+# AWS SDK
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["rt", "time", "sync"] }
+futures = "0.3"

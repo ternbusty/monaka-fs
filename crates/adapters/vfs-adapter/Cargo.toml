@@ -6,11 +6,27 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Enable thread-safe fs-core (Arc<RwLock> + DashMap instead of Rc<RefCell> + HashMap)
+# This is for benchmarking lock overhead - not needed in production (WASM is single-threaded)
+thread-safe = ["fs-core/thread-safe"]
+s3-sync = [
+    "dep:vfs-sync-wasi",
+    "dep:tokio",
+    "dep:log",
+]
+
 [dependencies]
 fs-core = { path = "../../core/fs-core", features = ["serde"] }
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 spin = "0.9"
 serde_json = "1"
+
+# S3 sync dependencies (optional)
+vfs-sync-wasi = { path = "../../sync/vfs-sync-wasi", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"], optional = true }
+log = { version = "0.4", optional = true }
 
 [build-dependencies]
 wit-bindgen = "0.36"

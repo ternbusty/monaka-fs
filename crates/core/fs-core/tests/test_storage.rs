@@ -6,7 +6,7 @@ mod block_storage {
 
     #[test]
     fn success_large_file_multiple_blocks() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/large.bin").unwrap();
 
         // Write data that spans multiple blocks
@@ -27,7 +27,7 @@ mod block_storage {
 
     #[test]
     fn success_boundary_operations() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/boundary.txt").unwrap();
 
         // Write data that ends exactly at block boundary
@@ -56,7 +56,7 @@ mod sparse_files {
 
     #[test]
     fn success_with_gaps() {
-        let mut fs = Fs::new();
+        let fs = Fs::new();
         let fd = fs.open_path("/sparse.dat").unwrap();
 
         // Write at offset 0

@@ -10,7 +10,8 @@ use axum::{
     routing::get,
     Router,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use vfs_host::Fs;
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
@@ -18,7 +19,7 @@ use wasmtime::{Config, Engine, Store};
 struct AppState {
     engine: Engine,
     handler_component: Component,
-    shared_vfs: Arc<Mutex<vfs_host::SharedVfsCore>>,
+    shared_vfs: Arc<Fs>,
 }
 
 /// Handle API requests
@@ -48,7 +49,7 @@ async fn handle_api_request(
 fn run_wasm_handler(
     engine: &Engine,
     handler_component: &Component,
-    shared_vfs: Arc<Mutex<vfs_host::SharedVfsCore>>,
+    shared_vfs: Arc<Fs>,
     api_path: &str,
 ) -> Result<String> {
     println!("[SERVER] Handling request: {}", api_path);
@@ -90,8 +91,7 @@ async fn main() -> Result<()> {
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
 
-    // Paths to WASM components
-    let vfs_adapter_path = "../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
+    // Path to WASM handler
     let handler_path = "../../../target/wasm32-wasip2/debug/http-cache-handler.wasm";
 
     // Load handler component
@@ -99,10 +99,10 @@ async fn main() -> Result<()> {
     let handler_component =
         Component::from_file(&engine, handler_path).context("Failed to load handler component")?;
 
-    // Create initial VFS state and extract shared VFS
+    // Create initial VFS state and extract shared VFS (no WASM adapter needed)
     println!("Initializing VFS...");
-    let initial_vfs_state = vfs_host::VfsHostState::new(&engine, vfs_adapter_path)
-        .context("Failed to create VfsHostState")?;
+    let initial_vfs_state =
+        vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
     let shared_vfs = initial_vfs_state.get_shared_vfs();
 
     // Create app state

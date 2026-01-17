@@ -1,113 +1,69 @@
-//! Sync Manager for S3 persistence
+//! Sync Manager for S3 persistence (thread-safe version)
 //!
 //! Manages bidirectional file synchronization between VFS and S3.
 //! Uses queue-based async sync for outbound and polling for inbound.
+//!
+//! This version is designed for multi-threaded native environments (vfs-host),
+//! using Arc and Mutex instead of Rc and RefCell.
 
-use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
-use crate::file_metadata::MetadataCache;
-use crate::s3_client::{S3Error, S3ObjectInfo, S3Storage};
+use crate::s3_client::S3Storage;
 use fs_core::Fs;
+pub use vfs_sync_core::{
+    MetadataCache, S3Error, S3ObjectInfo, SyncConfig, SyncMode, SyncOperation,
+};
 
-/// Pending sync operation
-#[derive(Debug, Clone)]
-pub enum SyncOperation {
-    /// Upload file to S3
-    Upload { path: String },
-    /// Delete file from S3
-    Delete { path: String },
-}
-
-/// Sync mode configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SyncMode {
-    /// Batch mode: sync every N seconds or N operations (default)
-    #[default]
-    Batch,
-    /// Real-time mode: sync immediately after each write operation
-    RealTime,
-}
-
-impl SyncMode {
-    /// Parse sync mode from environment variable
-    pub fn from_env() -> Self {
-        match std::env::var("VFS_SYNC_MODE").as_deref() {
-            Ok("realtime") | Ok("real-time") | Ok("immediate") => SyncMode::RealTime,
-            _ => SyncMode::Batch,
-        }
-    }
-}
-
-/// Sync manager configuration
-pub struct SyncConfig {
-    /// Sync mode (batch or realtime)
-    pub mode: SyncMode,
-    /// Interval for S3 polling (inbound)
-    pub poll_interval: Duration,
-    /// Interval for outbound queue flush (batch mode only)
-    pub flush_interval: Duration,
-    /// Maximum operations per outbound flush (batch mode only)
-    pub outbound_batch_size: usize,
-}
-
-impl Default for SyncConfig {
-    fn default() -> Self {
-        Self {
-            mode: SyncMode::from_env(),
-            poll_interval: Duration::from_secs(30),
-            flush_interval: Duration::from_secs(5),
-            outbound_batch_size: 10,
-        }
-    }
-}
-
-/// Manages bidirectional S3 synchronization
+/// Manages bidirectional S3 synchronization (thread-safe)
 ///
-/// Designed for single-threaded WASI environment.
-/// Call `maybe_sync()` periodically from the main loop.
-pub struct SyncManager {
+/// Uses Arc<Fs> which is thread-safe due to fs-core's internal DashMap.
+/// Call `maybe_sync()` periodically from a background thread.
+pub struct HostSyncManager {
     /// S3 storage client
-    s3: Rc<S3Storage>,
-    /// Reference to the filesystem
-    fs: Rc<RefCell<Fs>>,
+    s3: Arc<S3Storage>,
+    /// Reference to the filesystem (thread-safe via internal DashMap)
+    fs: Arc<Fs>,
     /// Pending outbound operations (VFS -> S3)
-    outbound_queue: RefCell<VecDeque<SyncOperation>>,
+    outbound_queue: Mutex<VecDeque<SyncOperation>>,
     /// Metadata cache for conflict detection
-    metadata_cache: RefCell<MetadataCache>,
+    metadata_cache: Mutex<MetadataCache>,
     /// Configuration
     config: SyncConfig,
     /// Last poll time for inbound sync
-    last_poll: RefCell<Instant>,
+    last_poll: RwLock<Instant>,
     /// Last outbound flush time
-    last_flush: RefCell<Instant>,
+    last_flush: RwLock<Instant>,
+    /// Shutdown flag
+    shutdown: AtomicBool,
 }
 
-impl SyncManager {
+impl HostSyncManager {
     /// Create a new sync manager
     pub fn new(
-        s3: Rc<S3Storage>,
-        fs: Rc<RefCell<Fs>>,
+        s3: S3Storage,
+        fs: Arc<Fs>,
         metadata_cache: MetadataCache,
         config: SyncConfig,
     ) -> Self {
         Self {
-            s3,
+            s3: Arc::new(s3),
             fs,
-            outbound_queue: RefCell::new(VecDeque::new()),
-            metadata_cache: RefCell::new(metadata_cache),
+            outbound_queue: Mutex::new(VecDeque::new()),
+            metadata_cache: Mutex::new(metadata_cache),
             config,
-            last_poll: RefCell::new(Instant::now()),
-            last_flush: RefCell::new(Instant::now()),
+            last_poll: RwLock::new(Instant::now()),
+            last_flush: RwLock::new(Instant::now()),
+            shutdown: AtomicBool::new(false),
         }
     }
 
     /// Enqueue a file upload
     pub fn enqueue_upload(&self, path: String) {
-        let mut queue = self.outbound_queue.borrow_mut();
+        let mut queue = self.outbound_queue.lock().unwrap();
 
         // Remove any existing operation for this path (dedup)
         queue.retain(|op| match op {
@@ -119,7 +75,7 @@ impl SyncManager {
 
     /// Enqueue a file deletion
     pub fn enqueue_delete(&self, path: String) {
-        let mut queue = self.outbound_queue.borrow_mut();
+        let mut queue = self.outbound_queue.lock().unwrap();
 
         // Remove any pending operation for this path
         queue.retain(|op| match op {
@@ -129,17 +85,27 @@ impl SyncManager {
         queue.push_back(SyncOperation::Delete { path: path.clone() });
 
         // Also remove from metadata cache
-        self.metadata_cache.borrow_mut().remove(&path);
+        self.metadata_cache.lock().unwrap().remove(&path);
     }
 
     /// Get the number of pending outbound operations
     pub fn pending_count(&self) -> usize {
-        self.outbound_queue.borrow().len()
+        self.outbound_queue.lock().unwrap().len()
     }
 
     /// Check if running in realtime sync mode
     pub fn is_realtime(&self) -> bool {
         self.config.mode == SyncMode::RealTime
+    }
+
+    /// Check if shutdown has been requested
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Request shutdown
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::SeqCst);
     }
 
     /// Synchronously upload a single file to S3 (for realtime mode)
@@ -148,18 +114,109 @@ impl SyncManager {
         self.upload_file(path).await
     }
 
-    /// Cooperative sync check - call from main event loop
+    /// Refresh a single file from S3 (for read-through mode)
+    /// Downloads the file from S3 and updates the local VFS
+    pub async fn refresh_file_from_s3(&self, path: &str) -> Result<(), S3Error> {
+        // Get file content from S3
+        if let Some((content, etag, last_modified)) = self.s3.get_file(path).await? {
+            // Write to VFS
+            self.write_file_content(path, &content)?;
+
+            // Update metadata cache
+            self.metadata_cache.lock().unwrap().update_after_download(
+                path,
+                etag,
+                last_modified,
+                content.len() as u64,
+            );
+
+            log::debug!("[sync] Refreshed from S3: {}", path);
+        }
+        Ok(())
+    }
+
+    /// Check S3 metadata and refresh if changed (for metadata sync mode)
+    /// Does a HEAD request first, then GET only if ETag differs
+    /// Returns true if file was refreshed, false if no change
+    pub async fn check_and_refresh_from_s3(&self, path: &str) -> Result<bool, S3Error> {
+        // HEAD request to get current S3 metadata
+        let s3_meta = match self.s3.head_file(path).await? {
+            Some(meta) => meta,
+            None => {
+                // File doesn't exist in S3
+                log::debug!("[sync] File not found in S3: {}", path);
+                return Ok(false);
+            }
+        };
+
+        let (s3_etag, _s3_last_modified, _s3_size) = s3_meta;
+
+        // Check local cache
+        let needs_refresh = {
+            let cache = self.metadata_cache.lock().unwrap();
+            match cache.get(path) {
+                Some(local_meta) => {
+                    // Check if S3 has different version
+                    s3_etag != local_meta.etag
+                }
+                None => {
+                    // Not in cache, need to download
+                    true
+                }
+            }
+        };
+
+        if needs_refresh {
+            // GET the file content
+            if let Some((content, etag, last_modified)) = self.s3.get_file(path).await? {
+                // Write to VFS
+                self.write_file_content(path, &content)?;
+
+                // Update metadata cache
+                self.metadata_cache.lock().unwrap().update_after_download(
+                    path,
+                    etag,
+                    last_modified,
+                    content.len() as u64,
+                );
+
+                log::debug!("[sync] Refreshed from S3 (metadata changed): {}", path);
+                return Ok(true);
+            }
+        } else {
+            log::debug!("[sync] S3 metadata unchanged for: {}", path);
+        }
+
+        Ok(false)
+    }
+
+    /// Cooperative sync check - call from background thread
     pub async fn maybe_sync(&self) -> bool {
+        if self.is_shutdown() {
+            return false;
+        }
+
         let mut did_work = false;
 
         // Check if outbound flush is needed
+        // In RealTime mode, outbound sync is handled by hooks (sync_file_now),
+        // so background thread only handles deletes in the queue
         let should_flush = {
-            let queue_len = self.outbound_queue.borrow().len();
-            let elapsed = self.last_flush.borrow().elapsed();
+            let queue_len = self.outbound_queue.lock().unwrap().len();
+            let elapsed = self.last_flush.read().unwrap().elapsed();
 
             match self.config.mode {
-                // RealTime mode: flush immediately if there are any pending operations
-                SyncMode::RealTime => queue_len > 0,
+                // RealTime mode: only flush deletes (uploads are handled by hooks)
+                SyncMode::RealTime => {
+                    // Check if there are any delete operations in the queue
+                    let has_deletes = self
+                        .outbound_queue
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|op| matches!(op, SyncOperation::Delete { .. }));
+                    has_deletes
+                }
                 // Batch mode: flush when queue is full or interval elapsed
                 SyncMode::Batch => {
                     queue_len >= self.config.outbound_batch_size
@@ -183,7 +240,7 @@ impl SyncManager {
         }
 
         // Check if inbound poll is needed
-        let should_poll = self.last_poll.borrow().elapsed() >= self.config.poll_interval;
+        let should_poll = self.last_poll.read().unwrap().elapsed() >= self.config.poll_interval;
 
         if should_poll {
             match self.poll_inbound().await {
@@ -201,7 +258,7 @@ impl SyncManager {
                     log::error!("[sync] Inbound poll error: {}", e);
                 }
             }
-            *self.last_poll.borrow_mut() = Instant::now();
+            *self.last_poll.write().unwrap() = Instant::now();
         }
 
         did_work
@@ -210,7 +267,11 @@ impl SyncManager {
     /// Force flush all pending outbound operations
     pub async fn force_flush(&self) -> Result<usize, S3Error> {
         let mut total = 0;
-        while !self.outbound_queue.borrow().is_empty() {
+        loop {
+            let is_empty = self.outbound_queue.lock().unwrap().is_empty();
+            if is_empty {
+                break;
+            }
             total += self.flush_outbound().await?;
         }
         Ok(total)
@@ -220,17 +281,25 @@ impl SyncManager {
     async fn flush_outbound(&self) -> Result<usize, S3Error> {
         let mut processed = 0;
         let batch_size = self.config.outbound_batch_size;
+        let is_realtime = self.config.mode == SyncMode::RealTime;
 
         for _ in 0..batch_size {
-            let op = self.outbound_queue.borrow_mut().pop_front();
+            let op = self.outbound_queue.lock().unwrap().pop_front();
 
             match op {
                 Some(SyncOperation::Upload { path }) => {
+                    // In RealTime mode, uploads are handled by sync hooks (sync_file_now),
+                    // so skip Upload operations in the background flush
+                    if is_realtime {
+                        // Discard - already handled by realtime hook
+                        continue;
+                    }
                     if let Err(e) = self.upload_file(&path).await {
                         log::error!("[sync] Failed to upload {}: {}", path, e);
                         // Re-queue failed upload
                         self.outbound_queue
-                            .borrow_mut()
+                            .lock()
+                            .unwrap()
                             .push_back(SyncOperation::Upload { path });
                         return Err(e);
                     }
@@ -248,7 +317,7 @@ impl SyncManager {
             }
         }
 
-        *self.last_flush.borrow_mut() = Instant::now();
+        *self.last_flush.write().unwrap() = Instant::now();
         Ok(processed)
     }
 
@@ -259,14 +328,15 @@ impl SyncManager {
         let size = content.len() as u64;
 
         // Get local modification time
-        let local_modified = self.fs.borrow().stat(path).map(|m| m.modified).unwrap_or(0);
+        let local_modified = self.fs.stat(path).map(|m| m.modified).unwrap_or(0);
 
         // Upload to S3
         let etag = self.s3.put_file_with_etag(path, content).await?;
 
         // Update metadata cache
         self.metadata_cache
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .update_after_upload(path, etag, size, local_modified);
 
         log::info!("[sync] Uploaded: {}", path);
@@ -275,10 +345,9 @@ impl SyncManager {
 
     /// Read file content from VFS
     fn read_file_content(&self, path: &str) -> Result<Vec<u8>, S3Error> {
-        let mut fs = self.fs.borrow_mut();
-
         // Open file for reading
-        let fd = fs
+        let fd = self
+            .fs
             .open_path_with_flags(path, fs_core::O_RDONLY)
             .map_err(|e| S3Error::Read {
                 key: path.to_string(),
@@ -286,7 +355,8 @@ impl SyncManager {
             })?;
 
         // Get file size
-        let size = fs
+        let size = self
+            .fs
             .fstat(fd)
             .map_err(|e| S3Error::Read {
                 key: path.to_string(),
@@ -296,13 +366,13 @@ impl SyncManager {
 
         // Read content
         let mut content = vec![0u8; size];
-        fs.read(fd, &mut content).map_err(|e| S3Error::Read {
+        self.fs.read(fd, &mut content).map_err(|e| S3Error::Read {
             key: path.to_string(),
             message: format!("Failed to read: {:?}", e),
         })?;
 
         // Close file
-        let _ = fs.close(fd);
+        let _ = self.fs.close(fd);
 
         Ok(content)
     }
@@ -320,7 +390,7 @@ impl SyncManager {
         // Check each S3 object
         for obj in s3_objects {
             let should_download = {
-                let cache = self.metadata_cache.borrow();
+                let cache = self.metadata_cache.lock().unwrap();
                 match cache.get(&obj.path) {
                     Some(meta) => {
                         // Check if S3 has newer version
@@ -332,10 +402,15 @@ impl SyncManager {
 
             if should_download {
                 // Skip if path is in outbound queue (local change pending)
-                let in_queue = self.outbound_queue.borrow().iter().any(|op| match op {
-                    SyncOperation::Upload { path } => path == &obj.path,
-                    _ => false,
-                });
+                let in_queue = self
+                    .outbound_queue
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|op| match op {
+                        SyncOperation::Upload { path } => path == &obj.path,
+                        _ => false,
+                    });
 
                 if !in_queue {
                     if let Err(e) = self.download_file(&obj).await {
@@ -348,7 +423,13 @@ impl SyncManager {
         }
 
         // Detect deleted files (in local cache but not in S3)
-        let local_paths: Vec<String> = self.metadata_cache.borrow().paths().cloned().collect();
+        let local_paths: Vec<String> = self
+            .metadata_cache
+            .lock()
+            .unwrap()
+            .paths()
+            .cloned()
+            .collect();
 
         for path in local_paths {
             if !s3_paths.contains(&path) {
@@ -380,7 +461,7 @@ impl SyncManager {
         if let Some(parent) = std::path::Path::new(&obj.path).parent() {
             let parent_str = parent.to_string_lossy();
             if !parent_str.is_empty() && parent_str != "/" {
-                let _ = self.fs.borrow_mut().mkdir_p(&format!("/{}", parent_str));
+                let _ = self.fs.mkdir_p(&format!("/{}", parent_str));
             }
         }
 
@@ -388,7 +469,7 @@ impl SyncManager {
         self.write_file_content(&obj.path, &content)?;
 
         // Update metadata cache
-        self.metadata_cache.borrow_mut().update_after_download(
+        self.metadata_cache.lock().unwrap().update_after_download(
             &obj.path,
             etag,
             last_modified,
@@ -401,18 +482,17 @@ impl SyncManager {
 
     /// Write content to VFS
     fn write_file_content(&self, path: &str, content: &[u8]) -> Result<(), S3Error> {
-        let mut fs = self.fs.borrow_mut();
-
         // Ensure parent directory exists
         if let Some(parent) = std::path::Path::new(path).parent() {
             let parent_str = parent.to_string_lossy();
             if !parent_str.is_empty() && parent_str != "/" {
-                let _ = fs.mkdir_p(&parent_str);
+                let _ = self.fs.mkdir_p(&parent_str);
             }
         }
 
         // Open file for writing (create if needed, truncate)
-        let fd = fs
+        let fd = self
+            .fs
             .open_path_with_flags(path, fs_core::O_RDWR | fs_core::O_CREAT | fs_core::O_TRUNC)
             .map_err(|e| S3Error::Write {
                 key: path.to_string(),
@@ -420,28 +500,25 @@ impl SyncManager {
             })?;
 
         // Write content
-        fs.write(fd, content).map_err(|e| S3Error::Write {
+        self.fs.write(fd, content).map_err(|e| S3Error::Write {
             key: path.to_string(),
             message: format!("Failed to write: {:?}", e),
         })?;
 
         // Close file
-        let _ = fs.close(fd);
+        let _ = self.fs.close(fd);
 
         Ok(())
     }
 
     /// Delete a file from VFS
     fn delete_local_file(&self, path: &str) -> Result<(), S3Error> {
-        self.fs
-            .borrow_mut()
-            .unlink(path)
-            .map_err(|e| S3Error::Delete {
-                key: path.to_string(),
-                message: format!("Failed to unlink: {:?}", e),
-            })?;
+        self.fs.unlink(path).map_err(|e| S3Error::Delete {
+            key: path.to_string(),
+            message: format!("Failed to unlink: {:?}", e),
+        })?;
 
-        self.metadata_cache.borrow_mut().remove(path);
+        self.metadata_cache.lock().unwrap().remove(path);
         log::info!("[sync] Deleted locally: {}", path);
         Ok(())
     }
@@ -456,7 +533,7 @@ pub struct SyncStats {
 
 /// Initialize filesystem from S3
 pub async fn init_from_s3(s3: &S3Storage) -> Result<(Fs, MetadataCache), LoadError> {
-    let mut fs = Fs::new();
+    let fs = Fs::new();
     let mut cache = MetadataCache::new();
 
     // List all files in S3

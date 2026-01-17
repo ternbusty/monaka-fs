@@ -1,0 +1,13 @@
+[package]
+name = "static-s3-demo"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[[bin]]
+name = "static-s3-demo"
+path = "src/main.rs"
+
+[dependencies]

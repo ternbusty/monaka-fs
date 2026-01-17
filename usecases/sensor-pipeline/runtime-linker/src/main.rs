@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
-fn run_sensor_pipeline(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
+fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     println!("=== VFS Sharing Demo: Sensor Data Pipeline ===");
     println!();
     println!("Demonstrating data pipeline between two WASM applications:");
@@ -16,9 +16,8 @@ fn run_sensor_pipeline(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
     println!("  2. sensor-process: Reads log, performs statistical analysis");
     println!();
 
-    // Create shared VfsHostState
-    let vfs_host_state1 = vfs_host::VfsHostState::new(engine, vfs_adapter_path)
-        .context("Failed to create VfsHostState")?;
+    // Create shared VfsHostState (now uses fs-core directly, no WASM adapter needed)
+    let vfs_host_state1 = vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
     let vfs_host_state2 = vfs_host_state1.clone_shared();
 
     // Run sensor-ingest
@@ -70,13 +69,11 @@ fn run_sensor_pipeline(engine: &Engine, vfs_adapter_path: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let vfs_adapter_path = "../../../target/wasm32-wasip2/debug/vfs_adapter.wasm";
-
     let mut config = Config::new();
     config.wasm_component_model(true);
     let engine = Engine::new(&config)?;
 
-    run_sensor_pipeline(&engine, vfs_adapter_path)?;
+    run_sensor_pipeline(&engine)?;
 
     Ok(())
 }

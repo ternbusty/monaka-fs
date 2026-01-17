@@ -20,7 +20,40 @@ fn main() {
     // Test 4: Error handling
     test_error_handling();
 
+    // Additional test: Comprehensive operation
+    test_operation();
+
     println!("\n=== All tests completed ===");
+}
+
+fn test_operation() {
+    let directory_path = "/testdir";
+    fs::create_dir(directory_path);
+
+    let nested_directory_path = "/testdir/sub1/sub2";
+    fs::create_dir_all(nested_directory_path);
+
+    let file_path = "/testdir/test.txt";
+    let content = "Hello from Component Model!";
+    fs::write(file_path, content);
+
+    let metadata = fs::metadata(file_path);
+    println!("File metadata: {:?}", metadata);
+
+    let read_content = fs::read_to_string(file_path);
+    println!("Read content: {}", read_content.unwrap());
+
+    fs::read_dir(directory_path).unwrap().for_each(|entry| {
+        let entry = entry.unwrap();
+        println!("Entry: {}", entry.path().display());
+    });
+
+    fs::remove_file(file_path);
+
+    fs::read_dir(directory_path).unwrap().for_each(|entry| {
+        let entry = entry.unwrap();
+        println!("Entry after file remove: {}", entry.path().display());
+    });
 }
 
 fn test_basic_file_operations() {

@@ -1,0 +1,8 @@
+[package]
+name = "vfs-rwlock-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fs-core = { path = "../../../crates/core/fs-core" }
+anyhow = "1.0"

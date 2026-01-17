@@ -7,25 +7,14 @@ use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
 use aws_smithy_async::rt::sleep::TokioSleep;
 
+pub use vfs_sync_core::{S3Error, S3ObjectInfo};
+
+use crate::wasi_http::ChunkedWasiHttpClient;
+
 /// Multipart upload threshold (10MB)
 const MULTIPART_THRESHOLD: usize = 10 * 1024 * 1024;
 /// Part size for multipart upload (10MB)
 const PART_SIZE: usize = 10 * 1024 * 1024;
-
-use crate::wasi_http::ChunkedWasiHttpClient;
-
-/// S3 object info from listing
-#[derive(Debug, Clone)]
-pub struct S3ObjectInfo {
-    /// Key without prefix (VFS path)
-    pub path: String,
-    /// ETag (usually MD5)
-    pub etag: String,
-    /// Last modified timestamp (Unix epoch seconds)
-    pub last_modified: u64,
-    /// Size in bytes
-    pub size: u64,
-}
 
 /// S3 client wrapper for VFS persistence
 pub struct S3Storage {
@@ -230,7 +219,7 @@ impl S3Storage {
 
     /// Multipart upload for large files with parallel part uploads
     async fn multipart_upload(&self, key: &str, data: Vec<u8>) -> Result<String, S3Error> {
-        let total_parts = (data.len() + PART_SIZE - 1) / PART_SIZE;
+        let total_parts = data.len().div_ceil(PART_SIZE);
         log::info!(
             "[s3] Starting parallel multipart upload for {} ({} bytes, {} parts)",
             key,
@@ -348,25 +337,3 @@ impl S3Storage {
             .to_string())
     }
 }
-
-/// S3 operation errors
-#[derive(Debug)]
-pub enum S3Error {
-    Read { key: String, message: String },
-    Write { key: String, message: String },
-    Delete { key: String, message: String },
-}
-
-impl std::fmt::Display for S3Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            S3Error::Read { key, message } => write!(f, "S3 read error for {}: {}", key, message),
-            S3Error::Write { key, message } => write!(f, "S3 write error for {}: {}", key, message),
-            S3Error::Delete { key, message } => {
-                write!(f, "S3 delete error for {}: {}", key, message)
-            }
-        }
-    }
-}
-
-impl std::error::Error for S3Error {}

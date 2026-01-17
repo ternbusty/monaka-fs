@@ -1,0 +1,33 @@
+[package]
+name = "vfs-sync-wasi"
+version = "0.1.0"
+edition = "2021"
+description = "S3 synchronization for Halycon VFS (WASI environment)"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+vfs-sync-core = { path = "../vfs-sync-core" }
+fs-core = { path = "../../core/fs-core" }
+log = "0.4"
+
+# WIT bindgen for WASI types
+wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+
+# Async runtime (single-threaded for WASI)
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
+
+# AWS SDK for S3
+aws-sdk-s3 = { version = "1", default-features = false }
+aws-config = { version = "1", default-features = false }
+aws-smithy-async = { version = "1", features = ["rt-tokio"] }
+aws-smithy-runtime-api = "1"
+aws-smithy-types = "1"
+
+# HTTP types for custom WASI HTTP client
+http = "1"
+bytes = "1"
+
+# Async utilities for parallel uploads
+futures = "0.3"

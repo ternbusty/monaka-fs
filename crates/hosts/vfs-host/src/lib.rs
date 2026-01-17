@@ -1,62 +1,53 @@
 // VFS Host Trait Implementation
 //
-// This library implements wasmtime Host traits that wrap a VfsAdapter component instance.
+// This library implements wasmtime Host traits using fs-core directly.
 // This enables true dynamic linking where multiple applications can share a single
 // VFS instance at runtime, unlike wasi-virt which creates isolated VFS per app.
 
 use anyhow::Result;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use wasmtime::component::{bindgen, ResourceTable};
-use wasmtime::{Engine, Store};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+use std::sync::Arc;
 
-// Generate bindings for the VFS adapter world
-bindgen!({
-    path: "../../../wit",
-    world: "vfs-adapter",
-    async: false,
-});
+// Re-export fs-core types so users don't need to depend on fs-core directly
+pub use fs_core::{Fs, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
+use wasmtime::component::ResourceTable;
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
 pub mod filesystem_preopens;
 pub mod filesystem_types;
 
-/// Core VFS state that is shared across multiple applications
-/// This is wrapped in Arc<Mutex<>> to enable concurrent access
-pub struct SharedVfsCore {
-    /// The VFS adapter component instance
-    pub vfs_instance: VfsAdapter,
+// S3 sync support (optional)
+#[cfg(feature = "s3-sync")]
+mod sync_hooks;
+#[cfg(feature = "s3-sync")]
+pub use sync_hooks::{NoOpSyncHooks, S3SyncHooks, SyncHooks};
+#[cfg(feature = "s3-sync")]
+pub use vfs_sync::{init_from_s3, HostSyncManager, S3Storage, SyncConfig};
 
-    /// Dedicated store for VFS adapter operations (separately locked to avoid borrow issues)
-    pub vfs_store: Arc<Mutex<Store<VfsStoreData>>>,
-
-    /// Maps host Descriptor resources (rep) to VFS Descriptor resources
-    pub descriptor_map: HashMap<u32, crate::exports::wasi::filesystem::types::Descriptor>,
-
-    /// Maps host DirectoryEntryStream resources (rep) to VFS DirectoryEntryStream resources
-    pub dir_stream_map: HashMap<u32, crate::exports::wasi::filesystem::types::DirectoryEntryStream>,
-
-    /// Maps host InputStream resources (rep) to VFS InputStream resources
-    pub input_stream_map: HashMap<u32, crate::exports::wasi::io::streams::InputStream>,
-
-    /// Maps host OutputStream resources (rep) to VFS OutputStream resources
-    pub output_stream_map: HashMap<u32, crate::exports::wasi::io::streams::OutputStream>,
+/// Wrapper for fs-core file descriptor stored in ResourceTable.
+/// Contains the fd and optionally the path for directory descriptors.
+#[derive(Clone)]
+pub struct FsDescriptorWrapper {
+    /// fs-core file descriptor
+    pub fd: u32,
+    /// Path for directory descriptors (used for relative path resolution)
+    pub path: Option<String>,
 }
 
-/// Wrapper for VFS Descriptor stored in ResourceTable.
-/// This allows proper type tracking in ResourceTable instead of using () with unsafe transmute.
-#[derive(Clone, Copy)]
-pub struct VfsDescriptorWrapper(pub crate::exports::wasi::filesystem::types::Descriptor);
+/// Wrapper for directory entry stream stored in ResourceTable.
+/// Caches the directory listing and tracks iteration position.
+#[derive(Clone)]
+pub struct FsDirectoryEntryStreamWrapper {
+    /// Cached directory entries: (name, is_dir)
+    pub entries: Vec<(String, bool)>,
+    /// Current position in the entries list
+    pub position: usize,
+}
 
-/// Wrapper for VFS DirectoryEntryStream stored in ResourceTable.
-#[derive(Clone, Copy)]
-pub struct VfsDirectoryEntryStreamWrapper(
-    pub crate::exports::wasi::filesystem::types::DirectoryEntryStream,
-);
-
-/// Host state that wraps a VfsAdapter component instance
-/// and implements WASI Host traits to forward calls to the VFS component.
-/// Multiple instances can share the same VFS core via Arc<Mutex<>>.
+/// Host state that uses fs-core directly for filesystem operations.
+/// Multiple instances can share the same VFS via `Arc<Fs>`.
+///
+/// Since fs-core uses DashMap internally with fine-grained locking,
+/// no external lock is required. All Fs methods take `&self`.
 pub struct VfsHostState {
     /// WASI context for host operations (stdio, env, etc.)
     pub wasi_ctx: WasiCtx,
@@ -64,60 +55,26 @@ pub struct VfsHostState {
     /// Resource table for managing WASM resources
     pub table: ResourceTable,
 
-    /// Shared VFS core: multiple VfsHostState instances can reference the same VFS
-    pub shared_vfs: Arc<Mutex<SharedVfsCore>>,
-}
+    /// Shared VFS: multiple VfsHostState instances can reference the same VFS
+    /// No external lock needed - fs-core uses DashMap for internal thread safety
+    pub shared_vfs: Arc<Fs>,
 
-/// Data stored in the VFS-specific store
-pub struct VfsStoreData {
-    pub wasi_ctx: WasiCtx,
-    pub table: ResourceTable,
-}
+    /// Optional sync hooks for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub sync_hooks: Option<Arc<dyn SyncHooks>>,
 
-impl WasiView for VfsStoreData {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
+    /// Optional sync manager for S3 synchronization
+    #[cfg(feature = "s3-sync")]
+    pub sync_manager: Option<Arc<HostSyncManager>>,
 
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
+    /// Background sync thread handle
+    #[cfg(feature = "s3-sync")]
+    sync_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl VfsHostState {
-    /// Create a new VfsHostState by instantiating a VFS adapter component
-    pub fn new(engine: &Engine, vfs_adapter_path: &str) -> Result<Self> {
-        // Create WASI context for the VFS store
-        let vfs_wasi_ctx = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .inherit_stderr()
-            .build();
-
-        let vfs_store_data = VfsStoreData {
-            wasi_ctx: vfs_wasi_ctx,
-            table: ResourceTable::new(),
-        };
-
-        let mut vfs_store = Store::new(engine, vfs_store_data);
-
-        // Create linker for VFS adapter
-        let mut vfs_linker = wasmtime::component::Linker::new(engine);
-        wasmtime_wasi::add_to_linker_sync(&mut vfs_linker)?;
-
-        // Load and instantiate VFS adapter
-        let vfs_component = wasmtime::component::Component::from_file(engine, vfs_adapter_path)?;
-        let vfs_instance = VfsAdapter::instantiate(&mut vfs_store, &vfs_component, &vfs_linker)?;
-
-        // Create shared VFS core
-        let shared_vfs_core = SharedVfsCore {
-            vfs_instance,
-            vfs_store: Arc::new(Mutex::new(vfs_store)),
-            descriptor_map: HashMap::new(),
-            dir_stream_map: HashMap::new(),
-            input_stream_map: HashMap::new(),
-            output_stream_map: HashMap::new(),
-        };
-
+    /// Create a new VfsHostState with a fresh fs-core filesystem
+    pub fn new() -> Result<Self> {
         // Create host WASI context
         let wasi_ctx = WasiCtxBuilder::new()
             .inherit_stdio()
@@ -127,7 +84,115 @@ impl VfsHostState {
         Ok(Self {
             wasi_ctx,
             table: ResourceTable::new(),
-            shared_vfs: Arc::new(Mutex::new(shared_vfs_core)),
+            shared_vfs: Arc::new(Fs::new()),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+            #[cfg(feature = "s3-sync")]
+            sync_manager: None,
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None,
+        })
+    }
+
+    /// Create a new VfsHostState with S3 synchronization enabled
+    ///
+    /// This will:
+    /// 1. Initialize S3 storage client
+    /// 2. Load existing files from S3
+    /// 3. Start a background sync thread
+    ///
+    /// # Arguments
+    /// * `bucket` - S3 bucket name
+    /// * `prefix` - S3 key prefix (e.g., "vfs/")
+    #[cfg(feature = "s3-sync")]
+    pub async fn new_with_s3(bucket: String, prefix: String) -> Result<Self> {
+        use std::time::Duration;
+
+        log::info!(
+            "[vfs-host] Initializing with S3 sync: bucket={}, prefix={}",
+            bucket,
+            prefix
+        );
+
+        // Initialize S3 storage
+        let s3 = S3Storage::new(bucket, prefix).await;
+
+        // Load existing files from S3
+        let (fs, metadata_cache) = init_from_s3(&s3)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize from S3: {}", e))?;
+
+        let fs = Arc::new(fs);
+        let config = SyncConfig::from_env();
+
+        log::info!("[vfs-host] Sync mode: {:?}", config.mode);
+
+        // Check if read-from-S3 mode is enabled
+        let read_from_s3 = std::env::var("VFS_READ_MODE")
+            .map(|v| v == "s3")
+            .unwrap_or(false);
+        if read_from_s3 {
+            log::info!("[vfs-host] Read mode: S3 (read-through)");
+        } else {
+            log::info!("[vfs-host] Read mode: memory (default)");
+        }
+
+        // Check if metadata sync mode is enabled (like s3fs HEAD requests)
+        let metadata_sync = std::env::var("VFS_METADATA_MODE")
+            .map(|v| v == "s3")
+            .unwrap_or(false);
+        if metadata_sync {
+            log::info!("[vfs-host] Metadata mode: S3 (HEAD on every open, like s3fs)");
+        } else {
+            log::info!("[vfs-host] Metadata mode: memory (default)");
+        }
+
+        // Create sync manager
+        let sync_manager = Arc::new(HostSyncManager::new(s3, fs.clone(), metadata_cache, config));
+
+        // Create sync hooks
+        let sync_hooks: Arc<dyn SyncHooks> = Arc::new(S3SyncHooks::new_with_options(
+            sync_manager.clone(),
+            read_from_s3,
+            metadata_sync,
+        ));
+
+        // Spawn background sync thread
+        let sync_thread = {
+            let sync = sync_manager.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create tokio runtime for sync thread");
+
+                rt.block_on(async {
+                    log::info!("[vfs-host] Background sync thread started");
+                    while !sync.is_shutdown() {
+                        sync.maybe_sync().await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    // Final flush before exit
+                    if let Err(e) = sync.force_flush().await {
+                        log::error!("[vfs-host] Final flush failed: {}", e);
+                    }
+                    log::info!("[vfs-host] Background sync thread stopped");
+                });
+            })
+        };
+
+        let wasi_ctx = WasiCtxBuilder::new()
+            .inherit_stdio()
+            .inherit_stderr()
+            .build();
+
+        Ok(Self {
+            wasi_ctx,
+            table: ResourceTable::new(),
+            shared_vfs: fs,
+            sync_hooks: Some(sync_hooks),
+            sync_manager: Some(sync_manager),
+            sync_thread: Some(sync_thread),
         })
     }
 
@@ -143,6 +208,12 @@ impl VfsHostState {
             wasi_ctx,
             table: ResourceTable::new(),
             shared_vfs: Arc::clone(&self.shared_vfs),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: self.sync_hooks.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_manager: self.sync_manager.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None, // Don't clone the thread handle
         }
     }
 
@@ -160,15 +231,18 @@ impl VfsHostState {
             wasi_ctx: builder.build(),
             table: ResourceTable::new(),
             shared_vfs: Arc::clone(&self.shared_vfs),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: self.sync_hooks.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_manager: self.sync_manager.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None, // Don't clone the thread handle
         }
     }
 
-    /// Create a new VfsHostState from an existing shared VFS core with custom environment variables
+    /// Create a new VfsHostState from an existing shared VFS with custom environment variables
     /// This is useful when sharing VFS across threads (e.g., in HTTP server handlers)
-    pub fn from_shared_vfs_with_env(
-        shared_vfs: Arc<Mutex<SharedVfsCore>>,
-        env_vars: &[(&str, &str)],
-    ) -> Self {
+    pub fn from_shared_vfs_with_env(shared_vfs: Arc<Fs>, env_vars: &[(&str, &str)]) -> Self {
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stdio().inherit_stderr();
 
@@ -180,12 +254,43 @@ impl VfsHostState {
             wasi_ctx: builder.build(),
             table: ResourceTable::new(),
             shared_vfs,
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: None,
+            #[cfg(feature = "s3-sync")]
+            sync_manager: None,
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None,
         }
     }
 
-    /// Get the shared VFS core for external use (e.g., sharing across threads)
-    pub fn get_shared_vfs(&self) -> Arc<Mutex<SharedVfsCore>> {
+    /// Get the shared VFS for external use (e.g., sharing across threads)
+    pub fn get_shared_vfs(&self) -> Arc<Fs> {
         Arc::clone(&self.shared_vfs)
+    }
+
+    /// Gracefully shutdown S3 sync
+    #[cfg(feature = "s3-sync")]
+    pub fn shutdown_sync(&mut self) {
+        if let Some(ref sync) = self.sync_manager {
+            log::info!("[vfs-host] Shutting down S3 sync...");
+            sync.shutdown();
+        }
+        if let Some(handle) = self.sync_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(feature = "s3-sync")]
+impl Drop for VfsHostState {
+    fn drop(&mut self) {
+        self.shutdown_sync();
+    }
+}
+
+impl Default for VfsHostState {
+    fn default() -> Self {
+        Self::new().expect("Failed to create VfsHostState")
     }
 }
 
@@ -199,51 +304,22 @@ impl WasiView for VfsHostState {
     }
 }
 
-/// Helper function to convert VFS error codes to WASI error codes
-pub fn convert_vfs_error(
-    error: crate::exports::wasi::filesystem::types::ErrorCode,
+/// Helper function to convert fs-core error to WASI error code
+pub fn convert_fs_error(
+    error: fs_core::FsError,
 ) -> wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode {
-    use crate::exports::wasi::filesystem::types::ErrorCode as VfsError;
-    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode as WasiError;
+    use fs_core::FsError;
+    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
 
     match error {
-        VfsError::Access => WasiError::Access,
-        VfsError::WouldBlock => WasiError::WouldBlock,
-        VfsError::Already => WasiError::Already,
-        VfsError::BadDescriptor => WasiError::BadDescriptor,
-        VfsError::Busy => WasiError::Busy,
-        VfsError::Deadlock => WasiError::Deadlock,
-        VfsError::Quota => WasiError::Quota,
-        VfsError::Exist => WasiError::Exist,
-        VfsError::FileTooLarge => WasiError::FileTooLarge,
-        VfsError::IllegalByteSequence => WasiError::IllegalByteSequence,
-        VfsError::InProgress => WasiError::InProgress,
-        VfsError::Interrupted => WasiError::Interrupted,
-        VfsError::Invalid => WasiError::Invalid,
-        VfsError::Io => WasiError::Io,
-        VfsError::IsDirectory => WasiError::IsDirectory,
-        VfsError::Loop => WasiError::Loop,
-        VfsError::TooManyLinks => WasiError::TooManyLinks,
-        VfsError::MessageSize => WasiError::MessageSize,
-        VfsError::NameTooLong => WasiError::NameTooLong,
-        VfsError::NoDevice => WasiError::NoDevice,
-        VfsError::NoEntry => WasiError::NoEntry,
-        VfsError::NoLock => WasiError::NoLock,
-        VfsError::InsufficientMemory => WasiError::InsufficientMemory,
-        VfsError::InsufficientSpace => WasiError::InsufficientSpace,
-        VfsError::NotDirectory => WasiError::NotDirectory,
-        VfsError::NotEmpty => WasiError::NotEmpty,
-        VfsError::NotRecoverable => WasiError::NotRecoverable,
-        VfsError::Unsupported => WasiError::Unsupported,
-        VfsError::NoTty => WasiError::NoTty,
-        VfsError::NoSuchDevice => WasiError::NoSuchDevice,
-        VfsError::Overflow => WasiError::Overflow,
-        VfsError::NotPermitted => WasiError::NotPermitted,
-        VfsError::Pipe => WasiError::Pipe,
-        VfsError::ReadOnly => WasiError::ReadOnly,
-        VfsError::InvalidSeek => WasiError::InvalidSeek,
-        VfsError::TextFileBusy => WasiError::TextFileBusy,
-        VfsError::CrossDevice => WasiError::CrossDevice,
+        FsError::NotFound => ErrorCode::NoEntry,
+        FsError::NotADirectory => ErrorCode::NotDirectory,
+        FsError::IsADirectory => ErrorCode::IsDirectory,
+        FsError::AlreadyExists => ErrorCode::Exist,
+        FsError::NotEmpty => ErrorCode::NotEmpty,
+        FsError::BadFileDescriptor => ErrorCode::BadDescriptor,
+        FsError::PermissionDenied => ErrorCode::Access,
+        FsError::InvalidArgument => ErrorCode::Invalid,
     }
 }
 
@@ -269,7 +345,7 @@ where
 ///
 /// This function registers all standard WASI interfaces but replaces the
 /// filesystem implementation with VfsHostState's custom Host trait implementation.
-/// This allows std::fs to work transparently through the VFS adapter.
+/// This allows std::fs to work transparently through the VFS.
 pub fn add_to_linker_with_vfs(
     linker: &mut wasmtime::component::Linker<VfsHostState>,
 ) -> Result<()> {

@@ -37,7 +37,6 @@ macro_rules! error {
 }
 
 mod error;
-mod fs;
 mod handle;
 mod inode;
 pub mod snapshot;
@@ -45,9 +44,19 @@ mod storage;
 mod time;
 mod types;
 
+// Filesystem implementation: choose based on thread-safe feature
+// - thread-safe: Arc<RwLock> + DashMap (for vfs-host, requires Send+Sync)
+// - single-threaded: Rc<RefCell> + HashMap (for vfs-adapter, vfs-rpc-server)
+#[cfg(feature = "thread-safe")]
+mod fs;
+#[cfg(not(feature = "thread-safe"))]
+#[path = "fs_singlethread.rs"]
+mod fs;
+
 // Re-export public API
 pub use error::FsError;
 pub use fs::Fs;
-pub use inode::Metadata;
+pub use inode::{FileContent, Inode, Metadata};
+pub use storage::BlockStorage;
 pub use time::{MonotonicCounter, TimeProvider};
 pub use types::{BLOCK_SIZE, Fd, InodeId, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};

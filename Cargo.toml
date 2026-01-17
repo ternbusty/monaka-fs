@@ -11,6 +11,11 @@ members = [
   "crates/hosts/vfs-host",
   "crates/hosts/vfs-rpc-host",
 
+  # Sync
+  "crates/sync/vfs-sync-core",
+  "crates/sync/vfs-sync",
+  "crates/sync/vfs-sync-wasi",
+
   # RPC
   "crates/rpc/vfs-rpc-protocol",
   "crates/rpc/vfs-rpc-server",
@@ -25,6 +30,7 @@ members = [
 
   # Examples - Component Model
   "examples/component-model/runtime-linker",
+  "examples/component-model/runtime-linker-s3",
 
   # Use Cases
   "usecases/sensor-pipeline/sensor-ingest",
@@ -50,6 +56,7 @@ exclude = [
   "test-simple",
   "vfs-rpc-client",
   "vfs-tcp-server",
+  "usecases/benchmarks",
 ]
 resolver="3"
 
