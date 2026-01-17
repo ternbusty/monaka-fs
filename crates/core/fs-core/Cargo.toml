@@ -15,6 +15,10 @@ serde_json = "1.0"
 
 [features]
 default = ["std"]
-std = ["dashmap"]
+std = []
+# Enable thread-safe mode: uses Arc<RwLock> + DashMap instead of Rc<RefCell> + HashMap
+# Required for vfs-host (wasmtime Host trait requires Send + Sync)
+# Not needed for vfs-adapter or vfs-rpc-server (they run inside WASM boundary)
+thread-safe = ["dashmap"]
 logging = ["dep:log"]
 serde = ["dep:serde", "dep:serde_bytes"]
