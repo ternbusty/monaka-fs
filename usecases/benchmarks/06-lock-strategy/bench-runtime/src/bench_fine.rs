@@ -43,6 +43,12 @@ fn main() -> Result<()> {
     eprintln!("=== VFS Locking Strategy Benchmark ===");
     eprintln!();
     eprintln!("Strategy: {} (fine-grained locking)", STRATEGY_NAME);
+
+    // Check for cache pollution mode
+    let no_cache = std::env::var("BENCH_NO_CACHE").unwrap_or_default() == "1";
+    if no_cache {
+        eprintln!("Mode: NO_CACHE (cache pollution enabled)");
+    }
     eprintln!();
 
     let mut config = Config::new();
@@ -62,7 +68,7 @@ fn main() -> Result<()> {
         for thread_count in THREAD_COUNTS {
             for scenario in &SCENARIOS {
                 let (result, shared_vfs) =
-                    run_benchmark(&engine, &component, scenario, thread_count, data_size)?;
+                    run_benchmark(&engine, &component, scenario, thread_count, data_size, no_cache)?;
 
                 // Verify data integrity for write/same scenario
                 let integrity = if scenario.scenario == "write" && scenario.file_scope == "same" {
@@ -99,6 +105,7 @@ fn run_benchmark(
     config: &BenchConfig,
     thread_count: usize,
     data_size: usize,
+    no_cache: bool,
 ) -> Result<(BenchResult, Arc<Fs>)> {
     let shared_vfs = Arc::new(Fs::new());
     setup_test_data(&*shared_vfs, thread_count, data_size)?;
@@ -125,6 +132,7 @@ fn run_benchmark(
                 &scenario,
                 &file_scope,
                 data_size,
+                no_cache,
                 errors,
             )
         }));
@@ -156,6 +164,7 @@ fn run_wasm_instance(
     scenario: &str,
     file_scope: &str,
     data_size: usize,
+    no_cache: bool,
     error_count: Arc<AtomicUsize>,
 ) {
     let env_vars = [
@@ -164,6 +173,7 @@ fn run_wasm_instance(
         ("BENCH_SCENARIO", scenario.to_string()),
         ("BENCH_FILE_SCOPE", file_scope.to_string()),
         ("BENCH_DATA_SIZE", data_size.to_string()),
+        ("BENCH_NO_CACHE", if no_cache { "1" } else { "0" }.to_string()),
     ];
     let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
