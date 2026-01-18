@@ -183,6 +183,45 @@ impl S3Storage {
         }
     }
 
+    /// Get file metadata from S3 (HEAD request, no content download)
+    ///
+    /// Returns (etag, last_modified, size) or None if not found
+    pub async fn head_file(&self, path: &str) -> Result<Option<(String, u64, u64)>, S3Error> {
+        let key = self.key(&format!("files{}", path));
+
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                let etag = output
+                    .e_tag
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string();
+                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
+                let size = output.content_length.unwrap_or(0) as u64;
+
+                Ok(Some((etag, last_modified, size)))
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("NotFound") || error_str.contains("404") {
+                    Ok(None)
+                } else {
+                    Err(S3Error::Read {
+                        key,
+                        message: error_str,
+                    })
+                }
+            }
+        }
+    }
+
     /// Upload a file and return the ETag
     /// Uses multipart upload for files >= 5MB
     pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {

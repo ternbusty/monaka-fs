@@ -98,6 +98,82 @@ impl<T: fs_core::TimeProvider> SyncManager<T> {
         self.upload_file(path).await
     }
 
+    /// Refresh a single file from S3 (for read-through mode)
+    /// Downloads the file from S3 and updates the local VFS
+    pub async fn refresh_file_from_s3(&self, path: &str) -> Result<(), S3Error> {
+        // Get file content from S3
+        if let Some((content, etag, last_modified)) = self.s3.get_file(path).await? {
+            // Write to VFS
+            self.write_file_content(path, &content)?;
+
+            // Update metadata cache
+            self.metadata_cache.borrow_mut().update_after_download(
+                path,
+                etag,
+                last_modified,
+                content.len() as u64,
+            );
+
+            log::debug!("[sync] Refreshed from S3: {}", path);
+        }
+        Ok(())
+    }
+
+    /// Check S3 metadata and refresh if changed (for metadata sync mode)
+    /// Does a HEAD request first, then GET only if ETag differs
+    /// Returns true if file was refreshed, false if no change
+    pub async fn check_and_refresh_from_s3(&self, path: &str) -> Result<bool, S3Error> {
+        // HEAD request to get current S3 metadata
+        let s3_meta = match self.s3.head_file(path).await? {
+            Some(meta) => meta,
+            None => {
+                // File doesn't exist in S3
+                log::debug!("[sync] File not found in S3: {}", path);
+                return Ok(false);
+            }
+        };
+
+        let (s3_etag, _s3_last_modified, _s3_size) = s3_meta;
+
+        // Check local cache
+        let needs_refresh = {
+            let cache = self.metadata_cache.borrow();
+            match cache.get(path) {
+                Some(local_meta) => {
+                    // Check if S3 has different version
+                    s3_etag != local_meta.etag
+                }
+                None => {
+                    // Not in cache, need to download
+                    true
+                }
+            }
+        };
+
+        if needs_refresh {
+            // GET the file content
+            if let Some((content, etag, last_modified)) = self.s3.get_file(path).await? {
+                // Write to VFS
+                self.write_file_content(path, &content)?;
+
+                // Update metadata cache
+                self.metadata_cache.borrow_mut().update_after_download(
+                    path,
+                    etag,
+                    last_modified,
+                    content.len() as u64,
+                );
+
+                log::debug!("[sync] Refreshed from S3 (metadata changed): {}", path);
+                return Ok(true);
+            }
+        } else {
+            log::debug!("[sync] S3 metadata unchanged for: {}", path);
+        }
+
+        Ok(false)
+    }
+
     /// Cooperative sync check - call from main event loop
     pub async fn maybe_sync(&self) -> bool {
         let mut did_work = false;

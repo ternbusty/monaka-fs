@@ -55,22 +55,92 @@ pub fn init_s3_sync(fs: Rc<RefCell<Fs<SystemTimeProvider>>>) {
 
 /// Notify sync manager of a file write
 pub fn on_write(path: &str) {
-    with_sync_manager(|sync| {
-        sync.enqueue_upload(path.to_string());
-    });
-
-    // Always try to sync after write (will respect batch/realtime config)
-    maybe_sync();
+    unsafe {
+        if let Some(ref mut state) = SYNC_STATE {
+            if let Some(ref sync) = *state.sync_manager.borrow() {
+                if sync.is_realtime() {
+                    // RealTime mode: sync immediately and block until S3 upload completes
+                    state.runtime.block_on(async {
+                        if let Err(e) = sync.sync_file_now(path).await {
+                            log::error!("[s3-sync] realtime sync failed for {}: {}", path, e);
+                        }
+                    });
+                } else {
+                    // Batch mode: enqueue for later
+                    sync.enqueue_upload(path.to_string());
+                    // Try to flush if batch is ready
+                    state.runtime.block_on(async {
+                        let _ = sync.maybe_sync().await;
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Notify sync manager of a file deletion
 pub fn on_delete(path: &str) {
-    with_sync_manager(|sync| {
-        sync.enqueue_delete(path.to_string());
-    });
+    unsafe {
+        if let Some(ref mut state) = SYNC_STATE {
+            if let Some(ref sync) = *state.sync_manager.borrow() {
+                // Enqueue delete operation
+                sync.enqueue_delete(path.to_string());
+                // Flush immediately in realtime mode
+                state.runtime.block_on(async {
+                    let _ = sync.maybe_sync().await;
+                });
+            }
+        }
+    }
+}
 
-    // Always try to sync after delete
-    maybe_sync();
+/// Refresh file from S3 before read (if VFS_READ_MODE=s3)
+/// Called when a file is read to ensure we have the latest S3 content
+pub fn on_read(path: &str) {
+    // Check if read-through mode is enabled
+    if std::env::var("VFS_READ_MODE").unwrap_or_default() != "s3" {
+        return;
+    }
+
+    unsafe {
+        if let Some(ref mut state) = SYNC_STATE {
+            if let Some(ref sync) = *state.sync_manager.borrow() {
+                state.runtime.block_on(async {
+                    if let Err(e) = sync.refresh_file_from_s3(path).await {
+                        log::error!("[s3-sync] refresh failed for {}: {}", path, e);
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Check S3 metadata and refresh if changed (if VFS_METADATA_MODE=s3)
+/// Called when a file is opened to ensure metadata is fresh (like s3fs HEAD request)
+pub fn on_open(path: &str) {
+    // Check if metadata sync mode is enabled
+    if std::env::var("VFS_METADATA_MODE").unwrap_or_default() != "s3" {
+        return;
+    }
+
+    unsafe {
+        if let Some(ref mut state) = SYNC_STATE {
+            if let Some(ref sync) = *state.sync_manager.borrow() {
+                state.runtime.block_on(async {
+                    match sync.check_and_refresh_from_s3(path).await {
+                        Ok(refreshed) => {
+                            if refreshed {
+                                log::debug!("[s3-sync] refreshed on open: {}", path);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[s3-sync] metadata check failed for {}: {}", path, e);
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
 
 /// Run pending sync operations

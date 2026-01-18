@@ -11,7 +11,7 @@
 #![allow(warnings)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use fs_core::snapshot::FsSnapshot;
@@ -105,6 +105,9 @@ struct VfsState {
     // Map descriptor handle to path (for S3 sync)
     #[cfg(feature = "s3-sync")]
     descriptor_to_path: BTreeMap<u32, String>,
+    // Track which descriptors have been written to (for S3 sync on close)
+    #[cfg(feature = "s3-sync")]
+    dirty_descriptors: BTreeSet<u32>,
     next_descriptor: u32,
 }
 
@@ -130,6 +133,8 @@ impl VfsState {
             fd_to_descriptor: BTreeMap::new(),
             #[cfg(feature = "s3-sync")]
             descriptor_to_path: BTreeMap::new(),
+            #[cfg(feature = "s3-sync")]
+            dirty_descriptors: BTreeSet::new(),
             next_descriptor: 1, // 0 is reserved for root
         };
 
@@ -162,6 +167,20 @@ impl VfsState {
     #[cfg(feature = "s3-sync")]
     fn get_path(&self, descriptor: u32) -> Option<&String> {
         self.descriptor_to_path.get(&descriptor)
+    }
+
+    #[cfg(feature = "s3-sync")]
+    fn mark_dirty(&mut self, descriptor: u32) {
+        self.dirty_descriptors.insert(descriptor);
+    }
+
+    #[cfg(feature = "s3-sync")]
+    fn sync_if_dirty(&mut self, descriptor: u32) {
+        if self.dirty_descriptors.remove(&descriptor) {
+            if let Some(path) = self.descriptor_to_path.get(&descriptor) {
+                s3_sync::on_write(path);
+            }
+        }
     }
 
     fn get_fd(&self, descriptor: u32) -> Result<Fd, ErrorCode> {
@@ -290,6 +309,10 @@ impl Drop for DescriptorImpl {
         }
 
         with_vfs_state(|state| {
+            // Sync to S3 if this descriptor was written to
+            #[cfg(feature = "s3-sync")]
+            state.sync_if_dirty(self.handle);
+
             if let Some(fd) = state.descriptor_to_fd.get(&self.handle).copied() {
                 // Close the fd in fs-core
                 let _ = state.fs.borrow_mut().close(fd);
@@ -305,13 +328,25 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         &self,
         offset: Filesize,
     ) -> Result<exports::wasi::filesystem::types::InputStream, ErrorCode> {
-        let fd = with_vfs_state(|state| state.get_fd(self.handle))?;
+        let handle = self.handle;
+        let (fd, _path) = with_vfs_state(|state| {
+            let fd = state.get_fd(handle)?;
+            #[cfg(feature = "s3-sync")]
+            let path = state.get_path(handle).map(|s| s.to_string());
+            #[cfg(not(feature = "s3-sync"))]
+            let path: Option<String> = None;
+            Ok((fd, path))
+        })?;
 
         // Create InputStream using enum design (wasi-virt style)
         Ok(exports::wasi::io::streams::InputStream::new(
             VfsInputStream::File {
                 fd,
                 offset: Cell::new(offset),
+                #[cfg(feature = "s3-sync")]
+                path: _path,
+                #[cfg(feature = "s3-sync")]
+                s3_refreshed: Cell::new(false),
             },
         ))
     }
@@ -337,6 +372,8 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 offset: Cell::new(offset),
                 #[cfg(feature = "s3-sync")]
                 path: _path,
+                #[cfg(feature = "s3-sync")]
+                dirty: Cell::new(false),
             },
         ))
     }
@@ -370,6 +407,8 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 offset: Cell::new(offset),
                 #[cfg(feature = "s3-sync")]
                 path: _path,
+                #[cfg(feature = "s3-sync")]
+                dirty: Cell::new(false),
             },
         ))
     }
@@ -424,11 +463,9 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .ftruncate(fd, size)
                 .map_err(to_error_code)?;
 
-            // Notify S3 sync of the truncate (treated as write)
+            // Mark descriptor as dirty - sync will happen on close
             #[cfg(feature = "s3-sync")]
-            if let Some(path) = state.get_path(self.handle) {
-                s3_sync::on_write(path);
-            }
+            state.mark_dirty(self.handle);
 
             Ok(())
         })
@@ -446,6 +483,12 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn read(&self, length: Filesize, offset: Filesize) -> Result<(Vec<u8>, bool), ErrorCode> {
         with_vfs_state(|state| {
             let fd = state.get_fd(self.handle)?;
+
+            // Notify S3 sync to refresh from S3 before read (if read-through mode)
+            #[cfg(feature = "s3-sync")]
+            if let Some(path) = state.get_path(self.handle) {
+                s3_sync::on_read(path);
+            }
 
             // Seek to offset
             state
@@ -487,11 +530,9 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 .write(fd, &buffer)
                 .map_err(to_error_code)?;
 
-            // Notify S3 sync of the write
+            // Mark descriptor as dirty - sync will happen on close
             #[cfg(feature = "s3-sync")]
-            if let Some(path) = state.get_path(self.handle) {
-                s3_sync::on_write(path);
-            }
+            state.mark_dirty(self.handle);
 
             Ok(n as Filesize)
         })
@@ -722,9 +763,13 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             };
 
             #[cfg(feature = "s3-sync")]
-            let handle = state.allocate_descriptor_with_path(fd, full_path);
+            let handle = state.allocate_descriptor_with_path(fd, full_path.clone());
             #[cfg(not(feature = "s3-sync"))]
             let handle = state.allocate_descriptor(fd);
+
+            // Notify S3 sync to check metadata on open (if metadata sync mode)
+            #[cfg(feature = "s3-sync")]
+            s3_sync::on_open(&full_path);
 
             Ok(Descriptor::new(DescriptorImpl { handle }))
         })
@@ -865,13 +910,61 @@ impl exports::wasi::filesystem::types::GuestDirectoryEntryStream for DirectoryEn
 // InputStream implementation for wasi:io/streams
 // Using enum design like wasi-virt
 pub enum VfsInputStream {
-    File { fd: Fd, offset: Cell<u64> },
+    File {
+        fd: Fd,
+        offset: Cell<u64>,
+        #[cfg(feature = "s3-sync")]
+        path: Option<String>,
+        #[cfg(feature = "s3-sync")]
+        s3_refreshed: Cell<bool>,
+    },
     Host(wasi::io::streams::InputStream),
 }
 
 impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
     fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
         match self {
+            #[cfg(feature = "s3-sync")]
+            Self::File {
+                fd,
+                offset,
+                path,
+                s3_refreshed,
+            } => {
+                // Refresh from S3 before read (once per stream, on first read)
+                if !s3_refreshed.get() {
+                    if let Some(p) = path {
+                        s3_sync::on_read(p);
+                    }
+                    s3_refreshed.set(true);
+                }
+
+                let fs = get_vfs_fs();
+                let current_offset = offset.get();
+
+                // Seek to offset
+                fs.borrow_mut()
+                    .seek(*fd, current_offset as i64, 0) // SEEK_SET
+                    .map_err(|_| {
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                            exports::wasi::io::error::Error::from_handle(0)
+                        })
+                    })?;
+
+                // Read from fs-core
+                let mut buf = vec![0u8; len as usize];
+                let n = fs.borrow_mut().read(*fd, &mut buf).map_err(|_| {
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
+                        exports::wasi::io::error::Error::from_handle(0)
+                    })
+                })?;
+
+                buf.truncate(n);
+                offset.set(current_offset + n as u64);
+
+                Ok(buf)
+            }
+            #[cfg(not(feature = "s3-sync"))]
             Self::File { fd, offset } => {
                 let fs = get_vfs_fs();
                 let current_offset = offset.get();
@@ -951,8 +1044,25 @@ pub enum VfsOutputStream {
         offset: Cell<u64>,
         #[cfg(feature = "s3-sync")]
         path: Option<String>,
+        #[cfg(feature = "s3-sync")]
+        dirty: Cell<bool>,
     },
     Host(wasi::io::streams::OutputStream),
+}
+
+/// Sync to S3 when output stream is dropped (file closed)
+#[cfg(feature = "s3-sync")]
+impl Drop for VfsOutputStream {
+    fn drop(&mut self) {
+        if let Self::File { path, dirty, .. } = self {
+            // Only sync if we actually wrote something
+            if dirty.get() {
+                if let Some(p) = path {
+                    s3_sync::on_write(p);
+                }
+            }
+        }
+    }
 }
 
 impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
@@ -973,7 +1083,12 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
     fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
         match self {
             #[cfg(feature = "s3-sync")]
-            Self::File { fd, offset, path } => {
+            Self::File {
+                fd,
+                offset,
+                path: _,
+                dirty,
+            } => {
                 let fs = get_vfs_fs();
                 let current_offset = offset.get();
 
@@ -995,10 +1110,8 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
 
                 offset.set(current_offset + n as u64);
 
-                // Notify S3 sync of the write
-                if let Some(p) = path {
-                    s3_sync::on_write(p);
-                }
+                // Mark as dirty - sync will happen on drop
+                dirty.set(true);
 
                 Ok(())
             }

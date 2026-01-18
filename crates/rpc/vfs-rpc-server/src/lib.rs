@@ -11,7 +11,7 @@ mod protocol;
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,6 +123,12 @@ struct ServerContext {
     sync_manager: Option<SyncManager<MonotonicCounter>>,
     /// Map from file descriptor to path for sync tracking
     fd_path_map: RefCell<HashMap<u32, String>>,
+    /// Track which fds have been refreshed from S3 (to avoid repeated refreshes)
+    s3_refreshed_fds: RefCell<HashSet<u32>>,
+    /// Whether to refresh files from S3 on read (VFS_READ_MODE=s3)
+    read_from_s3: bool,
+    /// Whether to check S3 metadata on open (VFS_METADATA_MODE=s3)
+    metadata_sync: bool,
 }
 
 impl ServerContext {
@@ -154,6 +160,22 @@ impl ServerContext {
             }
 
             Request::OpenPath { path, flags } => {
+                // Check S3 metadata and refresh if changed (if metadata sync mode)
+                if self.metadata_sync {
+                    if let Some(ref sync) = self.sync_manager {
+                        match sync.check_and_refresh_from_s3(&path).await {
+                            Ok(refreshed) => {
+                                if refreshed {
+                                    log::debug!("[sync] Refreshed on open: {}", path);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("[sync] Metadata check failed for {}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+
                 match self.fs.borrow_mut().open_path_with_flags(&path, flags) {
                     Ok(fd) => {
                         // Track fd -> path mapping for sync
@@ -165,6 +187,18 @@ impl ServerContext {
             }
 
             Request::Read { fd, length } => {
+                // Refresh from S3 before read (if read-through mode, once per fd)
+                if self.read_from_s3 && !self.s3_refreshed_fds.borrow().contains(&fd) {
+                    if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
+                        if let Some(ref sync) = self.sync_manager {
+                            if let Err(e) = sync.refresh_file_from_s3(&path).await {
+                                log::error!("[sync] Refresh failed for {}: {}", path, e);
+                            }
+                        }
+                    }
+                    self.s3_refreshed_fds.borrow_mut().insert(fd);
+                }
+
                 let mut buf = vec![0u8; length];
                 match self.fs.borrow_mut().read(fd, &mut buf) {
                     Ok(n) => {
@@ -202,6 +236,8 @@ impl ServerContext {
             Request::Close { fd } => {
                 // Remove fd -> path mapping
                 self.fd_path_map.borrow_mut().remove(&fd);
+                // Remove from s3_refreshed tracking
+                self.s3_refreshed_fds.borrow_mut().remove(&fd);
                 match self.fs.borrow_mut().close(fd) {
                     Ok(()) => Response::Ok,
                     Err(e) => map_fs_error(e),
@@ -511,6 +547,21 @@ async fn init_server() -> ServerContext {
     let s3_bucket = std::env::var("VFS_S3_BUCKET").ok();
     let s3_prefix = std::env::var("VFS_S3_PREFIX").unwrap_or_else(|_| "vfs/".to_string());
 
+    // Check for read-through and metadata sync modes
+    let read_from_s3 = std::env::var("VFS_READ_MODE")
+        .map(|v| v.to_lowercase() == "s3")
+        .unwrap_or(false);
+    let metadata_sync = std::env::var("VFS_METADATA_MODE")
+        .map(|v| v.to_lowercase() == "s3")
+        .unwrap_or(false);
+
+    if read_from_s3 {
+        log::info!("Read-through mode enabled (VFS_READ_MODE=s3)");
+    }
+    if metadata_sync {
+        log::info!("Metadata sync mode enabled (VFS_METADATA_MODE=s3)");
+    }
+
     let (fs, sync_manager) = if let Some(bucket) = s3_bucket {
         log::info!(
             "S3 persistence enabled: bucket={}, prefix={}",
@@ -553,6 +604,9 @@ async fn init_server() -> ServerContext {
         fs,
         sync_manager,
         fd_path_map: RefCell::new(HashMap::new()),
+        s3_refreshed_fds: RefCell::new(HashSet::new()),
+        read_from_s3,
+        metadata_sync,
     }
 }
 
