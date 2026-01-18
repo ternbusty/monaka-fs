@@ -1,0 +1,24 @@
+[package]
+name = "bench-runtime-08"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[[bin]]
+name = "bench-runtime-08"
+path = "src/main.rs"
+
+[dependencies]
+vfs-host = { path = "../../../crates/hosts/vfs-host", features = ["s3-sync"] }
+wasmtime = "27.0.0"
+wasmtime-wasi = "27.0.0"
+anyhow = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+env_logger = "0.11"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true

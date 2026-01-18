@@ -19,6 +19,7 @@
 .PHONY: build-usecase-http-cache run-usecase-http-cache
 .PHONY: build-usecase-ci-cache run-usecase-ci-cache
 .PHONY: build-usecase-image-pipeline run-usecase-image-pipeline
+.PHONY: run-usecase-rpc-concurrent run-usecase-host-concurrent
 .PHONY: check-prereqs install-prereqs info benchmark
 
 # =============================================================================
@@ -129,7 +130,7 @@ build-usecase-sensor-pipeline:
 # =============================================================================
 
 # Run dynamic linking demo
-demo-component-model-dynamic: build-component-model-adapter build-component-model-linker build-usecase-sensor-pipeline
+demo-component-model-dynamic: build-component-model-adapter build-component-model-linker build-usecase-sensor-pipeline build-rpc-demos
 	@echo ""
 	@echo "=============================================="
 	@echo "  Component Model: Runtime Dynamic Linking"
@@ -367,6 +368,14 @@ run-usecase-image-pipeline: build-usecase-image-pipeline
 	@echo ""
 	@wasmtime run target/wasm32-wasip2/debug/image-processor-composed.wasm
 
+# Run RPC concurrent append test
+run-usecase-rpc-concurrent:
+	@cd usecases/rpc-concurrent-append && ./run-test.sh
+
+# Run Host Trait concurrent append test (true parallel)
+run-usecase-host-concurrent:
+	@cd usecases/host-concurrent-append && ./run-test.sh
+
 # =============================================================================
 # Legacy (Deprecated)
 # =============================================================================
@@ -536,6 +545,8 @@ help:
 	@echo "Use Cases:"
 	@echo "  make build-usecase-sensor-pipeline      - Build sensor pipeline"
 	@echo "  make run-usecase-sensor-pipeline        - Run sensor pipeline demo"
+	@echo "  make run-usecase-rpc-concurrent         - Run RPC concurrent append test"
+	@echo "  make run-usecase-host-concurrent        - Run Host Trait concurrent test"
 	@echo "  make build-usecase-s3-sync-logging      - Build S3 sync logging"
 	@echo "  make compose-usecase-s3-sync-logging    - Compose with VFS adapter"
 	@echo "  make run-usecase-s3-sync-logging        - Run S3 sync logging demo"
