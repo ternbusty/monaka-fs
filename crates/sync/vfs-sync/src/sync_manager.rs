@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use crate::s3_client::S3Storage;
 use fs_core::Fs;
 pub use vfs_sync_core::{
-    MetadataCache, S3Error, S3ObjectInfo, SyncConfig, SyncMode, SyncOperation,
+    MetadataCache, MetadataMode, S3Error, S3ObjectInfo, SyncConfig, SyncMode, SyncOperation,
 };
 
 /// Manages bidirectional S3 synchronization (thread-safe)
@@ -329,6 +329,18 @@ impl HostSyncManager {
 
         // Get local modification time
         let local_modified = self.fs.stat(path).map(|m| m.modified).unwrap_or(0);
+
+        // S3 passthrough mode: pre-write existence checks (matches s3fs-fuse behavior)
+        if self.config.metadata_mode == MetadataMode::S3 {
+            let (file_check, dir_check, children_check) = tokio::join!(
+                self.s3.head_file(path),
+                self.s3.head_directory_object(path),
+                self.s3.has_children(path),
+            );
+            file_check?;
+            dir_check?;
+            children_check?;
+        }
 
         // Upload to S3
         let etag = self.s3.put_file_with_etag(path, content).await?;

@@ -14,5 +14,5 @@ aws-sdk-s3 = "1"
 aws-config = "1"
 
 # Async runtime
-tokio = { version = "1", features = ["rt", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 futures = "0.3"
