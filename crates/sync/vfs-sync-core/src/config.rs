@@ -95,9 +95,9 @@ impl Default for SyncConfig {
             mode: SyncMode::from_env(),
             inbound_mode: InboundMode::from_env(),
             metadata_mode: MetadataMode::from_env(),
-            poll_interval: Duration::from_secs(30),
-            flush_interval: Duration::from_secs(5),
-            outbound_batch_size: 10,
+            poll_interval: Self::parse_duration_env("VFS_POLL_INTERVAL_SECS", 30),
+            flush_interval: Self::parse_duration_env("VFS_FLUSH_INTERVAL_SECS", 5),
+            outbound_batch_size: Self::parse_usize_env("VFS_OUTBOUND_BATCH_SIZE", 10),
         }
     }
 }
@@ -106,5 +106,22 @@ impl SyncConfig {
     /// Create config from environment variables
     pub fn from_env() -> Self {
         Self::default()
+    }
+
+    /// Parse a duration from an environment variable (in seconds)
+    fn parse_duration_env(var: &str, default_secs: u64) -> Duration {
+        std::env::var(var)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(default_secs))
+    }
+
+    /// Parse a usize from an environment variable
+    fn parse_usize_env(var: &str, default: usize) -> usize {
+        std::env::var(var)
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(default)
     }
 }

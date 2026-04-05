@@ -216,6 +216,64 @@ impl S3Storage {
         }
     }
 
+    /// Check if a directory object exists in S3 (HEAD with trailing slash)
+    ///
+    /// Returns true if an object with key `files{path}/` exists
+    pub async fn head_directory_object(&self, path: &str) -> Result<bool, S3Error> {
+        let key = self.key(&format!("files{}/", path));
+
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("NotFound") || error_str.contains("404") {
+                    Ok(false)
+                } else {
+                    Err(S3Error::Read {
+                        key,
+                        message: error_str,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Check if any objects exist under a prefix in S3 (ListObjectsV2 with max-keys=2)
+    ///
+    /// Returns true if any objects exist under `files{path}/`
+    pub async fn has_children(&self, path: &str) -> Result<bool, S3Error> {
+        let prefix = self.key(&format!("files{}/", path));
+
+        let output = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(&prefix)
+            .delimiter("/")
+            .max_keys(2)
+            .send()
+            .await
+            .map_err(|e| S3Error::Read {
+                key: prefix.clone(),
+                message: e.to_string(),
+            })?;
+
+        let has_objects = output.contents.as_ref().is_some_and(|c| !c.is_empty())
+            || output
+                .common_prefixes
+                .as_ref()
+                .is_some_and(|p| !p.is_empty());
+
+        Ok(has_objects)
+    }
+
     /// Upload a file and return the ETag
     /// Uses multipart upload for files >= 10MB
     pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {
