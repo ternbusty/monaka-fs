@@ -6,7 +6,7 @@ Multiple WASM instances share a single VFS and perform file operations in parall
 ## How to Run
 
 ```
-cd usecases/benchmarks/06-lock-strategy/bench-runner
+cd benchmarks/lock-strategy/bench-runner
 
 ./run.sh build-wasm   # Build the WASM benchmark app
 ./run.sh build        # Build the runtime
