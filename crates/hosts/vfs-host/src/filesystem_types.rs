@@ -22,9 +22,6 @@ const O_RDWR: u32 = 2;
 const O_CREAT: u32 = 0o100;
 const O_TRUNC: u32 = 0o1000;
 
-// Seek whence constants
-const SEEK_SET: i32 = 0;
-
 /// Wrapper for fs-core InputStream that implements HostInputStream
 pub struct FsInputStreamWrapper {
     /// Reference to shared VFS (no external lock needed)
@@ -251,18 +248,14 @@ impl HostInputStream for FsInputStreamWrapper {
 
         let offset = self.offset;
 
-        // Seek to offset
-        self.shared_vfs
-            .seek(self.fd, offset as i64, SEEK_SET)
-            .map_err(|e| {
-                StreamError::LastOperationFailed(anyhow::anyhow!("seek failed: {:?}", e))
-            })?;
-
-        // Read data
+        // Read data at offset atomically
         let mut buf = vec![0u8; size];
-        let n = self.shared_vfs.read(self.fd, &mut buf).map_err(|e| {
-            StreamError::LastOperationFailed(anyhow::anyhow!("read failed: {:?}", e))
-        })?;
+        let n = self
+            .shared_vfs
+            .read_at(self.fd, offset, &mut buf)
+            .map_err(|e| {
+                StreamError::LastOperationFailed(anyhow::anyhow!("read_at failed: {:?}", e))
+            })?;
 
         buf.truncate(n);
         self.offset += n as u64;
@@ -287,16 +280,16 @@ impl HostOutputStream for FsOutputStreamWrapper {
     fn write(&mut self, bytes: Bytes) -> StreamResult<()> {
         match self.offset {
             Some(offset) => {
-                // Positioned write: seek to offset first
-                self.shared_vfs
-                    .seek(self.fd, offset as i64, SEEK_SET)
+                // Positioned write at offset atomically
+                let n = self
+                    .shared_vfs
+                    .write_at(self.fd, offset, &bytes)
                     .map_err(|e| {
-                        StreamError::LastOperationFailed(anyhow::anyhow!("seek failed: {:?}", e))
+                        StreamError::LastOperationFailed(anyhow::anyhow!(
+                            "write_at failed: {:?}",
+                            e
+                        ))
                     })?;
-
-                let n = self.shared_vfs.write(self.fd, &bytes).map_err(|e| {
-                    StreamError::LastOperationFailed(anyhow::anyhow!("write failed: {:?}", e))
-                })?;
 
                 self.offset = Some(offset + n as u64);
             }
@@ -353,16 +346,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Seek to offset
-        self.shared_vfs
-            .seek(fd, offset as i64, SEEK_SET)
-            .map_err(convert_fs_error_to_trappable)?;
-
-        // Read data
+        // Read data at offset atomically
         let mut buf = vec![0u8; len as usize];
         let n = self
             .shared_vfs
-            .read(fd, &mut buf)
+            .read_at(fd, offset, &mut buf)
             .map_err(convert_fs_error_to_trappable)?;
 
         buf.truncate(n);
@@ -380,15 +368,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
-        // Seek to offset
-        self.shared_vfs
-            .seek(fd, offset as i64, SEEK_SET)
-            .map_err(convert_fs_error_to_trappable)?;
-
-        // Write data
+        // Write data at offset atomically
         let n = self
             .shared_vfs
-            .write(fd, &buffer)
+            .write_at(fd, offset, &buffer)
             .map_err(convert_fs_error_to_trappable)?;
 
         Ok(n as u64)

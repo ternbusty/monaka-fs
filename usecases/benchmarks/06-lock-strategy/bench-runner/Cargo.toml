@@ -1,0 +1,25 @@
+[package]
+name = "bench-lock-runner"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone package, not part of workspace
+[workspace]
+
+[[bin]]
+name = "bench-fine"
+path = "src/bench_fine.rs"
+
+[dependencies]
+# WASM runtime
+wasmtime = { version = "27.0", features = ["component-model"] }
+wasmtime-wasi = "27.0"
+
+# VFS host implementation (fine-grained locking)
+vfs-host = { path = "../../../../crates/hosts/vfs-host" }
+
+# Utilities
+anyhow = "1.0"
+
+[profile.release]
+opt-level = 3

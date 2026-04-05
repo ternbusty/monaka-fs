@@ -3,14 +3,14 @@
 //! This app performs file operations based on environment variables:
 //! - BENCH_THREAD_ID: Thread/instance identifier
 //! - BENCH_OPS: Number of operations to perform
-//! - BENCH_SCENARIO: read, write, or mixed (or "setup" for initialization)
+//! - BENCH_SCENARIO: read, write, or mixed
 //! - BENCH_FILE_SCOPE: same (shared file) or different (per-thread file)
 //! - BENCH_DATA_SIZE: Data size in bytes for read/write operations (default: 1024)
-//! - BENCH_THREAD_COUNT: Number of threads (for setup only, default: 8)
 //! - BENCH_NO_CACHE: Set to "1" to enable cache pollution (flush cache between ops)
+//!
+//! Note: Test data setup is done by the host (bench_fine.rs) before WASM instances start.
 
-use std::fs::{create_dir_all, File};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{Duration, Instant};
 
@@ -62,7 +62,6 @@ fn main() {
     let scenario = env("BENCH_SCENARIO");
     let file_scope = env("BENCH_FILE_SCOPE");
     let data_size: usize = env("BENCH_DATA_SIZE").parse().unwrap_or(1024);
-    let thread_count: usize = env("BENCH_THREAD_COUNT").parse().unwrap_or(8);
 
     // Enable cache pollution mode if requested
     let no_cache = env("BENCH_NO_CACHE") == "1";
@@ -73,14 +72,7 @@ fn main() {
         eprintln!("[NO_CACHE] Cache pollution enabled (32MB buffer)");
     }
 
-    // For static composition: each WASM run has isolated VFS, so always setup first
-    // (Setup is not timed - only the actual benchmark is measured)
-    if scenario != "setup" {
-        let _ = setup_bench_files(thread_count, data_size);
-    }
-
     let result = match (scenario.as_str(), file_scope.as_str()) {
-        ("setup", _) => setup_bench_files(thread_count, data_size).map(|_| Duration::ZERO),
         ("read", "same") => bench_read_same_file(ops, data_size),
         ("read", "different") => bench_read_different_files(thread_id, ops, data_size),
         ("write", "same") => bench_write_same_file(thread_id, ops, data_size),
@@ -216,28 +208,4 @@ fn bench_mixed_same_file(_thread_id: usize, ops: usize, data_size: usize) -> Res
     Ok(total_time)
 }
 
-/// Setup benchmark files - creates directories and initial test files
-fn setup_bench_files(thread_count: usize, data_size: usize) -> Result<(), Box<dyn std::error::Error>> {
-    // Create directories
-    create_dir_all("/bench/shared")?;
-    create_dir_all("/bench/files")?;
 
-    // Create shared files with initial content
-    let content = vec![b'D'; data_size.max(4096)];
-    for name in ["data.txt", "write_target.txt", "mixed.txt"] {
-        let path = format!("/bench/shared/{}", name);
-        let mut file = File::create(&path)?;
-        file.write_all(&content)?;
-    }
-
-    // Create per-thread files
-    let thread_content = vec![b'T'; data_size.max(1024)];
-    for i in 0..thread_count {
-        let path = format!("/bench/files/thread_{}.txt", i);
-        let mut file = File::create(&path)?;
-        file.write_all(&thread_content)?;
-    }
-
-    eprintln!("Setup complete: created {} thread files", thread_count);
-    Ok(())
-}
