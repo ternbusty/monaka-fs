@@ -77,11 +77,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
-name = "bench-runtime"
+name = "bench-lock-runner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "fs-core",
  "vfs-host",
  "wasmtime",
  "wasmtime-wasi",

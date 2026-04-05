@@ -758,6 +758,52 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
+    /// Write data at a specific offset atomically (seek + write in one lock acquisition)
+    #[cfg(feature = "std")]
+    pub fn write_at(&self, fd: Fd, offset: u64, buf: &[u8]) -> Result<usize, FsError> {
+        trace!("write_at: fd={}, offset={}, len={}", fd, offset, buf.len());
+
+        let (inode_id, flags) = {
+            #[allow(clippy::unnecessary_lazy_evaluations)]
+            let handle = self.fd_table.get(&fd).ok_or_else(|| {
+                error!("write_at: bad file descriptor {}", fd);
+                FsError::BadFileDescriptor
+            })?;
+            (handle.inode_id, handle.flags)
+        };
+
+        let access_mode = flags & 0x3;
+        if access_mode == O_RDONLY {
+            return Err(FsError::PermissionDenied);
+        }
+
+        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let mut inode_ref = inode_write!(inode);
+
+        match &mut inode_ref.content {
+            FileContent::File(storage) => {
+                let n = storage.write(offset as usize, buf);
+                inode_ref.metadata.size = storage.size() as u64;
+                inode_ref.metadata.modified = self.time_provider.now();
+
+                drop(inode_ref);
+                if let Some(handle) = self.fd_table.get(&fd) {
+                    handle.set_position(offset + n as u64);
+                }
+
+                debug!(
+                    "write_at: fd={}, wrote {} bytes at offset {}",
+                    fd, n, offset
+                );
+                Ok(n)
+            }
+            FileContent::Dir(_) => {
+                error!("write_at: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
+        }
+    }
+
     #[cfg(not(feature = "std"))]
     pub fn write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
         trace!("write: fd={}, len={}", fd, buf.len());
@@ -932,6 +978,50 @@ impl<T: TimeProvider> Fs<T> {
             }
             FileContent::Dir(_) => {
                 error!("read: fd={} is a directory", fd);
+                Err(FsError::BadFileDescriptor)
+            }
+        }
+    }
+
+    /// Read data at a specific offset atomically (seek + read in one lock acquisition)
+    #[cfg(feature = "std")]
+    pub fn read_at(&self, fd: Fd, offset: u64, out: &mut [u8]) -> Result<usize, FsError> {
+        trace!(
+            "read_at: fd={}, offset={}, buf_len={}",
+            fd,
+            offset,
+            out.len()
+        );
+
+        let (inode_id, flags) = {
+            #[allow(clippy::unnecessary_lazy_evaluations)]
+            let handle = self.fd_table.get(&fd).ok_or_else(|| {
+                error!("read_at: bad file descriptor {}", fd);
+                FsError::BadFileDescriptor
+            })?;
+            (handle.inode_id, handle.flags)
+        };
+
+        let access_mode = flags & 0x3;
+        if access_mode == O_WRONLY {
+            return Err(FsError::PermissionDenied);
+        }
+
+        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode_ref = inode_read!(inode);
+
+        match &inode_ref.content {
+            FileContent::File(storage) => {
+                let n = storage.read(offset as usize, out);
+                drop(inode_ref);
+                if let Some(handle) = self.fd_table.get(&fd) {
+                    handle.set_position(offset + n as u64);
+                }
+                debug!("read_at: fd={}, read {} bytes at offset {}", fd, n, offset);
+                Ok(n)
+            }
+            FileContent::Dir(_) => {
+                error!("read_at: fd={} is a directory", fd);
                 Err(FsError::BadFileDescriptor)
             }
         }
