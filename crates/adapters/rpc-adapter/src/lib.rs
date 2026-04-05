@@ -84,6 +84,11 @@ impl PersistentConnection {
             }
         };
 
+        // Increase TCP buffer sizes for better throughput on large transfers
+        const TCP_BUF_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+        let _ = socket.set_receive_buffer_size(TCP_BUF_SIZE);
+        let _ = socket.set_send_buffer_size(TCP_BUF_SIZE);
+
         // Do handshake
         Self::send_raw(
             &mut output_stream,
@@ -161,8 +166,8 @@ impl PersistentConnection {
 
         let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
 
-        // Read message body
-        let mut data = Vec::new();
+        // Read message body - pre-allocate buffer to avoid reallocations
+        let mut data = Vec::with_capacity(len as usize);
 
         while (data.len() as u64) < len {
             let remaining = len - data.len() as u64;
@@ -194,45 +199,8 @@ impl PersistentConnection {
     }
 
     fn call(&mut self, request: &Request) -> Result<Response, ErrorCode> {
-        let start = wasi::clocks::monotonic_clock::now();
         self.send(request)?;
-        let after_send = wasi::clocks::monotonic_clock::now();
-        let response = self.receive()?;
-        let after_recv = wasi::clocks::monotonic_clock::now();
-
-        let send_ms = (after_send - start) / 1_000_000;
-        let recv_ms = (after_recv - after_send) / 1_000_000;
-        let total_ms = (after_recv - start) / 1_000_000;
-
-        // Log timing for debugging
-        let req_name = match request {
-            Request::Connect { .. } => "Connect",
-            Request::OpenPath { .. } => "OpenPath",
-            Request::OpenAt { .. } => "OpenAt",
-            Request::Read { .. } => "Read",
-            Request::Write { .. } => "Write",
-            Request::Seek { .. } => "Seek",
-            Request::Close { .. } => "Close",
-            Request::Stat { .. } => "Stat",
-            Request::Fstat { .. } => "Fstat",
-            Request::Mkdir { .. } => "Mkdir",
-            Request::MkdirP { .. } => "MkdirP",
-            Request::Unlink { .. } => "Unlink",
-            Request::Rmdir { .. } => "Rmdir",
-            Request::Readdir { .. } => "Readdir",
-            Request::ReaddirFd { .. } => "ReaddirFd",
-            Request::AppendWrite { .. } => "AppendWrite",
-            Request::Ftruncate { .. } => "Ftruncate",
-        };
-        log::debug!(
-            "[RPC] {}: send={}ms recv={}ms total={}ms",
-            req_name,
-            send_ms,
-            recv_ms,
-            total_ms
-        );
-
-        Ok(response)
+        self.receive()
     }
 }
 
@@ -910,26 +878,13 @@ impl FileOutputStream {
 
         if self.append {
             with_connection(|conn| {
-                let start = wasi::clocks::monotonic_clock::now();
                 let request = Request::AppendWrite {
                     fd: server_fd,
                     data,
                 };
                 conn.send(&request)?;
-                let after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Written { .. } => {
-                        let after_recv = wasi::clocks::monotonic_clock::now();
-                        let send_ms = (after_send - start) / 1_000_000;
-                        let recv_ms = (after_recv - after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] AppendWrite {} bytes: send={}ms recv={}ms",
-                            data_len,
-                            send_ms,
-                            recv_ms
-                        );
-                        Ok(())
-                    }
+                    Response::Written { .. } => Ok(()),
                     Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                     _ => Err(ErrorCode::Io),
                 }
@@ -937,50 +892,26 @@ impl FileOutputStream {
         } else {
             with_connection(|conn| {
                 // Seek to start offset
-                let seek_start = wasi::clocks::monotonic_clock::now();
                 let seek_request = Request::Seek {
                     fd: server_fd,
                     offset: start_offset as i64,
                     whence: 0,
                 };
                 conn.send(&seek_request)?;
-                let seek_after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Position { .. } => {
-                        let seek_after_recv = wasi::clocks::monotonic_clock::now();
-                        let seek_send_ms = (seek_after_send - seek_start) / 1_000_000;
-                        let seek_recv_ms = (seek_after_recv - seek_after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] Seek: send={}ms recv={}ms",
-                            seek_send_ms,
-                            seek_recv_ms
-                        );
-                    }
+                    Response::Position { .. } => {}
                     Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                     _ => return Err(ErrorCode::Io),
                 }
 
                 // Write all data at once
-                let write_start = wasi::clocks::monotonic_clock::now();
                 let write_request = Request::Write {
                     fd: server_fd,
                     data,
                 };
                 conn.send(&write_request)?;
-                let write_after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Written { .. } => {
-                        let write_after_recv = wasi::clocks::monotonic_clock::now();
-                        let write_send_ms = (write_after_send - write_start) / 1_000_000;
-                        let write_recv_ms = (write_after_recv - write_after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] Write {} bytes: send={}ms recv={}ms",
-                            data_len,
-                            write_send_ms,
-                            write_recv_ms
-                        );
-                        Ok(())
-                    }
+                    Response::Written { .. } => Ok(()),
                     Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                     _ => Err(ErrorCode::Io),
                 }
