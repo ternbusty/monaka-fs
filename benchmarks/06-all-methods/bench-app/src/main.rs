@@ -78,8 +78,8 @@ fn run_benchmark(file_size: usize, label: &str) {
         label, read_ms, read_throughput
     );
 
-    // Random Read (only for 1MB)
-    if file_size <= 1024 * 1024 && file_size >= RANDOM_READ_BLOCK_SIZE {
+    // Random Read
+    if file_size >= RANDOM_READ_BLOCK_SIZE {
         for i in 0..ITERATIONS {
             let path = format!("/data/benchmark_random_{}.dat", i);
             fs::write(&path, &data).expect("Failed to write file for random read test");

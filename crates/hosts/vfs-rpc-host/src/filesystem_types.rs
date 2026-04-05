@@ -173,6 +173,7 @@ impl HostInputStream for VfsInputStreamWrapper {
         let shared_rpc = &self.shared_rpc;
         let descriptor = self.descriptor;
         let current_offset = self.offset.get();
+        let start = std::time::Instant::now();
 
         // Run RPC operation in a separate thread to avoid tokio runtime nesting.
         // When this method is called from wasmtime-wasi's blocking_read_and_flush,
@@ -182,6 +183,7 @@ impl HostInputStream for VfsInputStreamWrapper {
         // without the parent's tokio context.
         let result = std::thread::scope(|s| {
             s.spawn(|| {
+                let lock_start = std::time::Instant::now();
                 let core = shared_rpc
                     .lock()
                     .map_err(|e| anyhow::anyhow!("VFS core lock poisoned: {}", e))?;
@@ -189,19 +191,35 @@ impl HostInputStream for VfsInputStreamWrapper {
                 let mut rpc_store = rpc_store_arc
                     .lock()
                     .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))?;
+                let lock_us = lock_start.elapsed().as_micros();
 
-                core.rpc_instance
+                let rpc_start = std::time::Instant::now();
+                let result = core
+                    .rpc_instance
                     .wasi_filesystem_types()
                     .descriptor()
-                    .call_read(&mut *rpc_store, descriptor, size as u64, current_offset)
+                    .call_read(&mut *rpc_store, descriptor, size as u64, current_offset);
+                let rpc_us = rpc_start.elapsed().as_micros();
+
+                eprintln!(
+                    "[VFS-RPC-HOST] stream_read {} bytes: lock={}us rpc={}us",
+                    size, lock_us, rpc_us
+                );
+                result
             })
             .join()
         });
+        let total_us = start.elapsed().as_micros();
 
         // Process the nested Result types:
         // Result<Result<Result<(Vec<u8>, bool), ErrorCode>, anyhow::Error>, JoinError>
         match result {
             Ok(Ok(Ok((data, _end_of_stream)))) => {
+                eprintln!(
+                    "[VFS-RPC-HOST] stream_read done: {} bytes returned, total={}us",
+                    data.len(),
+                    total_us
+                );
                 self.offset.set(current_offset + data.len() as u64);
                 Ok(Bytes::from(data))
             }
@@ -234,8 +252,10 @@ impl HostOutputStream for VfsOutputStreamWrapper {
         let shared_rpc = &self.shared_rpc;
         let descriptor = self.descriptor;
         let current_offset = self.offset.get();
+        let bytes_len = bytes.len();
         // Clone bytes for the thread (Bytes is cheap to clone: reference counted)
         let bytes_clone = bytes.clone();
+        let start = std::time::Instant::now();
 
         // Run RPC operation in a separate thread to avoid tokio runtime nesting.
         // When this method is called from wasmtime-wasi's blocking_write_and_flush,
@@ -245,6 +265,7 @@ impl HostOutputStream for VfsOutputStreamWrapper {
         // without the parent's tokio context.
         let result = std::thread::scope(|s| {
             s.spawn(|| {
+                let lock_start = std::time::Instant::now();
                 let core = shared_rpc
                     .lock()
                     .map_err(|e| anyhow::anyhow!("VFS core lock poisoned: {}", e))?;
@@ -252,19 +273,34 @@ impl HostOutputStream for VfsOutputStreamWrapper {
                 let mut rpc_store = rpc_store_arc
                     .lock()
                     .map_err(|e| anyhow::anyhow!("RPC store lock poisoned: {}", e))?;
+                let lock_us = lock_start.elapsed().as_micros();
 
-                core.rpc_instance
+                let rpc_start = std::time::Instant::now();
+                let result = core
+                    .rpc_instance
                     .wasi_filesystem_types()
                     .descriptor()
-                    .call_write(&mut *rpc_store, descriptor, &bytes_clone, current_offset)
+                    .call_write(&mut *rpc_store, descriptor, &bytes_clone, current_offset);
+                let rpc_us = rpc_start.elapsed().as_micros();
+
+                eprintln!(
+                    "[VFS-RPC-HOST] stream_write {} bytes: lock={}us rpc={}us",
+                    bytes_len, lock_us, rpc_us
+                );
+                result
             })
             .join()
         });
+        let total_us = start.elapsed().as_micros();
 
         // Process the nested Result types:
         // Result<Result<Result<u64, ErrorCode>, anyhow::Error>, JoinError>
         match result {
             Ok(Ok(Ok(written))) => {
+                eprintln!(
+                    "[VFS-RPC-HOST] stream_write done: {} bytes written, total={}us",
+                    written, total_us
+                );
                 self.offset.set(current_offset + written);
                 Ok(())
             }

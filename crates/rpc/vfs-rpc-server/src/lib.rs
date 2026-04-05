@@ -187,8 +187,6 @@ impl ServerContext {
             }
 
             Request::Read { fd, length } => {
-                let start = wasi::clocks::monotonic_clock::now();
-
                 // Refresh from S3 before read (if read-through mode, once per fd)
                 if self.read_from_s3 && !self.s3_refreshed_fds.borrow().contains(&fd) {
                     if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
@@ -200,27 +198,11 @@ impl ServerContext {
                     }
                     self.s3_refreshed_fds.borrow_mut().insert(fd);
                 }
-                let after_s3 = wasi::clocks::monotonic_clock::now();
 
                 let mut buf = vec![0u8; length];
-                let after_alloc = wasi::clocks::monotonic_clock::now();
-
-                let result = self.fs.borrow_mut().read(fd, &mut buf);
-                let after_read = wasi::clocks::monotonic_clock::now();
-
-                match result {
+                match self.fs.borrow_mut().read(fd, &mut buf) {
                     Ok(n) => {
                         buf.truncate(n);
-                        let s3_us = (after_s3 - start) / 1_000;
-                        let alloc_us = (after_alloc - after_s3) / 1_000;
-                        let read_us = (after_read - after_alloc) / 1_000;
-                        log::info!(
-                            "[Read] {} bytes: s3_refresh={}us alloc={}us vfs_read={}us",
-                            n,
-                            s3_us,
-                            alloc_us,
-                            read_us
-                        );
                         Response::Data { bytes: buf }
                     }
                     Err(e) => map_fs_error(e),
@@ -228,12 +210,7 @@ impl ServerContext {
             }
 
             Request::Write { fd, data } => {
-                let start = wasi::clocks::monotonic_clock::now();
-                let data_len = data.len();
-
                 let result = self.fs.borrow_mut().write(fd, &data);
-                let after_write = wasi::clocks::monotonic_clock::now();
-
                 match result {
                     Ok(n) => {
                         // Sync to S3
@@ -250,15 +227,6 @@ impl ServerContext {
                                 }
                             }
                         }
-                        let after_s3 = wasi::clocks::monotonic_clock::now();
-                        let write_us = (after_write - start) / 1_000;
-                        let s3_us = (after_s3 - after_write) / 1_000;
-                        log::info!(
-                            "[Write] {} bytes: vfs_write={}us s3_sync={}us",
-                            data_len,
-                            write_us,
-                            s3_us
-                        );
                         Response::Written { count: n }
                     }
                     Err(e) => map_fs_error(e),
@@ -452,102 +420,77 @@ fn map_fs_error(error: FsError) -> Response {
 
 /// Try to read a message with timeout
 /// Returns Timeout if no data arrives within POLL_TIMEOUT_NS
-fn try_read_message(stream: &InputStream) -> ReadResult {
-    // First, wait for initial data with timeout
-    let stream_pollable = stream.subscribe();
-    let timeout_pollable = subscribe_duration(POLL_TIMEOUT_NS);
+/// Read a complete length-prefixed message from stream (blocking, no timeout).
+/// Used after initial data is detected.
+fn read_message_blocking(stream: &InputStream, first_bytes: Vec<u8>) -> ReadResult {
+    let mut len_buf = first_bytes;
 
-    // Poll both: stream readiness and timeout
-    let ready = poll(&[&stream_pollable, &timeout_pollable]);
-
-    // Check which pollable is ready
-    // ready[0] = stream, ready[1] = timeout
-    if ready.is_empty() || (ready.len() == 1 && ready[0] == 1) {
-        // Only timeout fired, no data
-        return ReadResult::Timeout;
+    // Read remaining bytes of 4-byte length prefix
+    while len_buf.len() < 4 {
+        match stream.blocking_read(4 - len_buf.len() as u64) {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    let pollable = stream.subscribe();
+                    poll(&[&pollable]);
+                    continue;
+                }
+                len_buf.extend_from_slice(&bytes);
+            }
+            Err(e) => {
+                if matches!(e, wasi::io::streams::StreamError::Closed) {
+                    return ReadResult::Disconnected;
+                }
+                let pollable = stream.subscribe();
+                poll(&[&pollable]);
+                continue;
+            }
+        }
     }
 
-    // Stream has data (or is closed), try to read first byte
-    // Use blocking_read because even after poll, non-blocking read might return empty
-    match stream.blocking_read(1) {
-        Ok(bytes) if bytes.is_empty() => {
-            // Stream closed
-            ReadResult::Disconnected
-        }
-        Ok(first_byte) => {
-            // Got first byte, now read the rest of the length prefix
-            let mut len_buf = first_byte.to_vec();
+    let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
 
-            // Read remaining 3 bytes of length prefix (blocking is ok now, data is coming)
-            while len_buf.len() < 4 {
-                match stream.blocking_read(4 - len_buf.len() as u64) {
-                    Ok(bytes) => {
-                        if bytes.is_empty() {
-                            let pollable = stream.subscribe();
-                            poll(&[&pollable]);
-                            continue;
-                        }
-                        len_buf.extend_from_slice(&bytes);
-                    }
-                    Err(e) => {
-                        if matches!(e, wasi::io::streams::StreamError::Closed) {
-                            return ReadResult::Disconnected;
-                        }
-                        let pollable = stream.subscribe();
-                        poll(&[&pollable]);
-                        continue;
-                    }
+    // Read message body
+    let mut data = Vec::with_capacity(len as usize);
+    while (data.len() as u64) < len {
+        match stream.blocking_read(len - data.len() as u64) {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    let pollable = stream.subscribe();
+                    poll(&[&pollable]);
+                    continue;
                 }
+                data.extend_from_slice(&bytes);
             }
-
-            let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
-
-            // Read message body
-            let mut data = Vec::new();
-            while (data.len() as u64) < len {
-                match stream.blocking_read(len - data.len() as u64) {
-                    Ok(bytes) => {
-                        if bytes.is_empty() {
-                            let pollable = stream.subscribe();
-                            poll(&[&pollable]);
-                            continue;
-                        }
-                        data.extend_from_slice(&bytes);
-                    }
-                    Err(e) => {
-                        if matches!(e, wasi::io::streams::StreamError::Closed) {
-                            return ReadResult::Disconnected;
-                        }
-                        let pollable = stream.subscribe();
-                        poll(&[&pollable]);
-                        continue;
-                    }
+            Err(e) => {
+                if matches!(e, wasi::io::streams::StreamError::Closed) {
+                    return ReadResult::Disconnected;
                 }
+                let pollable = stream.subscribe();
+                poll(&[&pollable]);
+                continue;
             }
-
-            ReadResult::Message(data)
-        }
-        Err(wasi::io::streams::StreamError::Closed) => ReadResult::Disconnected,
-        Err(_) => {
-            // Other error, treat as timeout to retry
-            ReadResult::Timeout
         }
     }
+
+    ReadResult::Message(data)
 }
+
+// try_read_message and try_read_message_fast removed:
+// The unified poll loop handles waiting for data across all clients,
+// so individual timeout-based polling is no longer needed.
 
 /// Write a length-prefixed message to stream
 fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     let len = data.len() as u32;
     let len_bytes = len.to_be_bytes();
 
-    // Combine length prefix and data into single payload
+    // Combine length prefix and data into single payload to minimize flush overhead
     let mut payload = Vec::with_capacity(4 + data.len());
     payload.extend_from_slice(&len_bytes);
     payload.extend_from_slice(data);
 
-    // Write using check_write to get optimal buffer sizes (like rpc-adapter does)
+    // Write using check_write to get optimal buffer sizes (avoids 4KB chunk limitation)
     let mut offset = 0;
-    let mut chunk_count = 0;
     while offset < payload.len() {
         let available = match stream.check_write() {
             Ok(n) => n as usize,
@@ -563,25 +506,11 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
             continue;
         }
         let end = std::cmp::min(offset + available, payload.len());
-        log::debug!(
-            "[write_message] chunk {}: available={}, writing {} bytes (offset {}/{})",
-            chunk_count,
-            available,
-            end - offset,
-            offset,
-            payload.len()
-        );
         if let Err(_) = stream.write(&payload[offset..end]) {
             return false;
         }
         offset = end;
-        chunk_count += 1;
     }
-    log::info!(
-        "[write_message] total {} bytes in {} chunks",
-        payload.len(),
-        chunk_count
-    );
 
     // Flush once at the end
     loop {
@@ -676,105 +605,166 @@ struct ClientResources {
     socket: wasi::sockets::tcp::TcpSocket,
 }
 
-/// Handle a single client connection
-async fn handle_client(resources: ClientResources, ctx: Rc<ServerContext>) {
-    // Don't destructure - let the struct handle drop order
-    let mut session_id: Option<String> = None;
-
-    log::info!("Client connected");
-
-    loop {
-        // Try to read with timeout for periodic sync
-        let request_bytes = match try_read_message(&resources.input) {
-            ReadResult::Message(bytes) => bytes,
-            ReadResult::Timeout => {
-                // No request received, but run sync check
-                if let Some(ref sync) = ctx.sync_manager {
-                    sync.maybe_sync().await;
-                }
-                // Yield to allow other tasks to run
-                tokio::task::yield_now().await;
-                continue;
-            }
-            ReadResult::Disconnected => {
-                log::info!("Client disconnected (session: {:?})", session_id);
-                // Flush pending operations on client disconnect
-                if let Some(ref sync) = ctx.sync_manager {
-                    if sync.pending_count() > 0 {
-                        log::debug!("[sync] Flushing pending operations on client disconnect...");
-                        if let Err(e) = sync.force_flush().await {
-                            log::error!("[sync] Failed to flush: {}", e);
-                        }
-                    }
-                }
-                return;
-            }
-        };
-
-        // Parse request protobuf
-        let proto_request = match ProtoRpcRequest::decode(&request_bytes[..]) {
-            Ok(req) => req,
-            Err(e) => {
-                log::error!("Failed to decode protobuf request: {}", e);
-                let response = Response::Error {
-                    code: ErrorCode::SerializationError,
-                    message: "Failed to decode protobuf request".to_string(),
-                };
-                let response_bytes = to_proto_response(response).encode_to_vec();
-                write_message(&resources.output, &response_bytes);
-                continue;
-            }
-        };
-
-        // Convert to internal request type
-        let rpc_request = match from_proto_request(proto_request) {
-            Ok(req) => req,
-            Err(e) => {
-                log::error!("Failed to convert request: {}", e);
-                let response = Response::Error {
-                    code: ErrorCode::SerializationError,
-                    message: e.to_string(),
-                };
-                let response_bytes = to_proto_response(response).encode_to_vec();
-                write_message(&resources.output, &response_bytes);
-                continue;
-            }
-        };
-
-        // Handle request
-        let response = ctx
-            .handle_request(rpc_request.request, session_id.clone())
-            .await;
-
-        // Track session ID from connect response
-        if let Response::Connected {
-            session_id: ref new_session_id,
-            ..
-        } = response
-        {
-            session_id = Some(new_session_id.clone());
-        }
-
-        // Serialize and send response (protobuf)
-        let proto_response = to_proto_response(response);
-        let response_bytes = proto_response.encode_to_vec();
-
-        if !write_message(&resources.output, &response_bytes) {
-            log::info!(
-                "Client disconnected (write error, session: {:?})",
-                session_id
-            );
-            return;
-        }
-
-        // Check if we need to sync to S3 (based on dirty count threshold)
-        if let Some(ref sync) = ctx.sync_manager {
-            sync.maybe_sync().await;
-        }
-
-        // Yield to allow other tasks to run
-        tokio::task::yield_now().await;
+fn request_name(req: &Request) -> &'static str {
+    match req {
+        Request::Connect { .. } => "Connect",
+        Request::OpenPath { .. } => "OpenPath",
+        Request::OpenAt { .. } => "OpenAt",
+        Request::Read { .. } => "Read",
+        Request::Write { .. } => "Write",
+        Request::Close { .. } => "Close",
+        Request::Seek { .. } => "Seek",
+        Request::Ftruncate { .. } => "Ftruncate",
+        Request::Stat { .. } => "Stat",
+        Request::Fstat { .. } => "Fstat",
+        Request::Mkdir { .. } => "Mkdir",
+        Request::MkdirP { .. } => "MkdirP",
+        Request::Unlink { .. } => "Unlink",
+        Request::Readdir { .. } => "Readdir",
+        Request::ReaddirFd { .. } => "ReaddirFd",
+        Request::Rmdir { .. } => "Rmdir",
+        Request::AppendWrite { .. } => "AppendWrite",
     }
+}
+
+/// Client state for the unified poll loop
+struct Client {
+    resources: ClientResources,
+    session_id: Option<String>,
+}
+
+/// Accept a new client connection and add to clients list
+fn accept_new_client(socket: &wasi::sockets::tcp::TcpSocket, clients: &mut Vec<Client>) {
+    match socket.accept() {
+        Ok((client_socket, input, output)) => {
+            const TCP_BUF_SIZE: u64 = 4 * 1024 * 1024;
+            let _ = client_socket.set_receive_buffer_size(TCP_BUF_SIZE);
+            let _ = client_socket.set_send_buffer_size(TCP_BUF_SIZE);
+
+            log::info!("Client connected (total: {})", clients.len() + 1);
+            clients.push(Client {
+                resources: ClientResources {
+                    input,
+                    output,
+                    socket: client_socket,
+                },
+                session_id: None,
+            });
+        }
+        Err(wasi::sockets::network::ErrorCode::WouldBlock) => {}
+        Err(e) => log::error!("Failed to accept connection: {:?}", e),
+    }
+}
+
+/// Result of handling one request
+enum HandleResult {
+    /// Request processed successfully, client still connected
+    Ok,
+    /// Client disconnected
+    Disconnected,
+}
+
+/// Handle one request from a client. Returns whether the client disconnected.
+async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleResult {
+    // Read first byte (poll already confirmed data is available)
+    let first_byte = match client.resources.input.blocking_read(1) {
+        Ok(bytes) if bytes.is_empty() => return HandleResult::Disconnected,
+        Ok(bytes) => bytes,
+        Err(wasi::io::streams::StreamError::Closed) => return HandleResult::Disconnected,
+        Err(_) => return HandleResult::Disconnected,
+    };
+
+    // Read the rest of the message
+    let request_bytes = match read_message_blocking(&client.resources.input, first_byte.to_vec()) {
+        ReadResult::Message(bytes) => bytes,
+        ReadResult::Disconnected => return HandleResult::Disconnected,
+        ReadResult::Timeout => return HandleResult::Ok, // shouldn't happen
+    };
+
+    // Parse request protobuf
+    let proto_request = match ProtoRpcRequest::decode(&request_bytes[..]) {
+        Ok(req) => req,
+        Err(e) => {
+            log::error!("Failed to decode protobuf request: {}", e);
+            let response = Response::Error {
+                code: ErrorCode::SerializationError,
+                message: "Failed to decode protobuf request".to_string(),
+            };
+            let response_bytes = to_proto_response(response).encode_to_vec();
+            write_message(&client.resources.output, &response_bytes);
+            return HandleResult::Ok;
+        }
+    };
+
+    // Convert to internal request type
+    let rpc_request = match from_proto_request(proto_request) {
+        Ok(req) => req,
+        Err(e) => {
+            log::error!("Failed to convert request: {}", e);
+            let response = Response::Error {
+                code: ErrorCode::SerializationError,
+                message: e.to_string(),
+            };
+            let response_bytes = to_proto_response(response).encode_to_vec();
+            write_message(&client.resources.output, &response_bytes);
+            return HandleResult::Ok;
+        }
+    };
+
+    // Handle request
+    let req_name = request_name(&rpc_request.request);
+    let req_start = wasi::clocks::monotonic_clock::now();
+
+    let response = ctx
+        .handle_request(rpc_request.request, client.session_id.clone())
+        .await;
+    let after_handle = wasi::clocks::monotonic_clock::now();
+
+    // Track session ID from connect response
+    if let Response::Connected {
+        session_id: ref new_session_id,
+        ..
+    } = response
+    {
+        client.session_id = Some(new_session_id.clone());
+    }
+
+    // Serialize and send response
+    let proto_response = to_proto_response(response);
+    let response_bytes = proto_response.encode_to_vec();
+    let after_serialize = wasi::clocks::monotonic_clock::now();
+
+    if !write_message(&client.resources.output, &response_bytes) {
+        log::info!(
+            "Client disconnected (write error, session: {:?})",
+            client.session_id
+        );
+        return HandleResult::Disconnected;
+    }
+    let after_write = wasi::clocks::monotonic_clock::now();
+
+    let handle_us = (after_handle - req_start) / 1_000;
+    let serialize_us = (after_serialize - after_handle) / 1_000;
+    let write_us = (after_write - after_serialize) / 1_000;
+    let total_us = (after_write - req_start) / 1_000;
+    if matches!(req_name, "Read" | "Write" | "Seek" | "AppendWrite") {
+        log::info!(
+            "[SERVER] {}: handle={}us serialize={}us write={}us total={}us (resp {} bytes)",
+            req_name,
+            handle_us,
+            serialize_us,
+            write_us,
+            total_us,
+            response_bytes.len()
+        );
+    }
+
+    // Check if we need to sync to S3
+    if let Some(ref sync) = ctx.sync_manager {
+        sync.maybe_sync().await;
+    }
+
+    HandleResult::Ok
 }
 
 /// Main entry point
@@ -820,45 +810,71 @@ async fn async_main() {
     log::info!("Protocol version: {}", PROTOCOL_VERSION);
     log::info!("Waiting for connections...");
 
-    // Use LocalSet for spawn_local (allows Rc to be used across tasks)
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            loop {
-                // Try to accept with short timeout
-                let socket_pollable = socket.subscribe();
-                let timeout_pollable = subscribe_duration(10_000_000); // 10ms
-                let ready = poll(&[&socket_pollable, &timeout_pollable]);
-                drop(socket_pollable);
-                drop(timeout_pollable);
+    // Unified poll loop: accept socket + all client input streams + timeout
+    // polled together. No spawn_local/yield_now needed.
+    let mut clients: Vec<Client> = Vec::new();
 
-                // Check if socket is ready
-                if !ready.is_empty() && ready[0] == 0 {
-                    // Socket ready, try to accept
-                    match socket.accept() {
-                        Ok((client_socket, input, output)) => {
-                            let ctx = ctx.clone();
-                            let resources = ClientResources {
-                                input,
-                                output,
-                                socket: client_socket,
-                            };
-                            tokio::task::spawn_local(async move {
-                                handle_client(resources, ctx).await;
-                            });
+    loop {
+        // Build pollables: [accept_socket, client0_input, ..., clientN_input, timeout]
+        let accept_pollable = socket.subscribe();
+        let client_pollables: Vec<_> = clients
+            .iter()
+            .map(|c| c.resources.input.subscribe())
+            .collect();
+        let timeout_pollable = subscribe_duration(POLL_TIMEOUT_NS);
+
+        let mut all_pollables: Vec<&_> = Vec::with_capacity(2 + clients.len());
+        all_pollables.push(&accept_pollable);
+        for p in &client_pollables {
+            all_pollables.push(p);
+        }
+        all_pollables.push(&timeout_pollable);
+
+        let ready = poll(&all_pollables);
+
+        let accept_idx = 0u32;
+        let timeout_idx = (1 + clients.len()) as u32;
+
+        let mut to_remove: Vec<usize> = Vec::new();
+
+        for idx in ready {
+            if idx == accept_idx {
+                accept_new_client(&socket, &mut clients);
+            } else if idx == timeout_idx {
+                // Periodic S3 sync
+                if let Some(ref sync) = ctx.sync_manager {
+                    sync.maybe_sync().await;
+                }
+            } else {
+                // Client has data ready
+                let client_idx = (idx - 1) as usize;
+                if client_idx < clients.len() {
+                    match handle_one_request(&mut clients[client_idx], &ctx).await {
+                        HandleResult::Disconnected => {
+                            log::info!(
+                                "Client disconnected (session: {:?})",
+                                clients[client_idx].session_id
+                            );
+                            // Flush S3 on disconnect
+                            if let Some(ref sync) = ctx.sync_manager {
+                                if sync.pending_count() > 0 {
+                                    if let Err(e) = sync.force_flush().await {
+                                        log::error!("[sync] Failed to flush: {}", e);
+                                    }
+                                }
+                            }
+                            to_remove.push(client_idx);
                         }
-                        Err(wasi::sockets::network::ErrorCode::WouldBlock) => {
-                            // Spurious wake, ignore
-                        }
-                        Err(e) => {
-                            log::error!("Failed to accept connection: {:?}", e);
-                        }
+                        HandleResult::Ok => {}
                     }
                 }
-
-                // Yield to allow spawned tasks to run
-                tokio::task::yield_now().await;
             }
-        })
-        .await;
+        }
+
+        // Remove disconnected clients (reverse order to preserve indices)
+        to_remove.sort_unstable();
+        for idx in to_remove.into_iter().rev() {
+            clients.swap_remove(idx);
+        }
+    }
 }
