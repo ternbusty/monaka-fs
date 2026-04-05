@@ -7,8 +7,8 @@ fn main() {
     println!("=== VFS Demo App 2: File Reader ===");
 
     // Read file metadata
-    println!("\nGetting file metadata: /shared/message.txt");
-    match fs::metadata("/shared/message.txt") {
+    println!("\nGetting file metadata: /message.txt");
+    match fs::metadata("/message.txt") {
         Ok(meta) => {
             println!("  File size: {} bytes", meta.len());
         }
@@ -20,8 +20,8 @@ fn main() {
     }
 
     // Read file content
-    println!("\nReading file: /shared/message.txt");
-    match fs::read_to_string("/shared/message.txt") {
+    println!("\nReading file: /message.txt");
+    match fs::read_to_string("/message.txt") {
         Ok(content) => {
             println!("  Content ({} bytes):", content.len());
             println!("  \"{}\"", content);

@@ -6,3 +6,8 @@
 /localstack-data/**
 *.dat
 *.env
+.DS_Store
+*.log
+*.csv
+*.tex
+*.txt

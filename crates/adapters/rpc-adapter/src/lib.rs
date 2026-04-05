@@ -161,8 +161,9 @@ impl PersistentConnection {
 
         let len = u32::from_be_bytes([len_buf[0], len_buf[1], len_buf[2], len_buf[3]]) as u64;
 
-        // Read message body
-        let mut data = Vec::new();
+        // Read message body - pre-allocate buffer to avoid reallocations
+        let mut data = Vec::with_capacity(len as usize);
+        let mut read_count = 0;
 
         while (data.len() as u64) < len {
             let remaining = len - data.len() as u64;
@@ -175,7 +176,15 @@ impl PersistentConnection {
                 poll(&[&pollable]);
                 continue;
             }
+            read_count += 1;
             data.extend_from_slice(&bytes);
+        }
+
+        if len > 1000 {
+            eprintln!(
+                "[RPC-CLIENT] receive: {} bytes in {} reads",
+                len, read_count
+            );
         }
 
         protocol::from_proto_response_bytes(&data).map_err(rpc_error_to_wasi)
@@ -200,9 +209,9 @@ impl PersistentConnection {
         let response = self.receive()?;
         let after_recv = wasi::clocks::monotonic_clock::now();
 
-        let send_ms = (after_send - start) / 1_000_000;
-        let recv_ms = (after_recv - after_send) / 1_000_000;
-        let total_ms = (after_recv - start) / 1_000_000;
+        let send_us = (after_send - start) / 1_000;
+        let recv_us = (after_recv - after_send) / 1_000;
+        let total_us = (after_recv - start) / 1_000;
 
         // Log timing for debugging
         let req_name = match request {
@@ -224,13 +233,16 @@ impl PersistentConnection {
             Request::AppendWrite { .. } => "AppendWrite",
             Request::Ftruncate { .. } => "Ftruncate",
         };
-        log::debug!(
-            "[RPC] {}: send={}ms recv={}ms total={}ms",
-            req_name,
-            send_ms,
-            recv_ms,
-            total_ms
-        );
+        // Log timing for Read/Write/Seek operations
+        if matches!(
+            request,
+            Request::Read { .. } | Request::Write { .. } | Request::Seek { .. }
+        ) {
+            eprintln!(
+                "[RPC-CLIENT] {}: send={}us recv={}us total={}us",
+                req_name, send_us, recv_us, total_us
+            );
+        }
 
         Ok(response)
     }

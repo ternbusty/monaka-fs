@@ -187,6 +187,8 @@ impl ServerContext {
             }
 
             Request::Read { fd, length } => {
+                let start = wasi::clocks::monotonic_clock::now();
+
                 // Refresh from S3 before read (if read-through mode, once per fd)
                 if self.read_from_s3 && !self.s3_refreshed_fds.borrow().contains(&fd) {
                     if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
@@ -198,11 +200,27 @@ impl ServerContext {
                     }
                     self.s3_refreshed_fds.borrow_mut().insert(fd);
                 }
+                let after_s3 = wasi::clocks::monotonic_clock::now();
 
                 let mut buf = vec![0u8; length];
-                match self.fs.borrow_mut().read(fd, &mut buf) {
+                let after_alloc = wasi::clocks::monotonic_clock::now();
+
+                let result = self.fs.borrow_mut().read(fd, &mut buf);
+                let after_read = wasi::clocks::monotonic_clock::now();
+
+                match result {
                     Ok(n) => {
                         buf.truncate(n);
+                        let s3_us = (after_s3 - start) / 1_000;
+                        let alloc_us = (after_alloc - after_s3) / 1_000;
+                        let read_us = (after_read - after_alloc) / 1_000;
+                        log::info!(
+                            "[Read] {} bytes: s3_refresh={}us alloc={}us vfs_read={}us",
+                            n,
+                            s3_us,
+                            alloc_us,
+                            read_us
+                        );
                         Response::Data { bytes: buf }
                     }
                     Err(e) => map_fs_error(e),
@@ -210,7 +228,12 @@ impl ServerContext {
             }
 
             Request::Write { fd, data } => {
+                let start = wasi::clocks::monotonic_clock::now();
+                let data_len = data.len();
+
                 let result = self.fs.borrow_mut().write(fd, &data);
+                let after_write = wasi::clocks::monotonic_clock::now();
+
                 match result {
                     Ok(n) => {
                         // Sync to S3
@@ -227,6 +250,15 @@ impl ServerContext {
                                 }
                             }
                         }
+                        let after_s3 = wasi::clocks::monotonic_clock::now();
+                        let write_us = (after_write - start) / 1_000;
+                        let s3_us = (after_s3 - after_write) / 1_000;
+                        log::info!(
+                            "[Write] {} bytes: vfs_write={}us s3_sync={}us",
+                            data_len,
+                            write_us,
+                            s3_us
+                        );
                         Response::Written { count: n }
                     }
                     Err(e) => map_fs_error(e),
@@ -508,9 +540,52 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     let len = data.len() as u32;
     let len_bytes = len.to_be_bytes();
 
-    // Write length prefix
+    // Combine length prefix and data into single payload
+    let mut payload = Vec::with_capacity(4 + data.len());
+    payload.extend_from_slice(&len_bytes);
+    payload.extend_from_slice(data);
+
+    // Write using check_write to get optimal buffer sizes (like rpc-adapter does)
+    let mut offset = 0;
+    let mut chunk_count = 0;
+    while offset < payload.len() {
+        let available = match stream.check_write() {
+            Ok(n) => n as usize,
+            Err(_) => {
+                let pollable = stream.subscribe();
+                poll(&[&pollable]);
+                continue;
+            }
+        };
+        if available == 0 {
+            let pollable = stream.subscribe();
+            poll(&[&pollable]);
+            continue;
+        }
+        let end = std::cmp::min(offset + available, payload.len());
+        log::debug!(
+            "[write_message] chunk {}: available={}, writing {} bytes (offset {}/{})",
+            chunk_count,
+            available,
+            end - offset,
+            offset,
+            payload.len()
+        );
+        if let Err(_) = stream.write(&payload[offset..end]) {
+            return false;
+        }
+        offset = end;
+        chunk_count += 1;
+    }
+    log::info!(
+        "[write_message] total {} bytes in {} chunks",
+        payload.len(),
+        chunk_count
+    );
+
+    // Flush once at the end
     loop {
-        match stream.blocking_write_and_flush(&len_bytes) {
+        match stream.blocking_flush() {
             Ok(()) => break,
             Err(_) => {
                 let pollable = stream.subscribe();
@@ -518,25 +593,6 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
                 continue;
             }
         }
-    }
-
-    // Write data in chunks (WASI limits blocking_write_and_flush to 4096 bytes)
-    const CHUNK_SIZE: usize = 4096;
-    let mut offset = 0;
-    while offset < data.len() {
-        let end = std::cmp::min(offset + CHUNK_SIZE, data.len());
-        let chunk = &data[offset..end];
-        loop {
-            match stream.blocking_write_and_flush(chunk) {
-                Ok(()) => break,
-                Err(_) => {
-                    let pollable = stream.subscribe();
-                    poll(&[&pollable]);
-                    continue;
-                }
-            }
-        }
-        offset = end;
     }
     true
 }
