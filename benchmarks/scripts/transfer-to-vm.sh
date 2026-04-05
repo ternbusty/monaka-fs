@@ -37,8 +37,8 @@ transfer_wasm() {
 # Core components
 transfer_wasm "$SCRIPT_DIR/vfs_rpc_server.wasm" "$VM_BENCH_DIR/wasm/vfs_rpc_server.wasm"
 
-# Benchmark 01
-transfer_wasm "$BENCHMARKS_DIR/01-tmpfs-vs-vfs/bench-01-composed.wasm" "$VM_BENCH_DIR/wasm/bench-01-composed.wasm"
+# Benchmark: tmpfs-vs-vfs
+transfer_wasm "$BENCHMARKS_DIR/tmpfs-vs-vfs/bench-composed.wasm" "$VM_BENCH_DIR/wasm/bench-composed.wasm"
 
 # Benchmark 03
 transfer_wasm "$BENCHMARKS_DIR/03-local-vs-rpc/bench-03-local.wasm" "$VM_BENCH_DIR/wasm/bench-03-local.wasm"
@@ -48,9 +48,7 @@ transfer_wasm "$BENCHMARKS_DIR/03-local-vs-rpc/bench-03-rpc.wasm" "$VM_BENCH_DIR
 transfer_wasm "$BENCHMARKS_DIR/04-s3fs-vs-s3sync/bench-04-rpc.wasm" "$VM_BENCH_DIR/wasm/bench-04-rpc.wasm"
 
 # Also transfer the raw (non-composed) WASM for tmpfs baseline
-# Standalone workspace builds to its own target directory
-BENCH01_RAW="$BENCHMARKS_DIR/01-tmpfs-vs-vfs/bench-app/target/wasm32-wasip2/release/bench-tmpfs-vs-vfs.wasm"
-transfer_wasm "$BENCH01_RAW" "$VM_BENCH_DIR/wasm/bench-01-raw.wasm"
+transfer_wasm "$BENCHMARKS_DIR/tmpfs-vs-vfs/bench-raw.wasm" "$VM_BENCH_DIR/wasm/bench-raw.wasm"
 
 # Transfer VM benchmark scripts
 echo ""
@@ -69,7 +67,7 @@ transfer_script() {
     fi
 }
 
-transfer_script "01-tmpfs-vs-vfs" "run-bench-vm-01.sh"
+transfer_script "tmpfs-vs-vfs" "run-bench-tmpfs-vs-vfs.sh"
 transfer_script "03-local-vs-rpc" "run-bench-vm-03.sh"
 transfer_script "04-s3fs-vs-s3sync" "run-bench-vm-04.sh"
 

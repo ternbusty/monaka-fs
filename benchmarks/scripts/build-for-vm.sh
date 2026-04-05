@@ -32,12 +32,12 @@ for f in "$VFS_ADAPTER" "$RPC_ADAPTER" "$RPC_SERVER"; do
 done
 echo "Core components built successfully"
 
-# Build benchmark 01 (standalone workspace - builds to its own target/)
+# Build benchmark: tmpfs-vs-vfs (standalone workspace - builds to its own target/)
 echo ""
-echo "=== Building benchmark 01: tmpfs-vs-vfs ==="
-cd "$BENCHMARKS_DIR/01-tmpfs-vs-vfs/bench-app"
+echo "=== Building benchmark: tmpfs-vs-vfs ==="
+cd "$BENCHMARKS_DIR/tmpfs-vs-vfs/bench-app"
 cargo build --release --target wasm32-wasip2
-BENCH01_WASM="$BENCHMARKS_DIR/01-tmpfs-vs-vfs/bench-app/target/wasm32-wasip2/release/bench-tmpfs-vs-vfs.wasm"
+BENCH_TMPFS_WASM="$BENCHMARKS_DIR/tmpfs-vs-vfs/bench-app/target/wasm32-wasip2/release/bench-tmpfs-vs-vfs.wasm"
 
 # Build benchmark 03 (standalone workspace)
 echo ""
@@ -57,9 +57,9 @@ BENCH04_WASM="$BENCHMARKS_DIR/04-s3fs-vs-s3sync/bench-app/target/wasm32-wasip2/r
 echo ""
 echo "=== Composing WASM components ==="
 
-# Benchmark 01: app + vfs-adapter
-echo "Composing benchmark 01..."
-wac plug --plug "$VFS_ADAPTER" "$BENCH01_WASM" -o "$BENCHMARKS_DIR/01-tmpfs-vs-vfs/bench-01-composed.wasm"
+# Benchmark: tmpfs-vs-vfs (app + vfs-adapter)
+echo "Composing benchmark: tmpfs-vs-vfs..."
+wac plug --plug "$VFS_ADAPTER" "$BENCH_TMPFS_WASM" -o "$BENCHMARKS_DIR/tmpfs-vs-vfs/bench-composed.wasm"
 
 # Benchmark 03: app + vfs-adapter (local) and app + rpc-adapter (rpc)
 echo "Composing benchmark 03 (local)..."
@@ -79,7 +79,7 @@ echo ""
 echo "=== Build Complete ==="
 echo ""
 echo "Built files:"
-ls -la "$BENCHMARKS_DIR/01-tmpfs-vs-vfs/"*.wasm 2>/dev/null || true
+ls -la "$BENCHMARKS_DIR/tmpfs-vs-vfs/"*.wasm 2>/dev/null || true
 ls -la "$BENCHMARKS_DIR/03-local-vs-rpc/"*.wasm 2>/dev/null || true
 ls -la "$BENCHMARKS_DIR/04-s3fs-vs-s3sync/"*.wasm 2>/dev/null || true
 ls -la "$BENCHMARKS_DIR/scripts/"*.wasm 2>/dev/null || true
