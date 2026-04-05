@@ -475,10 +475,6 @@ fn read_message_blocking(stream: &InputStream, first_bytes: Vec<u8>) -> ReadResu
     ReadResult::Message(data)
 }
 
-// try_read_message and try_read_message_fast removed:
-// The unified poll loop handles waiting for data across all clients,
-// so individual timeout-based polling is no longer needed.
-
 /// Write a length-prefixed message to stream
 fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     let len = data.len() as u32;
@@ -605,28 +601,6 @@ struct ClientResources {
     socket: wasi::sockets::tcp::TcpSocket,
 }
 
-fn request_name(req: &Request) -> &'static str {
-    match req {
-        Request::Connect { .. } => "Connect",
-        Request::OpenPath { .. } => "OpenPath",
-        Request::OpenAt { .. } => "OpenAt",
-        Request::Read { .. } => "Read",
-        Request::Write { .. } => "Write",
-        Request::Close { .. } => "Close",
-        Request::Seek { .. } => "Seek",
-        Request::Ftruncate { .. } => "Ftruncate",
-        Request::Stat { .. } => "Stat",
-        Request::Fstat { .. } => "Fstat",
-        Request::Mkdir { .. } => "Mkdir",
-        Request::MkdirP { .. } => "MkdirP",
-        Request::Unlink { .. } => "Unlink",
-        Request::Readdir { .. } => "Readdir",
-        Request::ReaddirFd { .. } => "ReaddirFd",
-        Request::Rmdir { .. } => "Rmdir",
-        Request::AppendWrite { .. } => "AppendWrite",
-    }
-}
-
 /// Client state for the unified poll loop
 struct Client {
     resources: ClientResources,
@@ -712,13 +686,9 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     };
 
     // Handle request
-    let req_name = request_name(&rpc_request.request);
-    let req_start = wasi::clocks::monotonic_clock::now();
-
     let response = ctx
         .handle_request(rpc_request.request, client.session_id.clone())
         .await;
-    let after_handle = wasi::clocks::monotonic_clock::now();
 
     // Track session ID from connect response
     if let Response::Connected {
@@ -732,7 +702,6 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     // Serialize and send response
     let proto_response = to_proto_response(response);
     let response_bytes = proto_response.encode_to_vec();
-    let after_serialize = wasi::clocks::monotonic_clock::now();
 
     if !write_message(&client.resources.output, &response_bytes) {
         log::info!(
@@ -740,23 +709,6 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
             client.session_id
         );
         return HandleResult::Disconnected;
-    }
-    let after_write = wasi::clocks::monotonic_clock::now();
-
-    let handle_us = (after_handle - req_start) / 1_000;
-    let serialize_us = (after_serialize - after_handle) / 1_000;
-    let write_us = (after_write - after_serialize) / 1_000;
-    let total_us = (after_write - req_start) / 1_000;
-    if matches!(req_name, "Read" | "Write" | "Seek" | "AppendWrite") {
-        log::info!(
-            "[SERVER] {}: handle={}us serialize={}us write={}us total={}us (resp {} bytes)",
-            req_name,
-            handle_us,
-            serialize_us,
-            write_us,
-            total_us,
-            response_bytes.len()
-        );
     }
 
     // Check if we need to sync to S3

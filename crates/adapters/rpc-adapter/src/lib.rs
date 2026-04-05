@@ -88,12 +88,6 @@ impl PersistentConnection {
         const TCP_BUF_SIZE: u64 = 4 * 1024 * 1024; // 4MB
         let _ = socket.set_receive_buffer_size(TCP_BUF_SIZE);
         let _ = socket.set_send_buffer_size(TCP_BUF_SIZE);
-        if let (Ok(recv), Ok(send)) = (socket.receive_buffer_size(), socket.send_buffer_size()) {
-            eprintln!(
-                "[RPC-CLIENT] TCP buffer sizes: recv={}, send={}",
-                recv, send
-            );
-        }
 
         // Do handshake
         Self::send_raw(
@@ -174,9 +168,6 @@ impl PersistentConnection {
 
         // Read message body - pre-allocate buffer to avoid reallocations
         let mut data = Vec::with_capacity(len as usize);
-        let mut read_count = 0u32;
-        let mut min_chunk = u64::MAX;
-        let mut max_chunk = 0u64;
 
         while (data.len() as u64) < len {
             let remaining = len - data.len() as u64;
@@ -189,22 +180,7 @@ impl PersistentConnection {
                 poll(&[&pollable]);
                 continue;
             }
-            let chunk_len = bytes.len() as u64;
-            if chunk_len < min_chunk {
-                min_chunk = chunk_len;
-            }
-            if chunk_len > max_chunk {
-                max_chunk = chunk_len;
-            }
-            read_count += 1;
             data.extend_from_slice(&bytes);
-        }
-
-        if len > 1000 {
-            eprintln!(
-                "[RPC-CLIENT] receive: {} bytes in {} reads (min_chunk={}, max_chunk={})",
-                len, read_count, min_chunk, max_chunk
-            );
         }
 
         protocol::from_proto_response_bytes(&data).map_err(rpc_error_to_wasi)
@@ -223,45 +199,8 @@ impl PersistentConnection {
     }
 
     fn call(&mut self, request: &Request) -> Result<Response, ErrorCode> {
-        let start = wasi::clocks::monotonic_clock::now();
         self.send(request)?;
-        let after_send = wasi::clocks::monotonic_clock::now();
-        let response = self.receive()?;
-        let after_recv = wasi::clocks::monotonic_clock::now();
-
-        let send_ms = (after_send - start) / 1_000_000;
-        let recv_ms = (after_recv - after_send) / 1_000_000;
-        let total_ms = (after_recv - start) / 1_000_000;
-
-        // Log timing for debugging
-        let req_name = match request {
-            Request::Connect { .. } => "Connect",
-            Request::OpenPath { .. } => "OpenPath",
-            Request::OpenAt { .. } => "OpenAt",
-            Request::Read { .. } => "Read",
-            Request::Write { .. } => "Write",
-            Request::Seek { .. } => "Seek",
-            Request::Close { .. } => "Close",
-            Request::Stat { .. } => "Stat",
-            Request::Fstat { .. } => "Fstat",
-            Request::Mkdir { .. } => "Mkdir",
-            Request::MkdirP { .. } => "MkdirP",
-            Request::Unlink { .. } => "Unlink",
-            Request::Rmdir { .. } => "Rmdir",
-            Request::Readdir { .. } => "Readdir",
-            Request::ReaddirFd { .. } => "ReaddirFd",
-            Request::AppendWrite { .. } => "AppendWrite",
-            Request::Ftruncate { .. } => "Ftruncate",
-        };
-        log::debug!(
-            "[RPC] {}: send={}ms recv={}ms total={}ms",
-            req_name,
-            send_ms,
-            recv_ms,
-            total_ms
-        );
-
-        Ok(response)
+        self.receive()
     }
 }
 
@@ -529,8 +468,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
         // Use persistent connection to perform seek + read atomically
         with_connection(|conn| {
-            let start = wasi::clocks::monotonic_clock::now();
-
             // Seek to offset
             let seek_request = Request::Seek {
                 fd: server_fd,
@@ -544,7 +481,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                 _ => return Err(ErrorCode::Io),
             }
-            let after_seek = wasi::clocks::monotonic_clock::now();
 
             // Read data
             let read_request = Request::Read {
@@ -555,14 +491,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
             match conn.receive()? {
                 Response::Data { bytes } => {
-                    let after_read = wasi::clocks::monotonic_clock::now();
-                    let seek_us = (after_seek - start) / 1_000;
-                    let read_us = (after_read - after_seek) / 1_000;
-                    let total_us = (after_read - start) / 1_000;
-                    eprintln!(
-                        "[RPC-CLIENT] Descriptor::read {} bytes @{}: seek={}us read={}us total={}us",
-                        bytes.len(), offset, seek_us, read_us, total_us
-                    );
                     let end_of_stream = bytes.len() < length as usize;
                     Ok((bytes, end_of_stream))
                 }
@@ -576,10 +504,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
         // Use persistent connection to perform seek + write atomically
-        let buf_len = buffer.len();
         with_connection(|conn| {
-            let start = wasi::clocks::monotonic_clock::now();
-
             // Seek to offset
             let seek_request = Request::Seek {
                 fd: server_fd,
@@ -593,7 +518,6 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                 _ => return Err(ErrorCode::Io),
             }
-            let after_seek = wasi::clocks::monotonic_clock::now();
 
             // Write data
             let write_request = Request::Write {
@@ -603,17 +527,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             conn.send(&write_request)?;
 
             match conn.receive()? {
-                Response::Written { count } => {
-                    let after_write = wasi::clocks::monotonic_clock::now();
-                    let seek_us = (after_seek - start) / 1_000;
-                    let write_us = (after_write - after_seek) / 1_000;
-                    let total_us = (after_write - start) / 1_000;
-                    eprintln!(
-                        "[RPC-CLIENT] Descriptor::write {} bytes @{}: seek={}us write={}us total={}us",
-                        buf_len, offset, seek_us, write_us, total_us
-                    );
-                    Ok(count as Filesize)
-                }
+                Response::Written { count } => Ok(count as Filesize),
                 Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                 _ => Err(ErrorCode::Io),
             }
@@ -877,8 +791,6 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
         let current_offset = self.offset.get();
 
         let result = with_connection(|conn| {
-            let start = wasi::clocks::monotonic_clock::now();
-
             // Seek to offset
             let seek_request = Request::Seek {
                 fd: server_fd,
@@ -886,14 +798,12 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
                 whence: 0,
             };
             conn.send(&seek_request)?;
-            let after_seek_send = wasi::clocks::monotonic_clock::now();
 
             match conn.receive()? {
                 Response::Position { .. } => {}
                 Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                 _ => return Err(ErrorCode::Io),
             }
-            let after_seek_recv = wasi::clocks::monotonic_clock::now();
 
             // Read data
             let read_request = Request::Read {
@@ -901,22 +811,9 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
                 length: len as usize,
             };
             conn.send(&read_request)?;
-            let after_read_send = wasi::clocks::monotonic_clock::now();
 
             match conn.receive()? {
-                Response::Data { bytes } => {
-                    let after_read_recv = wasi::clocks::monotonic_clock::now();
-                    let seek_send_us = (after_seek_send - start) / 1_000;
-                    let seek_recv_us = (after_seek_recv - after_seek_send) / 1_000;
-                    let read_send_us = (after_read_send - after_seek_recv) / 1_000;
-                    let read_recv_us = (after_read_recv - after_read_send) / 1_000;
-                    let total_us = (after_read_recv - start) / 1_000;
-                    eprintln!(
-                        "[RPC-CLIENT] StreamRead {} bytes @{}: seek_send={}us seek_recv={}us read_send={}us read_recv={}us total={}us",
-                        bytes.len(), current_offset, seek_send_us, seek_recv_us, read_send_us, read_recv_us, total_us
-                    );
-                    Ok(bytes)
-                }
+                Response::Data { bytes } => Ok(bytes),
                 Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                 _ => Err(ErrorCode::Io),
             }
@@ -981,26 +878,13 @@ impl FileOutputStream {
 
         if self.append {
             with_connection(|conn| {
-                let start = wasi::clocks::monotonic_clock::now();
                 let request = Request::AppendWrite {
                     fd: server_fd,
                     data,
                 };
                 conn.send(&request)?;
-                let after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Written { .. } => {
-                        let after_recv = wasi::clocks::monotonic_clock::now();
-                        let send_ms = (after_send - start) / 1_000_000;
-                        let recv_ms = (after_recv - after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] AppendWrite {} bytes: send={}ms recv={}ms",
-                            data_len,
-                            send_ms,
-                            recv_ms
-                        );
-                        Ok(())
-                    }
+                    Response::Written { .. } => Ok(()),
                     Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                     _ => Err(ErrorCode::Io),
                 }
@@ -1008,50 +892,26 @@ impl FileOutputStream {
         } else {
             with_connection(|conn| {
                 // Seek to start offset
-                let seek_start = wasi::clocks::monotonic_clock::now();
                 let seek_request = Request::Seek {
                     fd: server_fd,
                     offset: start_offset as i64,
                     whence: 0,
                 };
                 conn.send(&seek_request)?;
-                let seek_after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Position { .. } => {
-                        let seek_after_recv = wasi::clocks::monotonic_clock::now();
-                        let seek_send_ms = (seek_after_send - seek_start) / 1_000_000;
-                        let seek_recv_ms = (seek_after_recv - seek_after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] Seek: send={}ms recv={}ms",
-                            seek_send_ms,
-                            seek_recv_ms
-                        );
-                    }
+                    Response::Position { .. } => {}
                     Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
                     _ => return Err(ErrorCode::Io),
                 }
 
                 // Write all data at once
-                let write_start = wasi::clocks::monotonic_clock::now();
                 let write_request = Request::Write {
                     fd: server_fd,
                     data,
                 };
                 conn.send(&write_request)?;
-                let write_after_send = wasi::clocks::monotonic_clock::now();
                 match conn.receive()? {
-                    Response::Written { .. } => {
-                        let write_after_recv = wasi::clocks::monotonic_clock::now();
-                        let write_send_ms = (write_after_send - write_start) / 1_000_000;
-                        let write_recv_ms = (write_after_recv - write_after_send) / 1_000_000;
-                        log::debug!(
-                            "[RPC] Write {} bytes: send={}ms recv={}ms",
-                            data_len,
-                            write_send_ms,
-                            write_recv_ms
-                        );
-                        Ok(())
-                    }
+                    Response::Written { .. } => Ok(()),
                     Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
                     _ => Err(ErrorCode::Io),
                 }
