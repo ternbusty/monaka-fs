@@ -11,7 +11,7 @@ mod wasi_http;
 
 // Generate WASI bindings
 wit_bindgen::generate!({
-    world: "vfs-sync-wasi",
+    world: "vfs-sync-adapter",
     path: "../../../wit",
     generate_all,
 });

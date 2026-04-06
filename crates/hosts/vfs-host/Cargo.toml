@@ -11,7 +11,7 @@ default = []
 # When enabled, all VFS operations go through Arc<Mutex<Fs>> instead of Arc<Fs>
 external-mutex = []
 # Enable S3 synchronization support
-s3-sync = ["dep:vfs-sync", "dep:tokio"]
+s3-sync = ["dep:vfs-sync-host", "dep:tokio"]
 
 [dependencies]
 # vfs-host requires thread-safe fs-core (wasmtime Host trait requires Send+Sync)
@@ -24,7 +24,7 @@ async-trait = "0.1"
 log = "0.4"
 
 # S3 sync (optional)
-vfs-sync = { path = "../../sync/vfs-sync", optional = true }
+vfs-sync-host = { path = "../../sync/vfs-sync-host", optional = true }
 tokio = { version = "1", features = ["rt", "time", "sync"], optional = true }
 
 [lib]

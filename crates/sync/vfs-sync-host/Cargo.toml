@@ -1,5 +1,5 @@
 [package]
-name = "vfs-sync"
+name = "vfs-sync-host"
 version = "0.1.0"
 edition = "2021"
 description = "S3 synchronization for Halycon VFS (native environment)"

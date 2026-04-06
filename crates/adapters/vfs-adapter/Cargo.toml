@@ -12,7 +12,7 @@ default = []
 # This is for benchmarking lock overhead - not needed in production (WASM is single-threaded)
 thread-safe = ["fs-core/thread-safe"]
 s3-sync = [
-    "dep:vfs-sync-wasi",
+    "dep:vfs-sync-adapter",
     "dep:tokio",
     "dep:log",
 ]
@@ -24,7 +24,7 @@ spin = "0.9"
 serde_json = "1"
 
 # S3 sync dependencies (optional)
-vfs-sync-wasi = { path = "../../sync/vfs-sync-wasi", optional = true }
+vfs-sync-adapter = { path = "../../sync/vfs-sync-adapter", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"], optional = true }
 log = { version = "0.4", optional = true }
 

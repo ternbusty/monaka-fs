@@ -3683,7 +3683,7 @@ dependencies = [
  "serde_json",
  "spin",
  "tokio",
- "vfs-sync-wasi",
+ "vfs-sync-adapter",
  "wit-bindgen 0.36.0",
 ]
 
@@ -3697,7 +3697,7 @@ dependencies = [
  "fs-core",
  "log",
  "tokio",
- "vfs-sync",
+ "vfs-sync-host",
  "wasmtime",
  "wasmtime-wasi",
 ]
@@ -3732,29 +3732,12 @@ dependencies = [
  "prost",
  "tokio",
  "vfs-rpc-protocol",
- "vfs-sync-wasi",
+ "vfs-sync-adapter",
  "wit-bindgen 0.36.0",
 ]
 
 [[package]]
-name = "vfs-sync"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "fs-core",
- "futures",
- "log",
- "tokio",
- "vfs-sync-core",
-]
-
-[[package]]
-name = "vfs-sync-core"
-version = "0.1.0"
-
-[[package]]
-name = "vfs-sync-wasi"
+name = "vfs-sync-adapter"
 version = "0.1.0"
 dependencies = [
  "aws-config",
@@ -3770,6 +3753,23 @@ dependencies = [
  "tokio",
  "vfs-sync-core",
  "wit-bindgen 0.36.0",
+]
+
+[[package]]
+name = "vfs-sync-core"
+version = "0.1.0"
+
+[[package]]
+name = "vfs-sync-host"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "fs-core",
+ "futures",
+ "log",
+ "tokio",
+ "vfs-sync-core",
 ]
 
 [[package]]

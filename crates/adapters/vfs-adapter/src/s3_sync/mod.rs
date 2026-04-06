@@ -1,11 +1,11 @@
 //! S3 synchronization module for vfs-adapter
 //!
-//! Thin wrapper around vfs-sync-wasi for S3 sync capabilities.
+//! Thin wrapper around vfs-sync-adapter for S3 sync capabilities.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vfs_sync_wasi::{MetadataCache, S3Storage, SyncConfig, SyncManager};
+use vfs_sync_adapter::{MetadataCache, S3Storage, SyncConfig, SyncManager};
 
 use crate::Fs;
 use crate::SystemTimeProvider;

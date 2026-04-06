@@ -24,7 +24,7 @@ use protocol::{
     from_proto_request, to_proto_response, DirEntry, Metadata, Request, Response, RpcRequest,
 };
 
-use vfs_sync_wasi::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
+use vfs_sync_adapter::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({

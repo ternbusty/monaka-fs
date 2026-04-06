@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 fs-core = { path = "../../core/fs-core", features = ["serde"] }
 vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
-vfs-sync-wasi = { path = "../../sync/vfs-sync-wasi" }
+vfs-sync-adapter = { path = "../../sync/vfs-sync-adapter" }
 prost = "0.13"
 wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
 log = "0.4"
