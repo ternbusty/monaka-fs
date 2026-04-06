@@ -4,11 +4,10 @@ CLI tool for Halycon VFS. Embeds files, composes WASM components, and extracts b
 
 All required `.wasm` adapters and servers are bundled inside the CLI binary.
 
-## Install
+## Build
 
 ```bash
-# From source (requires pre-built WASM — use `make build-cli` from repo root)
-cargo install --path crates/tools/halycon-cli
+make build-cli
 ```
 
 ## Commands

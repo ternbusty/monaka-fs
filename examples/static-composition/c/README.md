@@ -11,7 +11,7 @@ cargo build --target wasm32-wasip2
 cd ../../..
 
 # Compose with halycon
-halycon compose \
+target/release/halycon compose \
   examples/static-composition/c/target/wasm32-wasip2/debug/component_c.wasm \
   -o /tmp/composed-c.wasm
 

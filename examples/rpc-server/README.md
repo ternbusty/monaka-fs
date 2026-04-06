@@ -15,11 +15,12 @@ Multiple composed apps can share a single VFS instance through the same server.
 cargo build -p demo-writer -p demo-reader --target wasm32-wasip2
 
 # Compose with RPC adapter
-halycon compose --rpc target/wasm32-wasip2/debug/demo-writer.wasm -o /tmp/rpc-writer.wasm
-halycon compose --rpc target/wasm32-wasip2/debug/demo-reader.wasm -o /tmp/rpc-reader.wasm
+make build-cli
+target/release/halycon compose --rpc target/wasm32-wasip2/debug/demo-writer.wasm -o /tmp/rpc-writer.wasm
+target/release/halycon compose --rpc target/wasm32-wasip2/debug/demo-reader.wasm -o /tmp/rpc-reader.wasm
 
 # Extract and start the RPC server
-halycon extract server -o /tmp/vfs-rpc-server.wasm
+target/release/halycon extract server -o /tmp/vfs-rpc-server.wasm
 wasmtime run -S inherit-network=y /tmp/vfs-rpc-server.wasm
 
 # In another terminal: run writer then reader
@@ -31,7 +32,7 @@ wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
 
 ```bash
 # Extract S3-enabled server
-halycon extract server --s3-sync -o /tmp/vfs-rpc-server-s3.wasm
+target/release/halycon extract server --s3-sync -o /tmp/vfs-rpc-server-s3.wasm
 
 # Start LocalStack
 docker compose up -d
@@ -46,6 +47,13 @@ wasmtime run -S inherit-network=y -S http \
   --env AWS_SECRET_ACCESS_KEY=test \
   --env AWS_REGION=ap-northeast-1 \
   /tmp/vfs-rpc-server-s3.wasm
+```
+
+# Verify S3 sync
+
+```
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
+awslocal s3 ls s3://test-vfs-bucket/ --recursive
 ```
 
 ## Manual Setup (without `halycon` CLI)

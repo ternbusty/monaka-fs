@@ -17,12 +17,13 @@ Job3 (tokio, anyhow) --+
 cargo build -p ci-job --target wasm32-wasip2
 
 # Compose with RPC adapter
-halycon compose --rpc \
+make build-cli
+target/release/halycon compose --rpc \
   target/wasm32-wasip2/debug/ci-job.wasm \
   -o /tmp/ci-job-composed.wasm
 
 # Extract and start the RPC server
-halycon extract server -o /tmp/vfs-rpc-server.wasm
+target/release/halycon  extract server -o /tmp/vfs-rpc-server.wasm
 wasmtime run -S inherit-network=y -S http /tmp/vfs-rpc-server.wasm
 
 # In another terminal: run 3 jobs in parallel

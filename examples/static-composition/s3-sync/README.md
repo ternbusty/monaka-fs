@@ -9,7 +9,8 @@ VFS with S3 synchronization through static composition. The VFS + S3 sync is emb
 cd examples/static-composition/s3-sync && cargo build --target wasm32-wasip2 && cd ../../..
 
 # Compose with S3 sync adapter
-halycon compose --s3-sync \
+make build-cli
+target/release/halycon compose --s3-sync \
   examples/static-composition/s3-sync/target/wasm32-wasip2/debug/static-s3-demo.wasm \
   -o /tmp/static-s3-composed.wasm
 

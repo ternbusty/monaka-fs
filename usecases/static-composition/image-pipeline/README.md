@@ -15,7 +15,8 @@ File-based image processing pipeline. The app performs resize and format convers
 cargo build -p image-processor --target wasm32-wasip2
 
 # Compose
-halycon compose \
+make build-cli
+target/release/halycon compose \
   target/wasm32-wasip2/debug/image-processor.wasm \
   -o /tmp/image-processor-composed.wasm
 

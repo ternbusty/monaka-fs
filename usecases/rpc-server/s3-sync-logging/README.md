@@ -18,12 +18,13 @@ replica-3 --+        |
 cargo build -p logger --target wasm32-wasip2
 
 # Compose with RPC adapter
-halycon compose --rpc \
+make build-cli
+target/release/halycon compose --rpc \
   target/wasm32-wasip2/debug/logger.wasm \
   -o /tmp/composed-logger.wasm
 
 # Extract S3-enabled server and start it
-halycon extract server --s3-sync -o /tmp/vfs-rpc-server.wasm
+target/release/halycon extract server --s3-sync -o /tmp/vfs-rpc-server.wasm
 
 # Start LocalStack
 docker compose up -d
