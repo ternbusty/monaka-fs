@@ -26,6 +26,7 @@ members = [
   "examples/apps/demo-fs-operations",
   "examples/apps/demo-writer",
   "examples/apps/demo-reader",
+  "examples/static-composition/embed",
 
   # Examples - Host Trait
   "examples/host-trait/runtime-linker",

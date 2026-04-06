@@ -1138,6 +1138,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "demo-embed-read"
+version = "0.1.0"
+
+[[package]]
 name = "demo-fs-operations"
 version = "0.1.0"
 
