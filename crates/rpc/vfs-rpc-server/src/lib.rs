@@ -7,8 +7,6 @@
 #![no_main]
 #![allow(warnings)]
 
-mod protocol;
-
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -18,10 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_core::{Fs, FsError, MonotonicCounter};
 use prost::Message;
-use vfs_rpc_protocol::{ErrorCode, RpcRequest as ProtoRpcRequest, PROTOCOL_VERSION};
-
-use protocol::{
-    from_proto_request, to_proto_response, DirEntry, Metadata, Request, Response, RpcRequest,
+use vfs_rpc_protocol::{
+    from_proto_request, to_proto_response, DirEntry, ErrorCode, FileMetadata, Request, Response,
+    RpcRequest as ProtoRpcRequest, RpcRequestMessage, PROTOCOL_VERSION,
 };
 
 #[cfg(feature = "s3-sync")]
@@ -268,7 +265,7 @@ impl ServerContext {
 
             Request::Fstat { fd } => match self.fs.borrow().fstat(fd) {
                 Ok(meta) => Response::Metadata {
-                    metadata: Metadata {
+                    metadata: FileMetadata {
                         size: meta.size,
                         created: meta.created,
                         modified: meta.modified,
@@ -280,7 +277,7 @@ impl ServerContext {
 
             Request::Stat { path } => match self.fs.borrow().stat(&path) {
                 Ok(meta) => Response::Metadata {
-                    metadata: Metadata {
+                    metadata: FileMetadata {
                         size: meta.size,
                         created: meta.created,
                         modified: meta.modified,

@@ -15,9 +15,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Once;
 
-mod protocol;
-use protocol::{ErrorCode as RpcErrorCode, Request, Response, RpcRequest};
-use vfs_rpc_protocol::PROTOCOL_VERSION;
+use vfs_rpc_protocol::{
+    from_proto_response_bytes, to_proto_request_bytes, ErrorCode as RpcErrorCode, Request,
+    Response, RpcRequestMessage, PROTOCOL_VERSION,
+};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -115,11 +116,11 @@ impl PersistentConnection {
         session_id: Option<String>,
         request: &Request,
     ) -> Result<(), ErrorCode> {
-        let rpc_request = RpcRequest {
+        let rpc_request = RpcRequestMessage {
             session_id,
             request: request.clone(),
         };
-        let data = protocol::to_proto_request_bytes(&rpc_request);
+        let data = to_proto_request_bytes(&rpc_request);
         let len = (data.len() as u32).to_be_bytes();
 
         // Write length prefix + data together
@@ -183,7 +184,7 @@ impl PersistentConnection {
             data.extend_from_slice(&bytes);
         }
 
-        protocol::from_proto_response_bytes(&data).map_err(rpc_error_to_wasi)
+        from_proto_response_bytes(&data).map_err(rpc_error_to_wasi)
     }
 
     fn send(&mut self, request: &Request) -> Result<(), ErrorCode> {
