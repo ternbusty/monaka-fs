@@ -306,7 +306,7 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
     })
 }
 
-fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
+fn find_monaka_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
     use wasmparser::{Parser, Payload};
 
     let mut ptr_global_idx: Option<u32> = None;
@@ -319,12 +319,12 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
             for export in reader {
                 let export = export?;
                 match export.name {
-                    "HALYCON_FS_DATA_PTR" => {
+                    "MONAKA_FS_FS_DATA_PTR" => {
                         if let wasmparser::ExternalKind::Global = export.kind {
                             ptr_global_idx = Some(export.index);
                         }
                     }
-                    "HALYCON_FS_DATA_LEN" => {
+                    "MONAKA_FS_FS_DATA_LEN" => {
                         if let wasmparser::ExternalKind::Global = export.kind {
                             len_global_idx = Some(export.index);
                         }
@@ -335,8 +335,8 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
         }
     }
 
-    let ptr_idx = ptr_global_idx.context("HALYCON_FS_DATA_PTR export not found")?;
-    let len_idx = len_global_idx.context("HALYCON_FS_DATA_LEN export not found")?;
+    let ptr_idx = ptr_global_idx.context("MONAKA_FS_FS_DATA_PTR export not found")?;
+    let len_idx = len_global_idx.context("MONAKA_FS_FS_DATA_LEN export not found")?;
 
     let mut global_count = 0u32;
     for payload in Parser::new(0).parse_all(module_bytes) {
@@ -364,19 +364,20 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
         }
     }
 
-    let ptr = ptr_addr.context("Could not find HALYCON_FS_DATA_PTR address")?;
-    let len = len_addr.context("Could not find HALYCON_FS_DATA_LEN address")?;
+    let ptr = ptr_addr.context("Could not find MONAKA_FS_FS_DATA_PTR address")?;
+    let len = len_addr.context("Could not find MONAKA_FS_FS_DATA_LEN address")?;
 
     Ok((ptr, len))
 }
 
-fn has_halycon_globals(module_bytes: &[u8]) -> bool {
+fn has_monaka_globals(module_bytes: &[u8]) -> bool {
     use wasmparser::{Parser, Payload};
 
     for payload in Parser::new(0).parse_all(module_bytes) {
         if let Ok(Payload::ExportSection(reader)) = payload {
             for export in reader.into_iter().flatten() {
-                if export.name == "HALYCON_FS_DATA_PTR" || export.name == "HALYCON_FS_DATA_LEN" {
+                if export.name == "MONAKA_FS_FS_DATA_PTR" || export.name == "MONAKA_FS_FS_DATA_LEN"
+                {
                     return true;
                 }
             }
@@ -385,7 +386,7 @@ fn has_halycon_globals(module_bytes: &[u8]) -> bool {
     false
 }
 
-fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
+fn find_monaka_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
     use wasmparser::{Parser, Payload};
 
     for payload in Parser::new(0).parse_all(bytes) {
@@ -394,7 +395,7 @@ fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
                 unchecked_range, ..
             }) => {
                 let module_bytes = &bytes[unchecked_range.start..unchecked_range.end];
-                if has_halycon_globals(module_bytes) {
+                if has_monaka_globals(module_bytes) {
                     return Some((1, unchecked_range.start, unchecked_range.end));
                 }
             }
@@ -402,7 +403,7 @@ fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
                 unchecked_range, ..
             }) => {
                 let component_bytes = &bytes[unchecked_range.start..unchecked_range.end];
-                if find_halycon_target(component_bytes).is_some() {
+                if find_monaka_target(component_bytes).is_some() {
                     return Some((4, unchecked_range.start, unchecked_range.end));
                 }
             }
@@ -413,8 +414,8 @@ fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
 }
 
 fn embed_into_component(component_bytes: &[u8], snapshot_bytes: &[u8]) -> Result<Vec<u8>> {
-    let (section_type, start, end) = find_halycon_target(component_bytes)
-        .context("No module with HALYCON globals found in component")?;
+    let (section_type, start, end) = find_monaka_target(component_bytes)
+        .context("No module with MONAKA_FS globals found in component")?;
 
     if section_type == 4 {
         let nested_component = &component_bytes[start..end];
@@ -430,7 +431,7 @@ fn embed_into_component(component_bytes: &[u8], snapshot_bytes: &[u8]) -> Result
         Ok(result)
     } else {
         let module_bytes = &component_bytes[start..end];
-        let (ptr_addr, len_addr) = find_halycon_addresses(module_bytes)?;
+        let (ptr_addr, len_addr) = find_monaka_addresses(module_bytes)?;
         let modified_module = modify_core_module(module_bytes, snapshot_bytes, ptr_addr, len_addr)?;
         let section_header_start = find_section_header_start(component_bytes, start, 1)?;
 

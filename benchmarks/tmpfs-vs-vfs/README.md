@@ -1,6 +1,6 @@
 # tmpfs vs VFS Benchmark
 
-Measures the performance overhead of Halycon's VFS abstraction layer compared to host-level filesystems (ext4 and tmpfs).
+Measures the performance overhead of Monaka's VFS abstraction layer compared to host-level filesystems (ext4 and tmpfs).
 
 ## How to Run
 
@@ -57,7 +57,7 @@ Environment:
 | VM OS | Ubuntu 24.04.3 LTS |
 | wasmtime | 40.0.1 |
 
-| Operation | Size | Halycon VFS | tmpfs | ext4 |
+| Operation | Size | Monaka VFS | tmpfs | ext4 |
 |-----------|------|-------------|-------|------|
 | Sequential Read | 1MB | 0.43ms (2,355 MB/s) | 0.17ms (6,050 MB/s) | 1.17ms (856 MB/s) |
 | | 10MB | 4.39ms (2,277 MB/s) | 2.10ms (4,763 MB/s) | 7.52ms (1,330 MB/s) |

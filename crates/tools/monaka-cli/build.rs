@@ -59,7 +59,7 @@ fn main() {
     }
 
     if !missing.is_empty() {
-        let mut msg = String::from("Missing WASM binaries required to build halycon CLI:\n\n");
+        let mut msg = String::from("Missing WASM binaries required to build monaka CLI:\n\n");
         for (name, hint) in &missing {
             msg.push_str(&format!("  {name}:\n       {hint}\n\n"));
         }

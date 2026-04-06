@@ -2,7 +2,7 @@
 /// Adapter that imports and re-exports WASI I/O interfaces (wasi-virt style)
 /// to maintain Resource ID consistency while providing custom filesystem implementation
 
-package halycon:vfs@0.1.0;
+package monaka:vfs@0.1.0;
 
 /// Base VFS adapter without S3 sync
 world vfs-adapter {

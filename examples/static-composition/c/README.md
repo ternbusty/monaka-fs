@@ -2,7 +2,7 @@
 
 C application using standard C I/O (`stdio.h`, `unistd.h`, `dirent.h`), compiled to WASM and composed with `vfs-adapter`.
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the C component (standalone package, must build from its directory)
@@ -10,8 +10,8 @@ cd examples/static-composition/c
 cargo build --target wasm32-wasip2
 cd ../../..
 
-# Compose with halycon
-target/release/halycon compose \
+# Compose with monaka
+target/release/monaka compose \
   examples/static-composition/c/target/wasm32-wasip2/debug/component_c.wasm \
   -o /tmp/composed-c.wasm
 
@@ -23,7 +23,7 @@ wasmtime run /tmp/composed-c.wasm
 
 4 test suites (basic file operations, directory operations, metadata operations, error handling), implemented in C using standard C I/O functions.
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ### Prerequisites
 

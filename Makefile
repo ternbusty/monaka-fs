@@ -1,4 +1,4 @@
-# halycon Makefile
+# monaka Makefile
 
 .PHONY: build build-release build-all build-native build-wasm build-wasm-release build-cli clean help
 .PHONY: check-prereqs install-prereqs info
@@ -47,7 +47,7 @@ build-wasm-release:
 		-p vfs-rpc-server
 	@echo "WASM packages built (release)"
 
-# Build halycon CLI (builds all required WASM first, then the native CLI)
+# Build monaka CLI (builds all required WASM first, then the native CLI)
 build-cli:
 	@echo "=== Building WASM components for CLI ==="
 	@echo "Building vfs-adapter (S3 sync)..."
@@ -59,9 +59,9 @@ build-cli:
 	@cp target/wasm32-wasip2/release/vfs_rpc_server.wasm target/wasm32-wasip2/s3-release/vfs_rpc_server.wasm
 	@echo "Building vfs-adapter, rpc-adapter, vfs-rpc-server (no S3)..."
 	@cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
-	@echo "=== Building halycon CLI ==="
-	@cargo build --release -p halycon
-	@echo "CLI built: target/release/halycon"
+	@echo "=== Building monaka CLI ==="
+	@cargo build --release -p monaka
+	@echo "CLI built: target/release/monaka"
 
 # Clean build artifacts
 clean:
@@ -93,7 +93,7 @@ install-prereqs:
 
 # Show file information
 info:
-	@echo "halycon - WebAssembly Component Model VFS"
+	@echo "monaka - WebAssembly Component Model VFS"
 	@echo "=========================================="
 	@echo ""
 	@if [ -f target/wasm32-wasip2/debug/vfs_adapter.wasm ]; then \
@@ -108,7 +108,7 @@ info:
 # =============================================================================
 
 help:
-	@echo "halycon - WebAssembly Component Model Filesystem"
+	@echo "monaka - WebAssembly Component Model Filesystem"
 	@echo "================================================="
 	@echo ""
 	@echo "Build:"
@@ -117,7 +117,7 @@ help:
 	@echo "  make build-wasm                         - Build all WASM packages"
 	@echo "  make build-wasm-release                 - Build all WASM packages (release)"
 	@echo "  make build-all                          - Build everything"
-	@echo "  make build-cli                          - Build halycon CLI (WASM + native)"
+	@echo "  make build-cli                          - Build monaka CLI (WASM + native)"
 	@echo "  make clean                              - Clean build artifacts"
 	@echo ""
 	@echo "Utility:"

@@ -6,3 +6,24 @@ pre-commit:
       stage_fixed: true
     clippy:
       run: cargo clippy --all-targets --all-features -- -D warnings
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: |
+        msg=$(head -1 {1})
+        if ! echo "$msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'; then
+          echo "ERROR: Commit message must follow Conventional Commits format:"
+          echo ""
+          echo "  <type>[optional scope]: <description>"
+          echo ""
+          echo "  Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+          echo ""
+          echo "  Examples:"
+          echo "    feat: add S3 sync support"
+          echo "    fix(rpc-server): handle connection timeout"
+          echo "    docs: update README with CLI usage"
+          echo ""
+          echo "  Got: $msg"
+          exit 1
+        fi

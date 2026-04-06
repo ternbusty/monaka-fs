@@ -6,20 +6,20 @@ Build-time composition: combine a WASM application with `vfs-adapter` into a sin
 App (std::fs) + vfs-adapter  -->  Composed WASM
 ```
 
-## Quick Start with `halycon` CLI
+## Quick Start with `monaka` CLI
 
 ```bash
 # Install (from repository root)
 make build-cli
 
 # Compose any app with vfs-adapter
-halycon compose my-app.wasm -o composed.wasm
+monaka compose my-app.wasm -o composed.wasm
 
 # With file embedding
-halycon compose --mount /data=./local-dir my-app.wasm -o composed.wasm
+monaka compose --mount /data=./local-dir my-app.wasm -o composed.wasm
 
 # With S3 sync
-halycon compose --s3-sync my-app.wasm -o composed.wasm
+monaka compose --s3-sync my-app.wasm -o composed.wasm
 
 # Run
 wasmtime run composed.wasm
@@ -33,7 +33,7 @@ wasmtime run composed.wasm
 | [c/](./c/) | C application using standard C I/O functions |
 | [s3-sync/](./s3-sync/) | Rust application with automatic S3 syncing |
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 Any WASM app from [apps/](../apps/) can also be composed manually with `wac plug`:
 

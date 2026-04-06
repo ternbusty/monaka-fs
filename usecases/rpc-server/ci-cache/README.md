@@ -10,7 +10,7 @@ Job2 (serde, anyhow) --+--> vfs-rpc-server (TCP:9000) --> /cache/
 Job3 (tokio, anyhow) --+
 ```
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the app
@@ -18,12 +18,12 @@ cargo build -p ci-job --target wasm32-wasip2
 
 # Compose with RPC adapter
 make build-cli
-target/release/halycon compose --rpc \
+target/release/monaka compose --rpc \
   target/wasm32-wasip2/debug/ci-job.wasm \
   -o /tmp/ci-job-composed.wasm
 
 # Extract and start the RPC server
-target/release/halycon  extract server -o /tmp/vfs-rpc-server.wasm
+target/release/monaka  extract server -o /tmp/vfs-rpc-server.wasm
 wasmtime run -S inherit-network=y -S http /tmp/vfs-rpc-server.wasm
 
 # In another terminal: run 3 jobs in parallel
@@ -59,7 +59,7 @@ For each dependency:
 [Job3] Done
 ```
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ```bash
 cargo build -p vfs-rpc-server --target wasm32-wasip2

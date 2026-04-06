@@ -2,7 +2,7 @@
 
 Demonstrates embedding local files into `vfs-adapter` and composing with an application.
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the app
@@ -10,7 +10,7 @@ cargo build --release -p demo-embed-read --target wasm32-wasip2
 
 # Embed files and compose in one step
 make build-cli
-target/release/halycon compose \
+target/release/monaka compose \
   --mount "/data=examples/static-composition/embed/testdata" \
   target/wasm32-wasip2/release/demo-embed-read.wasm \
   -o /tmp/embed-example.wasm
@@ -37,14 +37,14 @@ Reading /data/world.txt:
 === Done ===
 ```
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ### Prerequisites
 
 ```bash
 rustup target add wasm32-wasip2
 cargo install wac-cli wasmtime-cli
-cargo install --path crates/tools/halycon-cli
+cargo install --path crates/tools/monaka-cli
 ```
 
 ### Build & Compose
@@ -57,7 +57,7 @@ cargo build --release -p vfs-adapter --target wasm32-wasip2
 cargo build --release -p demo-embed-read --target wasm32-wasip2
 
 # Embed files into the adapter
-halycon embed \
+monaka embed \
   --mount "/data=examples/static-composition/embed/testdata" \
   -o /tmp/vfs-adapter-packed.wasm
 

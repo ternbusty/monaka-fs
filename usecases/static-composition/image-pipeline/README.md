@@ -8,7 +8,7 @@ File-based image processing pipeline. The app performs resize and format convers
 
 **Deployment method**: Static Composition (`vfs-adapter`)
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the app
@@ -16,7 +16,7 @@ cargo build -p image-processor --target wasm32-wasip2
 
 # Compose
 make build-cli
-target/release/halycon compose \
+target/release/monaka compose \
   target/wasm32-wasip2/debug/image-processor.wasm \
   -o /tmp/image-processor-composed.wasm
 
@@ -46,7 +46,7 @@ Output: /output/photo.png (272 bytes)
 PNG header verified!
 ```
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ```bash
 cargo build -p image-processor --target wasm32-wasip2

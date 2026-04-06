@@ -1,6 +1,6 @@
-//! VFS Sync - S3 synchronization for Halycon VFS
+//! VFS Sync - S3 synchronization for Monaka VFS
 //!
-//! This crate provides S3 synchronization capabilities for the Halycon VFS.
+//! This crate provides S3 synchronization capabilities for the Monaka VFS.
 //! It is designed for native (non-WASI) environments and uses the standard
 //! AWS SDK HTTP client.
 //!

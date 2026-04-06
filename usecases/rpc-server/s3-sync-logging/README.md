@@ -11,7 +11,7 @@ replica-3 --+        |
               /logs/app.log
 ```
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the app
@@ -19,12 +19,12 @@ cargo build -p logger --target wasm32-wasip2
 
 # Compose with RPC adapter
 make build-cli
-target/release/halycon compose --rpc \
+target/release/monaka compose --rpc \
   target/wasm32-wasip2/debug/logger.wasm \
   -o /tmp/composed-logger.wasm
 
 # Extract S3-enabled server and start it
-target/release/halycon extract server --s3-sync -o /tmp/vfs-rpc-server.wasm
+target/release/monaka extract server --s3-sync -o /tmp/vfs-rpc-server.wasm
 
 # Start LocalStack
 docker compose up -d
@@ -56,7 +56,7 @@ awslocal s3 cp s3://test-vfs-bucket/vfs/files/logs/app.log -
 - Docker (for LocalStack)
 - `awslocal` (`uv tool install awscli-local awscli`)
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ```bash
 cargo build -p vfs-rpc-server --target wasm32-wasip2 --features s3-sync

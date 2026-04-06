@@ -6,7 +6,7 @@ Two WASM applications sharing an in-memory VFS via host-trait (`vfs-host`):
 
 **Deployment method**: Host Trait (`vfs-host` crate — `cargo add vfs-host`)
 
-> This use case demonstrates the Host Trait method, where a native Rust program hosts WASM instances sharing a single VFS. The `halycon` CLI is not used here; instead, the host program (`sensor-pipeline-runner`) links against `vfs-host` directly.
+> This use case demonstrates the Host Trait method, where a native Rust program hosts WASM instances sharing a single VFS. The `monaka` CLI is not used here; instead, the host program (`sensor-pipeline-runner`) links against `vfs-host` directly.
 
 ## Build
 

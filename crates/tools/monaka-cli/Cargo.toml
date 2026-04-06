@@ -1,12 +1,12 @@
 [package]
-name = "halycon"
+name = "monaka"
 version = "0.1.0"
 edition = "2024"
-description = "CLI tool for Halycon VFS - embed files, compose WASM components, and extract binaries"
+description = "CLI tool for Monaka VFS - embed files, compose WASM components, and extract binaries"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "halycon"
+name = "monaka"
 path = "src/main.rs"
 
 [dependencies]

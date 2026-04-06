@@ -1,4 +1,4 @@
-//! S3 synchronization for Halycon VFS (WASI environment)
+//! S3 synchronization for Monaka VFS (WASI environment)
 //!
 //! Provides S3 sync capabilities using WASI HTTP for WASM components.
 //! Designed for single-threaded WASI environment.

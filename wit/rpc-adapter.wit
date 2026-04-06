@@ -1,4 +1,4 @@
-package halycon:vfs@0.1.0;
+package monaka:vfs@0.1.0;
 
 // RPC Adapter World Definition
 // Adapter that exports WASI filesystem interfaces and makes RPC calls to vfs-rpc-server

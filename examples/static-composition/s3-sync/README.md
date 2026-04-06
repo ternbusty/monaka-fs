@@ -2,7 +2,7 @@
 
 VFS with S3 synchronization through static composition. The VFS + S3 sync is embedded directly into the WASM component.
 
-## Using `halycon` CLI
+## Using `monaka` CLI
 
 ```bash
 # Build the demo app (standalone package)
@@ -10,7 +10,7 @@ cd examples/static-composition/s3-sync && cargo build --target wasm32-wasip2 && 
 
 # Compose with S3 sync adapter
 make build-cli
-target/release/halycon compose --s3-sync \
+target/release/monaka compose --s3-sync \
   examples/static-composition/s3-sync/target/wasm32-wasip2/debug/static-s3-demo.wasm \
   -o /tmp/static-s3-composed.wasm
 
@@ -71,7 +71,7 @@ awslocal s3 cp s3://test-vfs-bucket/demo/files/data/config.json -
 | `AWS_SECRET_ACCESS_KEY` | AWS credential | - |
 | `AWS_REGION` | AWS region | - |
 
-## Manual Setup (without `halycon` CLI)
+## Manual Setup (without `monaka` CLI)
 
 ### Prerequisites
 

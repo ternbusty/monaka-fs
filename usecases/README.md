@@ -1,13 +1,13 @@
 # Use Cases
 
-End-to-end demonstrations of Halycon VFS in realistic scenarios, organized by deployment method.
+End-to-end demonstrations of Monaka VFS in realistic scenarios, organized by deployment method.
 
 ## Static Composition
 
-Compose your app with `vfs-adapter` into a single WASM binary using the `halycon` CLI:
+Compose your app with `vfs-adapter` into a single WASM binary using the `monaka` CLI:
 
 ```bash
-halycon compose my-app.wasm -o composed.wasm
+monaka compose my-app.wasm -o composed.wasm
 ```
 
 | Use Case | Description |
@@ -33,8 +33,8 @@ cargo add vfs-host
 Compose your app with `rpc-adapter` and run a shared VFS server:
 
 ```bash
-halycon compose --rpc my-app.wasm -o composed.wasm
-halycon extract server -o vfs-rpc-server.wasm
+monaka compose --rpc my-app.wasm -o composed.wasm
+monaka extract server -o vfs-rpc-server.wasm
 ```
 
 | Use Case | Description |

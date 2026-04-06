@@ -1,6 +1,6 @@
 # Examples
 
-Examples demonstrating the Halycon VFS.
+Examples demonstrating the Monaka VFS.
 
 ## Apps
 

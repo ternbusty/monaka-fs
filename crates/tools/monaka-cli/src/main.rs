@@ -1,4 +1,4 @@
-//! halycon: CLI tool for Halycon VFS
+//! monaka: CLI tool for Monaka VFS
 //!
 //! Embed files, compose WASM components, and extract bundled binaries.
 
@@ -12,9 +12,9 @@ mod extract;
 mod wasm;
 
 #[derive(Parser, Debug)]
-#[command(name = "halycon")]
+#[command(name = "monaka")]
 #[command(
-    about = "CLI tool for Halycon VFS - embed files, compose WASM components, and extract binaries"
+    about = "CLI tool for Monaka VFS - embed files, compose WASM components, and extract binaries"
 )]
 struct Args {
     #[command(subcommand)]

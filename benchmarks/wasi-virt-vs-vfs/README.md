@@ -2,14 +2,14 @@
 
 Compares read performance between two approaches for embedding files into WASM binaries:
 - **wasi-virt** (BytecodeAlliance): Static file virtualization
-- **Halycon VFS**: Snapshot embedding via `halycon-pack`
+- **Monaka VFS**: Snapshot embedding via `monaka-pack`
 
 ## How to Run
 
 ```bash
 cd benchmarks/wasi-virt-vs-vfs
 
-./build.sh    # Build both WASM variants (requires wasi-virt, halycon-pack)
+./build.sh    # Build both WASM variants (requires wasi-virt, monaka-pack)
 ./run.sh      # Run benchmark
 ```
 
@@ -17,7 +17,7 @@ cd benchmarks/wasi-virt-vs-vfs
 
 - `wasi-virt`: `cargo install --git https://github.com/bytecodealliance/wasi-virt`
 - Rust nightly `nightly-2025-06-25` with `wasm32-wasip2` target (required by wasi-virt)
-- `halycon-pack`: `cargo install --path crates/tools/halycon-pack`
+- `monaka-pack`: `cargo install --path crates/tools/monaka-pack`
 
 ## Test Scenarios
 
@@ -53,7 +53,7 @@ Environment:
 | Rust | 1.92.0 (stable) / nightly-2025-06-25 (wasi-virt) |
 | wasmtime | 39.0.1 |
 
-| Operation | Size | Halycon VFS | wasi-virt |
+| Operation | Size | Monaka VFS | wasi-virt |
 |-----------|------|-------------|-----------|
 | Sequential Read | 1MB | 0.38ms (2,655 MB/s) | 0.45ms (2,221 MB/s) |
 | | 10MB | 4.27ms (2,340 MB/s) | 4.32ms (2,314 MB/s) |
