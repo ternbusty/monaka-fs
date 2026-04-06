@@ -26,7 +26,7 @@ fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     let mut linker1 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker1)?;
 
-    let ingest_path = "../../../target/wasm32-wasip2/debug/sensor-ingest.wasm";
+    let ingest_path = "target/wasm32-wasip2/debug/sensor-ingest.wasm";
     let ingest_component =
         Component::from_file(engine, ingest_path).context("Failed to load sensor-ingest.wasm")?;
 
@@ -47,7 +47,7 @@ fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     let mut linker2 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker2)?;
 
-    let process_path = "../../../target/wasm32-wasip2/debug/sensor-process.wasm";
+    let process_path = "target/wasm32-wasip2/debug/sensor-process.wasm";
     let process_component =
         Component::from_file(engine, process_path).context("Failed to load sensor-process.wasm")?;
 
