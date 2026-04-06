@@ -177,10 +177,10 @@ These methods return `Unsupported` error as fs-core doesn't support them:
 
 ## Complete Example
 
-See the `examples/component-model/runtime-linker` directory in the parent repository for a complete working example:
+See the `examples/host-trait/runtime-linker` directory in the parent repository for a complete working example:
 
 ```bash
-cd examples/component-model/runtime-linker
+cd examples/host-trait/runtime-linker
 cargo run
 ```
 

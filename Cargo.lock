@@ -1138,11 +1138,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "demo-reader"
+name = "demo-fs-operations"
 version = "0.1.0"
 
 [[package]]
-name = "demo-std-fs"
+name = "demo-reader"
 version = "0.1.0"
 
 [[package]]

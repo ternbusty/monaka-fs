@@ -877,7 +877,7 @@ impl FileOutputStream {
         let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
         let start_offset = self.offset.get();
 
-        if self.append {
+        let result = if self.append {
             with_connection(|conn| {
                 let request = Request::AppendWrite {
                     fd: server_fd,
@@ -917,7 +917,14 @@ impl FileOutputStream {
                     _ => Err(ErrorCode::Io),
                 }
             })
+        };
+
+        // Advance offset after successful write
+        if result.is_ok() && !self.append {
+            self.offset.set(start_offset + data_len as u64);
         }
+
+        result
     }
 }
 
@@ -941,15 +948,10 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
         &self,
         contents: Vec<u8>,
     ) -> Result<(), exports::wasi::io::streams::StreamError> {
-        // Just buffer the data - actual write happens on drop
-        let len = contents.len() as u64;
+        // Just buffer the data - actual write happens on flush/drop.
+        // Do NOT advance offset here; flush_buffer reads offset as the
+        // start position and advances it after the write completes.
         self.buffer.borrow_mut().extend(contents);
-
-        // Update offset for non-append mode
-        if !self.append {
-            let current = self.offset.get();
-            self.offset.set(current + len);
-        }
 
         Ok(())
     }

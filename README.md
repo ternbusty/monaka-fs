@@ -27,14 +27,9 @@ halycon/
 │       ├── vfs-rpc-protocol/   # RPC protocol definitions
 │       └── vfs-rpc-server/     # RPC server (WASM component)
 ├── examples/
-│   ├── rpc/                    # RPC-based examples
-│   │   ├── demo-writer/        # Writer application
-│   │   ├── demo-reader/        # Reader application
-│   │   ├── demo-std-fs/        # std::fs demonstration
-│   │   └── demo-direct-rpc/    # Direct RPC communication demo
-│   └── component-model/
-│       ├── runtime-linker/     # Dynamic component loader
-│       └── static/             # Static composition examples
+│   ├── static-composition/     # Build-time composition with vfs-adapter
+│   ├── host-trait/             # Runtime dynamic linking with vfs-host
+│   └── rpc-server/             # TCP-based sharing via vfs-rpc-server
 ├── wit/                        # WIT interface definitions
 └── deprecated/                 # Legacy code (for reference)
 ```
@@ -56,72 +51,16 @@ cargo build --target wasm32-wasip2 \
   -p vfs-rpc-server \
   -p demo-writer \
   -p demo-reader \
-  -p demo-std-fs \
-  -p direct-rpc-demo
+  -p demo-fs-operations
 ```
 
 ## Running Examples
 
-### RPC Examples
+See the [`examples/`](./examples/) directory for detailed instructions on each deployment method:
 
-#### Multi-Client Test (Writer + Reader)
-
-This example demonstrates multiple applications sharing a single VFS instance:
-
-```bash
-# Use the provided script
-./examples/rpc/run-multi-client-test.sh
-```
-
-Or manually:
-
-```bash
-# Build composed components
-./examples/rpc/build-composed.sh
-
-# Terminal 1: Start VFS RPC Server
-wasmtime run -S inherit-network=y -S http ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-
-# Terminal 2: Run Writer App (creates files)
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-writer.wasm
-
-# Terminal 3: Run Reader App (reads files created by Writer)
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/composed-demo-reader.wasm
-```
-
-#### Direct RPC Demo
-
-This example shows direct WASI socket communication with the VFS server:
-
-```bash
-# Use the provided script
-./examples/rpc/run-direct-rpc-demo.sh
-```
-
-Or manually:
-
-```bash
-# Terminal 1: Start VFS RPC Server
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-
-# Terminal 2: Run Direct RPC Demo
-wasmtime run -S inherit-network=y ./target/wasm32-wasip2/debug/direct_rpc_demo.wasm
-```
-
-### Component Model Examples
-
-#### Runtime Linker
-
-The runtime-linker example demonstrates dynamic component loading with shared VFS:
-
-```bash
-# Build
-cargo build -p runtime-linker
-cargo build -p vfs-adapter --target wasm32-wasip2
-
-# Run
-./target/debug/runtime-linker ./target/wasm32-wasip2/debug/vfs_adapter.wasm <app.wasm>
-```
+- **[Static Composition](./examples/static-composition/)** — Build-time composition with `wac plug` + `vfs-adapter`
+- **[Host Trait](./examples/host-trait/)** — Runtime dynamic linking with `vfs-host`
+- **[RPC Server](./examples/rpc-server/)** — TCP-based sharing via `vfs-rpc-server`
 
 ## Testing
 
