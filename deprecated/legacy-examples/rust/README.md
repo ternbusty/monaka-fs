@@ -1,6 +1,6 @@
 # Rust Example (Legacy/Deprecated)
 
-Note: This is a legacy example using the deprecated fs-wasm library with wasm32-wasip1 target. For the current approach, see the examples in `/examples/component-model/` or `/examples/rpc/` which use wasm32-wasip2.
+Note: This is a legacy example using the deprecated fs-wasm library with wasm32-wasip1 target. For the current approach, see the examples in `/examples/` which use wasm32-wasip2.
 
 ## How to Build
 

@@ -23,7 +23,7 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     let mut linker1 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker1)?;
 
-    let writer_path = "../../../target/wasm32-wasip2/debug/demo-writer.wasm";
+    let writer_path = "target/wasm32-wasip2/debug/demo-writer.wasm";
     let writer_component =
         Component::from_file(engine, writer_path).context("Failed to load demo-writer.wasm")?;
 
@@ -45,7 +45,7 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     let mut linker2 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker2)?;
 
-    let reader_path = "../../../target/wasm32-wasip2/debug/demo-reader.wasm";
+    let reader_path = "target/wasm32-wasip2/debug/demo-reader.wasm";
     let reader_component =
         Component::from_file(engine, reader_path).context("Failed to load demo-reader.wasm")?;
 

@@ -22,14 +22,14 @@ members = [
   # Tools
   "crates/tools/halycon-pack",
 
-  # Examples - RPC
-  "examples/rpc/demo-writer",
-  "examples/rpc/demo-reader",
-  "examples/rpc/demo-std-fs",
+  # Examples - Apps
+  "examples/apps/demo-fs-operations",
+  "examples/apps/demo-writer",
+  "examples/apps/demo-reader",
 
-  # Examples - Component Model
-  "examples/component-model/runtime-linker",
-  "examples/component-model/runtime-linker-s3",
+  # Examples - Host Trait
+  "examples/host-trait/runtime-linker",
+  "examples/host-trait/runtime-linker-s3",
 
   # Use Cases
   "usecases/sensor-pipeline/sensor-ingest",
@@ -45,7 +45,7 @@ default-members = [
   "crates/core/fs-core",
   "crates/hosts/vfs-host",
   "crates/rpc/vfs-rpc-protocol",
-  "examples/component-model/runtime-linker",
+  "examples/host-trait/runtime-linker",
 ]
 exclude = [
   ".tmp",

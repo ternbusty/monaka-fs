@@ -63,7 +63,7 @@ HALYCON_SNAPSHOT=.tmp/snapshot.json \
 ### 4. Compose with a test app
 
 ```bash
-# Build test app (e.g., examples/component-model/static/rust)
+# Build test app (e.g., demo-fs-operations)
 cargo build -p static-rust --target wasm32-wasip2 --release
 
 # Compose

@@ -212,7 +212,11 @@ fn test_metadata_operations() {
     }
 
     // Truncate file
-    match fs::OpenOptions::new().write(true).truncate(true).open(filename) {
+    match fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(filename)
+    {
         Ok(_) => {
             println!("✓ Truncated file");
             match fs::metadata(filename) {

@@ -767,29 +767,34 @@ async fn async_main() {
     let mut clients: Vec<Client> = Vec::new();
 
     loop {
-        // Build pollables: [accept_socket, client0_input, ..., clientN_input, timeout]
-        let accept_pollable = socket.subscribe();
-        let client_pollables: Vec<_> = clients
-            .iter()
-            .map(|c| c.resources.input.subscribe())
-            .collect();
-        let timeout_pollable = subscribe_duration(POLL_TIMEOUT_NS);
+        // Collect ready indices in a block so pollables are dropped before
+        // we remove any clients. Pollables are child resources of the
+        // input/output streams, so the streams must outlive them.
+        let (ready_indices, accept_idx, timeout_idx) = {
+            let accept_pollable = socket.subscribe();
+            let client_pollables: Vec<_> = clients
+                .iter()
+                .map(|c| c.resources.input.subscribe())
+                .collect();
+            let timeout_pollable = subscribe_duration(POLL_TIMEOUT_NS);
 
-        let mut all_pollables: Vec<&_> = Vec::with_capacity(2 + clients.len());
-        all_pollables.push(&accept_pollable);
-        for p in &client_pollables {
-            all_pollables.push(p);
-        }
-        all_pollables.push(&timeout_pollable);
+            let mut all_pollables: Vec<&_> = Vec::with_capacity(2 + clients.len());
+            all_pollables.push(&accept_pollable);
+            for p in &client_pollables {
+                all_pollables.push(p);
+            }
+            all_pollables.push(&timeout_pollable);
 
-        let ready = poll(&all_pollables);
-
-        let accept_idx = 0u32;
-        let timeout_idx = (1 + clients.len()) as u32;
+            let ready = poll(&all_pollables);
+            let accept_idx = 0u32;
+            let timeout_idx = (1 + clients.len()) as u32;
+            (ready, accept_idx, timeout_idx)
+            // accept_pollable, client_pollables, timeout_pollable dropped here
+        };
 
         let mut to_remove: Vec<usize> = Vec::new();
 
-        for idx in ready {
+        for idx in ready_indices {
             if idx == accept_idx {
                 accept_new_client(&socket, &mut clients);
             } else if idx == timeout_idx {
