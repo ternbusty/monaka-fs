@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
     let engine = Engine::new(&config)?;
 
     // Path to WASM handler
-    let handler_path = "../../../target/wasm32-wasip2/debug/http-cache-handler.wasm";
+    let handler_path = "target/wasm32-wasip2/debug/http-cache-handler.wasm";
 
     // Load handler component
     println!("Loading handler: {}", handler_path);
