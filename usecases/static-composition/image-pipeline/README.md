@@ -1,30 +1,26 @@
 # Image Pipeline Demo
 
-File-based image processing pipeline using static composition (`vfs-adapter` + `wac plug`). The app performs resize and format conversion using intermediate files in the in-memory VFS.
-
-**Deployment method**: [Static Composition](../../examples/static-composition/) (`vfs-adapter`)
+File-based image processing pipeline. The app performs resize and format conversion using intermediate files in the in-memory VFS.
 
 ```
 /input/photo.raw  --[resize]-->  /work/resized.dat  --[convert]-->  /output/photo.png
 ```
 
-## Build
+**Deployment method**: Static Composition (`vfs-adapter`)
+
+## Using `halycon` CLI
 
 ```bash
-# From repository root:
+# Build the app
 cargo build -p image-processor --target wasm32-wasip2
-cargo build -p vfs-adapter --target wasm32-wasip2
-wac plug \
-  --plug target/wasm32-wasip2/debug/vfs_adapter.wasm \
+
+# Compose
+halycon compose \
   target/wasm32-wasip2/debug/image-processor.wasm \
-  -o target/wasm32-wasip2/debug/image-processor-composed.wasm
-```
+  -o /tmp/image-processor-composed.wasm
 
-## Run
-
-```bash
-# From repository root:
-wasmtime run target/wasm32-wasip2/debug/image-processor-composed.wasm
+# Run
+wasmtime run /tmp/image-processor-composed.wasm
 ```
 
 ## Expected Output
@@ -47,4 +43,16 @@ Created input: /input/photo.raw (1030 bytes)
 === Pipeline Complete ===
 Output: /output/photo.png (272 bytes)
 PNG header verified!
+```
+
+## Manual Setup (without `halycon` CLI)
+
+```bash
+cargo build -p image-processor --target wasm32-wasip2
+cargo build -p vfs-adapter --target wasm32-wasip2
+wac plug \
+  --plug target/wasm32-wasip2/debug/vfs_adapter.wasm \
+  target/wasm32-wasip2/debug/image-processor.wasm \
+  -o /tmp/image-processor-composed.wasm
+wasmtime run /tmp/image-processor-composed.wasm
 ```

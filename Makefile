@@ -1,6 +1,6 @@
 # halycon Makefile
 
-.PHONY: build build-release build-all build-native build-wasm build-wasm-release clean help
+.PHONY: build build-release build-all build-native build-wasm build-wasm-release build-cli clean help
 .PHONY: check-prereqs install-prereqs info
 
 # =============================================================================
@@ -46,6 +46,22 @@ build-wasm-release:
 		-p rpc-adapter \
 		-p vfs-rpc-server
 	@echo "WASM packages built (release)"
+
+# Build halycon CLI (builds all required WASM first, then the native CLI)
+build-cli:
+	@echo "=== Building WASM components for CLI ==="
+	@echo "Building vfs-adapter (S3 sync)..."
+	@cargo build --release --target wasm32-wasip2 -p vfs-adapter --features s3-sync
+	@mkdir -p target/wasm32-wasip2/s3-release
+	@cp target/wasm32-wasip2/release/vfs_adapter.wasm target/wasm32-wasip2/s3-release/vfs_adapter.wasm
+	@echo "Building vfs-rpc-server (S3 sync)..."
+	@cargo build --release --target wasm32-wasip2 -p vfs-rpc-server --features s3-sync
+	@cp target/wasm32-wasip2/release/vfs_rpc_server.wasm target/wasm32-wasip2/s3-release/vfs_rpc_server.wasm
+	@echo "Building vfs-adapter, rpc-adapter, vfs-rpc-server (no S3)..."
+	@cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
+	@echo "=== Building halycon CLI ==="
+	@cargo build --release -p halycon
+	@echo "CLI built: target/release/halycon"
 
 # Clean build artifacts
 clean:
@@ -101,6 +117,7 @@ help:
 	@echo "  make build-wasm                         - Build all WASM packages"
 	@echo "  make build-wasm-release                 - Build all WASM packages (release)"
 	@echo "  make build-all                          - Build everything"
+	@echo "  make build-cli                          - Build halycon CLI (WASM + native)"
 	@echo "  make clean                              - Clean build artifacts"
 	@echo ""
 	@echo "Utility:"

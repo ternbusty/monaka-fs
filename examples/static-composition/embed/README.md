@@ -1,50 +1,20 @@
 # Static Composition: File Embedding Example
 
-Demonstrates embedding local files into a `vfs-adapter` WASM binary using `halycon-pack`, then composing with an application via `wac plug`.
+Demonstrates embedding local files into `vfs-adapter` and composing with an application.
 
-This follows the same pattern as [wasi-virt](https://github.com/bytecodealliance/wasi-virt): embed files into the adapter first, then compose with the app.
-
-## Prerequisites
+## Using `halycon` CLI
 
 ```bash
-rustup target add wasm32-wasip2
-cargo install wac-cli wasmtime-cli
-cargo install --path crates/tools/halycon-pack
-```
-
-## Build
-
-```bash
-# From repository root:
-
-# Build the VFS adapter
-cargo build --release -p vfs-adapter --target wasm32-wasip2
-
-# Build the example app
+# Build the app
 cargo build --release -p demo-embed-read --target wasm32-wasip2
-```
 
-## Embed & Compose
-
-```bash
-# From repository root:
-
-# Step 1: Embed files into the adapter
-halycon-pack embed \
+# Embed files and compose in one step
+halycon compose \
   --mount "/data=examples/static-composition/embed/testdata" \
-  -o /tmp/vfs-adapter-packed.wasm \
-  target/wasm32-wasip2/release/vfs_adapter.wasm
-
-# Step 2: Compose with the app
-wac plug \
-  --plug /tmp/vfs-adapter-packed.wasm \
   target/wasm32-wasip2/release/demo-embed-read.wasm \
   -o /tmp/embed-example.wasm
-```
 
-## Run
-
-```bash
+# Run
 wasmtime run /tmp/embed-example.wasm
 ```
 
@@ -64,4 +34,38 @@ Reading /data/world.txt:
   "another file"
 
 === Done ===
+```
+
+## Manual Setup (without `halycon` CLI)
+
+### Prerequisites
+
+```bash
+rustup target add wasm32-wasip2
+cargo install wac-cli wasmtime-cli
+cargo install --path crates/tools/halycon-cli
+```
+
+### Build & Compose
+
+```bash
+# From repository root:
+
+# Build vfs-adapter and the app
+cargo build --release -p vfs-adapter --target wasm32-wasip2
+cargo build --release -p demo-embed-read --target wasm32-wasip2
+
+# Embed files into the adapter
+halycon embed \
+  --mount "/data=examples/static-composition/embed/testdata" \
+  -o /tmp/vfs-adapter-packed.wasm
+
+# Compose with the app
+wac plug \
+  --plug /tmp/vfs-adapter-packed.wasm \
+  target/wasm32-wasip2/release/demo-embed-read.wasm \
+  -o /tmp/embed-example.wasm
+
+# Run
+wasmtime run /tmp/embed-example.wasm
 ```

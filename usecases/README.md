@@ -4,11 +4,23 @@ End-to-end demonstrations of Halycon VFS in realistic scenarios, organized by de
 
 ## Static Composition
 
+Compose your app with `vfs-adapter` into a single WASM binary using the `halycon` CLI:
+
+```bash
+halycon compose my-app.wasm -o composed.wasm
+```
+
 | Use Case | Description |
 |----------|-------------|
 | [image-pipeline](./static-composition/image-pipeline/) | File-based image processing pipeline |
 
 ## Host Trait
+
+Embed VFS directly into a native Rust host program using the `vfs-host` crate:
+
+```bash
+cargo add vfs-host
+```
 
 | Use Case | Description |
 |----------|-------------|
@@ -18,10 +30,16 @@ End-to-end demonstrations of Halycon VFS in realistic scenarios, organized by de
 
 ## RPC Server
 
+Compose your app with `rpc-adapter` and run a shared VFS server:
+
+```bash
+halycon compose --rpc my-app.wasm -o composed.wasm
+halycon extract server -o vfs-rpc-server.wasm
+```
+
 | Use Case | Description |
 |----------|-------------|
 | [ci-cache](./rpc-server/ci-cache/) | Parallel CI jobs sharing dependency cache |
 | [s3-sync-logging](./rpc-server/s3-sync-logging/) | Replicated log writers with S3 sync |
-| [concurrent-append](./rpc-server/concurrent-append/) | Concurrent append test via TCP |
 
 See each subdirectory's README for build, run, and expected output details.

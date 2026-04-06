@@ -2,7 +2,9 @@
 
 Real HTTP server (axum) that routes requests to WASM handlers sharing an in-memory VFS cache via host-trait (`vfs-host`).
 
-**Deployment method**: [Host Trait](../../examples/host-trait/) (`vfs-host`)
+**Deployment method**: Host Trait (`vfs-host` crate — `cargo add vfs-host`)
+
+> This use case demonstrates the Host Trait method, where a native Rust program hosts WASM instances sharing a single VFS. The `halycon` CLI is not used here; instead, the host program (`http-cache-server`) links against `vfs-host` directly.
 
 ```
 HTTP Request --> axum server --> spawn_blocking --> WASM handler
@@ -22,7 +24,6 @@ cargo build -p http-cache-server
 ## Run
 
 ```bash
-# From repository root:
 cargo run -p http-cache-server
 ```
 

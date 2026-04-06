@@ -2,7 +2,7 @@
 
 Multiple parallel CI jobs sharing a dependency cache via VFS RPC server. Jobs acquire per-library locks to ensure safe concurrent access.
 
-**Deployment method**: [RPC Server](../../examples/rpc-server/) (`vfs-rpc-server`)
+**Deployment method**: RPC Server (`vfs-rpc-server`)
 
 ```
 Job1 (serde, tokio)  --+
@@ -10,50 +10,26 @@ Job2 (serde, anyhow) --+--> vfs-rpc-server (TCP:9000) --> /cache/
 Job3 (tokio, anyhow) --+
 ```
 
-## Build
+## Using `halycon` CLI
 
 ```bash
-# From repository root:
-cargo build -p vfs-rpc-server --target wasm32-wasip2
-cargo build -p rpc-adapter --target wasm32-wasip2
+# Build the app
 cargo build -p ci-job --target wasm32-wasip2
 
-# Compose
-wac plug \
-  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+# Compose with RPC adapter
+halycon compose --rpc \
   target/wasm32-wasip2/debug/ci-job.wasm \
-  -o target/wasm32-wasip2/debug/ci-job-composed.wasm
-```
+  -o /tmp/ci-job-composed.wasm
 
-## Run
+# Extract and start the RPC server
+halycon extract server -o /tmp/vfs-rpc-server.wasm
+wasmtime run -S inherit-network=y -S http /tmp/vfs-rpc-server.wasm
 
-Start the server (terminal 1):
-
-```bash
-# From repository root:
-wasmtime run -S inherit-network=y -S http \
-  target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-```
-
-Run 3 jobs in parallel (terminal 2):
-
-```bash
-wasmtime run -S inherit-network=y --env JOB_ID=1 --env DEPS="serde-1.0.0,tokio-1.0.0" \
-  target/wasm32-wasip2/debug/ci-job-composed.wasm &
-
-wasmtime run -S inherit-network=y --env JOB_ID=2 --env DEPS="serde-1.0.0,anyhow-1.0.0" \
-  target/wasm32-wasip2/debug/ci-job-composed.wasm &
-
-wasmtime run -S inherit-network=y --env JOB_ID=3 --env DEPS="tokio-1.0.0,anyhow-1.0.0" \
-  target/wasm32-wasip2/debug/ci-job-composed.wasm &
-
+# In another terminal: run 3 jobs in parallel
+wasmtime run -S inherit-network=y --env JOB_ID=1 --env DEPS="serde-1.0.0,tokio-1.0.0" /tmp/ci-job-composed.wasm &
+wasmtime run -S inherit-network=y --env JOB_ID=2 --env DEPS="serde-1.0.0,anyhow-1.0.0" /tmp/ci-job-composed.wasm &
+wasmtime run -S inherit-network=y --env JOB_ID=3 --env DEPS="tokio-1.0.0,anyhow-1.0.0" /tmp/ci-job-composed.wasm &
 wait
-```
-
-Stop the server:
-
-```bash
-pkill -f vfs_rpc_server.wasm
 ```
 
 ## Locking Protocol
@@ -80,4 +56,17 @@ For each dependency:
 [Job1] Done
 [Job2] Done
 [Job3] Done
+```
+
+## Manual Setup (without `halycon` CLI)
+
+```bash
+cargo build -p vfs-rpc-server --target wasm32-wasip2
+cargo build -p rpc-adapter --target wasm32-wasip2
+cargo build -p ci-job --target wasm32-wasip2
+
+wac plug \
+  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+  target/wasm32-wasip2/debug/ci-job.wasm \
+  -o /tmp/ci-job-composed.wasm
 ```

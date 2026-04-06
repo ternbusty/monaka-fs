@@ -20,7 +20,7 @@ members = [
   "crates/rpc/vfs-rpc-server",
 
   # Tools
-  "crates/tools/halycon-pack",
+  "crates/tools/halycon-cli",
 
   # Examples - Apps
   "examples/apps/demo-fs-operations",

@@ -1,12 +1,7 @@
-//! halycon-pack: Pack files into vfs-adapter WASM binaries
-//!
-//! Usage:
-//!    halycon-pack embed --mount /data=./local-dir -o output.wasm input.wasm
-
-use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
 use walkdir::WalkDir;
 
 use fs_core::InodeId;
@@ -14,44 +9,104 @@ use fs_core::snapshot::{
     FileContentSnapshot, FileDataSnapshot, FsSnapshot, InodeSnapshot, MetadataSnapshot,
 };
 
-/// Pack files into halycon vfs-adapter WASM binaries
-#[derive(Parser, Debug)]
-#[command(name = "halycon-pack")]
-#[command(about = "Pack files into vfs-adapter WASM binaries")]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
+use crate::wasm;
+
+/// Run the embed command: embed files into the CLI's bundled vfs-adapter.
+pub fn run(output: &PathBuf, mounts: &[String], s3_sync: bool) -> Result<()> {
+    let mounts: Vec<(String, PathBuf)> = mounts
+        .iter()
+        .map(|m| parse_mount(m))
+        .collect::<Result<Vec<_>>>()?;
+
+    let snapshot = build_snapshot(&mounts)?;
+    let adapter_bytes = wasm::vfs_adapter(s3_sync);
+    embed_snapshot_bytes(adapter_bytes, output, &snapshot)
 }
 
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Embed a filesystem snapshot into a WASM binary
-    Embed {
-        /// Input WASM file (vfs-adapter)
-        #[arg(required = true)]
-        input: PathBuf,
+/// Embed files into a WASM binary provided as bytes. Used by both `embed` and `compose --mount`.
+pub fn embed_into_bytes(wasm_bytes: &[u8], mounts: &[(String, PathBuf)]) -> Result<Vec<u8>> {
+    let snapshot = build_snapshot(mounts)?;
+    let snapshot_json = serde_json::to_string(&snapshot)?;
+    let snapshot_bytes = snapshot_json.as_bytes();
 
-        /// Output WASM file
-        #[arg(short, long, required = true)]
-        output: PathBuf,
+    let is_component = wasmparser::Parser::new(0)
+        .parse_all(wasm_bytes)
+        .find_map(|payload| {
+            if let Ok(wasmparser::Payload::Version { encoding, .. }) = payload {
+                Some(encoding == wasmparser::Encoding::Component)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false);
 
-        /// Mount a local directory into the virtual filesystem
-        /// Format: /virtual-path=./local-path
-        #[arg(short, long = "mount", value_name = "MOUNT")]
-        mounts: Vec<String>,
-    },
+    if !is_component {
+        bail!("Only WASM Components are supported.");
+    }
+
+    embed_into_component(wasm_bytes, snapshot_bytes)
 }
 
-/// Build an FsSnapshot from mounted directories
+fn embed_snapshot_bytes(wasm_bytes: &[u8], output: &Path, snapshot: &FsSnapshot) -> Result<()> {
+    let snapshot_json = serde_json::to_string(snapshot)?;
+    let snapshot_bytes = snapshot_json.as_bytes();
+
+    println!(
+        "Snapshot size: {} bytes ({} files)",
+        snapshot_bytes.len(),
+        snapshot
+            .inodes
+            .iter()
+            .filter(|i| !i.metadata.is_dir)
+            .count()
+    );
+
+    let is_component = wasmparser::Parser::new(0)
+        .parse_all(wasm_bytes)
+        .find_map(|payload| {
+            if let Ok(wasmparser::Payload::Version { encoding, .. }) = payload {
+                Some(encoding == wasmparser::Encoding::Component)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false);
+
+    if !is_component {
+        bail!("Only WASM Components are supported.");
+    }
+
+    let output_wasm = embed_into_component(wasm_bytes, snapshot_bytes)?;
+    std::fs::write(output, &output_wasm)?;
+    println!("Wrote {} bytes to {}", output_wasm.len(), output.display());
+    Ok(())
+}
+
+pub fn parse_mount(mount: &str) -> Result<(String, PathBuf)> {
+    let parts: Vec<&str> = mount.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        bail!(
+            "Invalid mount format: '{}'. Expected: /virtual-path=./local-path",
+            mount
+        );
+    }
+    let virt_path = parts[0].to_string();
+    let local_path = PathBuf::from(parts[1]);
+    if !local_path.exists() {
+        bail!("Local path does not exist: {}", local_path.display());
+    }
+    Ok((virt_path, local_path))
+}
+
+// --- Everything below is the existing embed logic, unchanged ---
+
 fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
-    let mut next_inode: InodeId = 1; // 0 is reserved for root
+    let mut next_inode: InodeId = 1;
     let mut inodes: Vec<InodeSnapshot> = Vec::new();
     let mut dir_entries: BTreeMap<InodeId, BTreeMap<String, InodeId>> = BTreeMap::new();
 
-    // Create root directory (inode 0)
     dir_entries.insert(0, BTreeMap::new());
 
-    // Helper to get or create parent directories
     fn ensure_parent_dirs(
         path: &str,
         next_inode: &mut InodeId,
@@ -65,19 +120,17 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
             .collect();
 
         if parts.is_empty() {
-            return 0; // Root
+            return 0;
         }
 
         let mut current_inode: InodeId = 0;
 
-        // Navigate/create all parent directories (all but the last part)
         for part in &parts[..parts.len() - 1] {
             let entries = dir_entries.entry(current_inode).or_default();
 
             if let Some(&existing_inode) = entries.get(*part) {
                 current_inode = existing_inode;
             } else {
-                // Create new directory
                 let new_inode = *next_inode;
                 *next_inode += 1;
 
@@ -93,7 +146,7 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                         permissions: 0o755,
                         is_dir: true,
                     },
-                    content: FileContentSnapshot::Dir(BTreeMap::new()), // Will be updated later
+                    content: FileContentSnapshot::Dir(BTreeMap::new()),
                 });
 
                 current_inode = new_inode;
@@ -103,7 +156,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
         current_inode
     }
 
-    // Process each mount point
     for (virt_path, local_path) in mounts {
         println!("Mounting {} -> {}", local_path.display(), virt_path);
 
@@ -117,7 +169,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                 .strip_prefix(local_path)
                 .context("Failed to get relative path")?;
 
-            // Build virtual path
             let virt_file_path = if relative_path.as_os_str().is_empty() {
                 virt_path.clone()
             } else {
@@ -131,7 +182,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
             let metadata = entry.metadata()?;
 
             if metadata.is_dir() {
-                // Ensure parent directories exist and add this directory
                 let parent_inode = ensure_parent_dirs(
                     &virt_file_path,
                     &mut next_inode,
@@ -145,10 +195,9 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                     .unwrap_or_default();
 
                 if dir_name.is_empty() {
-                    continue; // Skip root mount point itself
+                    continue;
                 }
 
-                // Check if directory already exists
                 if dir_entries
                     .get(&parent_inode)
                     .map(|e: &BTreeMap<String, InodeId>| e.contains_key(&dir_name))
@@ -178,7 +227,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                     content: FileContentSnapshot::Dir(BTreeMap::new()),
                 });
             } else if metadata.is_file() {
-                // Ensure parent directories exist
                 let parent_inode = ensure_parent_dirs(
                     &virt_file_path,
                     &mut next_inode,
@@ -191,7 +239,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                     .map(|s| s.to_string_lossy().to_string())
                     .context("Invalid file name")?;
 
-                // Read file content
                 let content = std::fs::read(local_file_path)?;
                 let size = content.len();
 
@@ -223,8 +270,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
         }
     }
 
-    // Update directory contents from dir_entries
-    // First, add root directory
     inodes.insert(
         0,
         InodeSnapshot {
@@ -245,7 +290,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
         },
     );
 
-    // Update all directory inodes with their entries
     for inode in &mut inodes {
         if let FileContentSnapshot::Dir(_) = &inode.content {
             if let Some(entries) = dir_entries.get(&inode.id) {
@@ -262,7 +306,6 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
     })
 }
 
-/// Find HALYCON global addresses by parsing exports and globals sections
 fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
     use wasmparser::{Parser, Payload};
 
@@ -271,7 +314,6 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
     let mut ptr_addr: Option<u32> = None;
     let mut len_addr: Option<u32> = None;
 
-    // First pass: find the global indices from exports
     for payload in Parser::new(0).parse_all(module_bytes) {
         if let Payload::ExportSection(reader) = payload? {
             for export in reader {
@@ -296,7 +338,6 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
     let ptr_idx = ptr_global_idx.context("HALYCON_FS_DATA_PTR export not found")?;
     let len_idx = len_global_idx.context("HALYCON_FS_DATA_LEN export not found")?;
 
-    // Second pass: find the addresses from globals
     let mut global_count = 0u32;
     for payload in Parser::new(0).parse_all(module_bytes) {
         if let Payload::GlobalSection(reader) = payload? {
@@ -326,57 +367,9 @@ fn find_halycon_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
     let ptr = ptr_addr.context("Could not find HALYCON_FS_DATA_PTR address")?;
     let len = len_addr.context("Could not find HALYCON_FS_DATA_LEN address")?;
 
-    println!("Found HALYCON addresses: PTR=0x{:x}, LEN=0x{:x}", ptr, len);
-
     Ok((ptr, len))
 }
 
-/// Embed snapshot into WASM binary by modifying data section
-fn embed_snapshot(input: &Path, output: &Path, snapshot: &FsSnapshot) -> Result<()> {
-    // Serialize snapshot to JSON
-    let snapshot_json = serde_json::to_string(snapshot)?;
-    let snapshot_bytes = snapshot_json.as_bytes();
-
-    println!(
-        "Snapshot size: {} bytes ({} files)",
-        snapshot_bytes.len(),
-        snapshot
-            .inodes
-            .iter()
-            .filter(|i| !i.metadata.is_dir)
-            .count()
-    );
-
-    // Read input WASM
-    let wasm_bytes = std::fs::read(input).context("Failed to read input WASM file")?;
-
-    // Check if it's a component or module
-    let is_component = wasmparser::Parser::new(0)
-        .parse_all(&wasm_bytes)
-        .find_map(|payload| {
-            if let Ok(wasmparser::Payload::Version { encoding, .. }) = payload {
-                Some(encoding == wasmparser::Encoding::Component)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(false);
-
-    if !is_component {
-        bail!("Only WASM Components are supported. Please provide a vfs-adapter component.");
-    }
-
-    let output_wasm = embed_into_component(&wasm_bytes, snapshot_bytes)?;
-
-    // Write output
-    std::fs::write(output, &output_wasm)?;
-
-    println!("Wrote {} bytes to {}", output_wasm.len(), output.display());
-
-    Ok(())
-}
-
-/// Check if a module contains HALYCON globals by looking at exports
 fn has_halycon_globals(module_bytes: &[u8]) -> bool {
     use wasmparser::{Parser, Payload};
 
@@ -392,8 +385,6 @@ fn has_halycon_globals(module_bytes: &[u8]) -> bool {
     false
 }
 
-/// Recursively search for HALYCON globals in a component and return the target info
-/// Returns: Option<(section_type, start, end)> where section_type is 1 for Module, 4 for Component
 fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
     use wasmparser::{Parser, Payload};
 
@@ -411,7 +402,6 @@ fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
                 unchecked_range, ..
             }) => {
                 let component_bytes = &bytes[unchecked_range.start..unchecked_range.end];
-                // Recursively check if this nested component contains HALYCON
                 if find_halycon_target(component_bytes).is_some() {
                     return Some((4, unchecked_range.start, unchecked_range.end));
                 }
@@ -422,121 +412,68 @@ fn find_halycon_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
     None
 }
 
-/// Find and modify the core module inside a WASM component (supports nested components)
 fn embed_into_component(component_bytes: &[u8], snapshot_bytes: &[u8]) -> Result<Vec<u8>> {
-    // Find the section containing HALYCON globals (may be nested)
     let (section_type, start, end) = find_halycon_target(component_bytes)
         .context("No module with HALYCON globals found in component")?;
 
     if section_type == 4 {
-        // It's a nested ComponentSection - need to process recursively
-        println!("Found nested component at bytes {}..{}", start, end);
-
         let nested_component = &component_bytes[start..end];
-
-        // Recursively embed into the nested component
         let modified_nested = embed_into_component(nested_component, snapshot_bytes)?;
-
-        // Find section header start for the component section
         let section_header_start = find_section_header_start(component_bytes, start, 4)?;
 
         let mut result = Vec::with_capacity(component_bytes.len() + snapshot_bytes.len() + 100);
-
-        // Copy everything before the component section
         result.extend_from_slice(&component_bytes[..section_header_start]);
-
-        // Write new component section
-        result.push(4); // ComponentSection ID
-
-        // Write the component content length as LEB128
+        result.push(4);
         write_leb128_u32(&mut result, modified_nested.len() as u32);
-
-        // Write the modified nested component
         result.extend_from_slice(&modified_nested);
-
-        // Copy everything after the original component section
         result.extend_from_slice(&component_bytes[end..]);
-
         Ok(result)
     } else {
-        // It's a ModuleSection - process directly (original logic)
-        println!("Found core module at bytes {}..{}", start, end);
-
         let module_bytes = &component_bytes[start..end];
-
-        // Find HALYCON global addresses dynamically
         let (ptr_addr, len_addr) = find_halycon_addresses(module_bytes)?;
-
-        // Modify the core module
         let modified_module = modify_core_module(module_bytes, snapshot_bytes, ptr_addr, len_addr)?;
-
-        // Find section header start
         let section_header_start = find_section_header_start(component_bytes, start, 1)?;
 
         let mut result = Vec::with_capacity(component_bytes.len() + snapshot_bytes.len() + 100);
-
-        // Copy everything before the module section
         result.extend_from_slice(&component_bytes[..section_header_start]);
-
-        // Write new module section
-        result.push(1); // ModuleSection ID
-
-        // Write the module content length as LEB128
+        result.push(1);
         write_leb128_u32(&mut result, modified_module.len() as u32);
-
-        // Write the modified module
         result.extend_from_slice(&modified_module);
-
-        // Copy everything after the original module section
         result.extend_from_slice(&component_bytes[end..]);
-
         Ok(result)
     }
 }
 
-/// Find where the section header starts (before the content range)
 fn find_section_header_start(bytes: &[u8], content_start: usize, section_id: u8) -> Result<usize> {
-    // The section content is preceded by: section_id (1 byte) + LEB128 size
-    // We need to find where this header starts by working backwards
-    // Maximum LEB128 for u32 is 5 bytes, so look back up to 6 bytes
-
     for lookback in 2..=6 {
         if content_start < lookback {
             continue;
         }
         let potential_start = content_start - lookback;
 
-        // Try to parse from this position
         if bytes[potential_start] == section_id {
-            // Check if the next bytes form a valid LEB128
             let mut pos = potential_start + 1;
-
             loop {
                 if pos >= content_start {
                     break;
                 }
                 let byte = bytes[pos];
                 pos += 1;
-
                 if byte & 0x80 == 0 {
                     break;
                 }
             }
-
-            // If we ended up exactly at content_start, this is likely the header
             if pos == content_start {
                 return Ok(potential_start);
             }
         }
     }
-
     bail!(
         "Could not find section header start for section ID {}",
         section_id
     )
 }
 
-/// Write a u32 as LEB128
 fn write_leb128_u32(output: &mut Vec<u8>, mut value: u32) {
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -551,7 +488,6 @@ fn write_leb128_u32(output: &mut Vec<u8>, mut value: u32) {
     }
 }
 
-/// Modify a core WASM module to add snapshot data
 fn modify_core_module(
     module_bytes: &[u8],
     snapshot_bytes: &[u8],
@@ -563,7 +499,6 @@ fn modify_core_module(
     };
     use wasmparser::{Parser, Payload};
 
-    // First, find the existing memory info
     let mut has_data_section = false;
     let mut memory_min_pages: u32 = 0;
 
@@ -576,10 +511,6 @@ fn modify_core_module(
                 for memory in reader {
                     let memory = memory?;
                     memory_min_pages = memory.initial as u32;
-                    println!(
-                        "Memory: {} pages (max: {:?})",
-                        memory_min_pages, memory.maximum
-                    );
                 }
             }
             _ => {}
@@ -590,59 +521,29 @@ fn modify_core_module(
         bail!("No data section found in core module");
     }
 
-    // Calculate current memory size and where to place snapshot
     let page_size: u32 = 65536;
     let current_memory_size = memory_min_pages * page_size;
-
-    // Calculate how much space we need for the snapshot (aligned to 16 bytes)
     let snapshot_size = ((snapshot_bytes.len() as u32) + 15) & !15;
+    let snapshot_space_needed = snapshot_size + 256;
 
-    // We want to place the snapshot at the END of memory to avoid heap corruption
-    // The heap grows from data section end upward, so placing snapshot at top is safe
-    // Add 1 extra page for the snapshot if it doesn't fit
-    let snapshot_space_needed = snapshot_size + 256; // Extra padding
-
-    // Calculate new memory size if needed
     let new_memory_pages = if current_memory_size >= snapshot_space_needed + 0x200000 {
-        // Plenty of room, use current pages
         memory_min_pages
     } else {
-        // Need more pages - add enough for 2MB headroom + snapshot
         let needed = (0x200000 + snapshot_space_needed + page_size - 1) / page_size;
         std::cmp::max(memory_min_pages, needed)
     };
 
     let new_memory_size = new_memory_pages * page_size;
-
-    // Place snapshot near the end of memory (but leave some room for stack at very top)
-    // Stack typically starts at memory_max and grows down, so leave 64KB for it
     let snapshot_addr = ((new_memory_size - snapshot_size - page_size) & !15) as u32;
 
-    println!(
-        "Current memory: {} pages ({} bytes)",
-        memory_min_pages, current_memory_size
-    );
-    println!(
-        "New memory: {} pages ({} bytes)",
-        new_memory_pages, new_memory_size
-    );
-    println!(
-        "Placing snapshot at: 0x{:x} (near end of memory)",
-        snapshot_addr
-    );
-
-    // Now rebuild the module with additional data segments and updated memory
     let mut result = Vec::new();
     let mut modified = false;
 
-    let parser = Parser::new(0);
-
-    for payload in parser.parse_all(module_bytes) {
+    for payload in Parser::new(0).parse_all(module_bytes) {
         let payload = payload?;
 
         match &payload {
             Payload::MemorySection(reader) => {
-                // Build a new memory section with potentially increased pages
                 let mut memory_section = MemorySection::new();
                 for memory in reader.clone() {
                     let memory = memory?;
@@ -658,10 +559,8 @@ fn modify_core_module(
                 memory_section.append_to(&mut result);
             }
             Payload::DataSection(reader) => {
-                // Build a new data section with our additional data
                 let mut data_section = DataSection::new();
 
-                // Copy existing data segments
                 for data in reader.clone() {
                     let data = data?;
                     match data.kind {
@@ -694,7 +593,6 @@ fn modify_core_module(
                     }
                 }
 
-                // Add new data segment for the snapshot
                 data_section.segment(DataSegment {
                     mode: DataSegmentMode::Active {
                         memory_index: 0,
@@ -703,7 +601,6 @@ fn modify_core_module(
                     data: snapshot_bytes.iter().copied(),
                 });
 
-                // Add data segment to set HALYCON_FS_DATA_PTR
                 let ptr_bytes = snapshot_addr.to_le_bytes();
                 data_section.segment(DataSegment {
                     mode: DataSegmentMode::Active {
@@ -713,7 +610,6 @@ fn modify_core_module(
                     data: ptr_bytes.iter().copied(),
                 });
 
-                // Add data segment to set HALYCON_FS_DATA_LEN
                 let len_bytes = (snapshot_bytes.len() as u32).to_le_bytes();
                 data_section.segment(DataSegment {
                     mode: DataSegmentMode::Active {
@@ -723,13 +619,10 @@ fn modify_core_module(
                     data: len_bytes.iter().copied(),
                 });
 
-                // Write the new data section
-                // Section::append_to() writes ID + (Encode::encode which writes size + content)
                 data_section.append_to(&mut result);
                 modified = true;
             }
             _ => {
-                // For other sections, copy raw bytes
                 if let Some((id, range)) = payload.as_section() {
                     result.push(id);
                     write_leb128_u32(&mut result, (range.end - range.start) as u32);
@@ -743,61 +636,9 @@ fn modify_core_module(
         bail!("Failed to modify data section");
     }
 
-    // Prepend WASM magic and version
     let mut final_result = Vec::with_capacity(result.len() + 8);
-    final_result.extend_from_slice(&module_bytes[..8]); // Copy magic + version
+    final_result.extend_from_slice(&module_bytes[..8]);
     final_result.append(&mut result);
 
     Ok(final_result)
-}
-
-fn parse_mount(mount: &str) -> Result<(String, PathBuf)> {
-    let parts: Vec<&str> = mount.splitn(2, '=').collect();
-    if parts.len() != 2 {
-        anyhow::bail!(
-            "Invalid mount format: '{}'. Expected format: /virtual-path=./local-path",
-            mount
-        );
-    }
-
-    let virt_path = parts[0].to_string();
-    let local_path = PathBuf::from(parts[1]);
-
-    if !local_path.exists() {
-        anyhow::bail!("Local path does not exist: {}", local_path.display());
-    }
-
-    Ok((virt_path, local_path))
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
-
-    match args.command {
-        Commands::Embed {
-            input,
-            output,
-            mounts,
-        } => {
-            if mounts.is_empty() {
-                anyhow::bail!("At least one --mount is required");
-            }
-
-            // Parse mount points
-            let mounts: Vec<(String, PathBuf)> = mounts
-                .iter()
-                .map(|m| parse_mount(m))
-                .collect::<Result<Vec<_>>>()?;
-
-            // Build snapshot
-            let snapshot = build_snapshot(&mounts)?;
-
-            // Embed into WASM
-            embed_snapshot(&input, &output, &snapshot)?;
-        }
-    }
-
-    println!("Done!");
-
-    Ok(())
 }
