@@ -1,4 +1,4 @@
-world vfs-sync-wasi {
+world vfs-sync-adapter {
     // Clocks for timeouts and timestamps
     import wasi:clocks/monotonic-clock@0.2.6;
 

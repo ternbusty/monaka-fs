@@ -7,8 +7,6 @@
 #![no_main]
 #![allow(warnings)]
 
-mod protocol;
-
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -18,13 +16,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_core::{Fs, FsError, MonotonicCounter};
 use prost::Message;
-use vfs_rpc_protocol::{ErrorCode, RpcRequest as ProtoRpcRequest, PROTOCOL_VERSION};
-
-use protocol::{
-    from_proto_request, to_proto_response, DirEntry, Metadata, Request, Response, RpcRequest,
+use vfs_rpc_protocol::{
+    from_proto_request, to_proto_response, DirEntry, ErrorCode, FileMetadata, Request, Response,
+    RpcRequest as ProtoRpcRequest, RpcRequestMessage, PROTOCOL_VERSION,
 };
 
-use vfs_sync_wasi::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
+#[cfg(feature = "s3-sync")]
+use vfs_sync_adapter::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -120,6 +118,7 @@ fn generate_session_id() -> String {
 /// Server context holding shared state
 struct ServerContext {
     fs: Rc<RefCell<Fs<MonotonicCounter>>>,
+    #[cfg(feature = "s3-sync")]
     sync_manager: Option<SyncManager<MonotonicCounter>>,
     /// Map from file descriptor to path for sync tracking
     fd_path_map: RefCell<HashMap<u32, String>>,
@@ -161,6 +160,7 @@ impl ServerContext {
 
             Request::OpenPath { path, flags } => {
                 // Check S3 metadata and refresh if changed (if metadata sync mode)
+                #[cfg(feature = "s3-sync")]
                 if self.metadata_sync {
                     if let Some(ref sync) = self.sync_manager {
                         match sync.check_and_refresh_from_s3(&path).await {
@@ -188,6 +188,7 @@ impl ServerContext {
 
             Request::Read { fd, length } => {
                 // Refresh from S3 before read (if read-through mode, once per fd)
+                #[cfg(feature = "s3-sync")]
                 if self.read_from_s3 && !self.s3_refreshed_fds.borrow().contains(&fd) {
                     if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
                         if let Some(ref sync) = self.sync_manager {
@@ -213,16 +214,14 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().write(fd, &data);
                 match result {
                     Ok(n) => {
-                        // Sync to S3
+                        #[cfg(feature = "s3-sync")]
                         if let Some(ref sync) = self.sync_manager {
                             if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
                                 if sync.is_realtime() {
-                                    // RealTime mode: sync immediately and wait for S3 completion
                                     if let Err(e) = sync.sync_file_now(&path).await {
                                         log::error!("[sync] RealTime sync failed: {}", e);
                                     }
                                 } else {
-                                    // Batch mode: enqueue for later sync
                                     sync.enqueue_upload(path);
                                 }
                             }
@@ -253,7 +252,7 @@ impl ServerContext {
 
             Request::Ftruncate { fd, size } => match self.fs.borrow_mut().ftruncate(fd, size) {
                 Ok(()) => {
-                    // Enqueue upload with actual path
+                    #[cfg(feature = "s3-sync")]
                     if let Some(ref sync) = self.sync_manager {
                         if let Some(path) = self.fd_path_map.borrow().get(&fd) {
                             sync.enqueue_upload(path.clone());
@@ -266,7 +265,7 @@ impl ServerContext {
 
             Request::Fstat { fd } => match self.fs.borrow().fstat(fd) {
                 Ok(meta) => Response::Metadata {
-                    metadata: Metadata {
+                    metadata: FileMetadata {
                         size: meta.size,
                         created: meta.created,
                         modified: meta.modified,
@@ -278,7 +277,7 @@ impl ServerContext {
 
             Request::Stat { path } => match self.fs.borrow().stat(&path) {
                 Ok(meta) => Response::Metadata {
-                    metadata: Metadata {
+                    metadata: FileMetadata {
                         size: meta.size,
                         created: meta.created,
                         modified: meta.modified,
@@ -302,9 +301,9 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().unlink(&path);
                 match result {
                     Ok(()) => {
-                        // Enqueue delete for S3 sync
+                        #[cfg(feature = "s3-sync")]
                         if let Some(ref sync) = self.sync_manager {
-                            sync.enqueue_delete(path);
+                            sync.enqueue_delete(path.clone());
                         }
                         Response::Ok
                     }
@@ -352,16 +351,14 @@ impl ServerContext {
                 let result = self.fs.borrow_mut().append_write(fd, &data);
                 match result {
                     Ok(n) => {
-                        // Sync to S3
+                        #[cfg(feature = "s3-sync")]
                         if let Some(ref sync) = self.sync_manager {
                             if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
                                 if sync.is_realtime() {
-                                    // RealTime mode: sync immediately and wait for S3 completion
                                     if let Err(e) = sync.sync_file_now(&path).await {
                                         log::error!("[sync] RealTime sync failed: {}", e);
                                     }
                                 } else {
-                                    // Batch mode: enqueue for later sync
                                     sync.enqueue_upload(path);
                                 }
                             }
@@ -543,6 +540,7 @@ async fn init_server() -> ServerContext {
         log::info!("Metadata sync mode enabled (VFS_METADATA_MODE=s3)");
     }
 
+    #[cfg(feature = "s3-sync")]
     let (fs, sync_manager) = if let Some(bucket) = s3_bucket {
         log::info!(
             "S3 persistence enabled: bucket={}, prefix={}",
@@ -550,10 +548,8 @@ async fn init_server() -> ServerContext {
             s3_prefix
         );
 
-        // Initialize S3 client
         let s3 = Rc::new(S3Storage::new(bucket, s3_prefix).await);
 
-        // Try to load existing files from S3
         let (fs, metadata_cache) = match init_from_s3(&s3).await {
             Ok((fs, cache)) => (fs, cache),
             Err(e) => {
@@ -567,7 +563,6 @@ async fn init_server() -> ServerContext {
 
         let fs = Rc::new(RefCell::new(fs));
 
-        // Create sync manager
         let config = SyncConfig::default();
         log::info!(
             "Sync mode: {:?} (set VFS_SYNC_MODE=realtime for immediate sync)",
@@ -581,8 +576,12 @@ async fn init_server() -> ServerContext {
         (Rc::new(RefCell::new(Fs::new())), None)
     };
 
+    #[cfg(not(feature = "s3-sync"))]
+    let fs = Rc::new(RefCell::new(Fs::new()));
+
     ServerContext {
         fs,
+        #[cfg(feature = "s3-sync")]
         sync_manager,
         fd_path_map: RefCell::new(HashMap::new()),
         s3_refreshed_fds: RefCell::new(HashSet::new()),
@@ -712,6 +711,7 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     }
 
     // Check if we need to sync to S3
+    #[cfg(feature = "s3-sync")]
     if let Some(ref sync) = ctx.sync_manager {
         sync.maybe_sync().await;
     }
@@ -794,6 +794,7 @@ async fn async_main() {
                 accept_new_client(&socket, &mut clients);
             } else if idx == timeout_idx {
                 // Periodic S3 sync
+                #[cfg(feature = "s3-sync")]
                 if let Some(ref sync) = ctx.sync_manager {
                     sync.maybe_sync().await;
                 }
@@ -807,7 +808,7 @@ async fn async_main() {
                                 "Client disconnected (session: {:?})",
                                 clients[client_idx].session_id
                             );
-                            // Flush S3 on disconnect
+                            #[cfg(feature = "s3-sync")]
                             if let Some(ref sync) = ctx.sync_manager {
                                 if sync.pending_count() > 0 {
                                     if let Err(e) = sync.force_flush().await {

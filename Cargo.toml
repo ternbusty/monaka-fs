@@ -9,12 +9,11 @@ members = [
 
   # Hosts
   "crates/hosts/vfs-host",
-  "crates/hosts/vfs-rpc-host",
 
   # Sync
   "crates/sync/vfs-sync-core",
-  "crates/sync/vfs-sync",
-  "crates/sync/vfs-sync-wasi",
+  "crates/sync/vfs-sync-host",
+  "crates/sync/vfs-sync-adapter",
 
   # RPC
   "crates/rpc/vfs-rpc-protocol",
@@ -45,7 +44,6 @@ members = [
 default-members = [
   "crates/core/fs-core",
   "crates/hosts/vfs-host",
-  "crates/hosts/vfs-rpc-host",
   "crates/rpc/vfs-rpc-protocol",
   "examples/component-model/runtime-linker",
 ]

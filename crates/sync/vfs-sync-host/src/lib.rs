@@ -15,7 +15,7 @@
 //!
 //! ```rust,ignore
 //! use std::sync::Arc;
-//! use vfs_sync::{S3Storage, HostSyncManager, SyncConfig, init_from_s3};
+//! use vfs_sync_host::{S3Storage, HostSyncManager, SyncConfig, init_from_s3};
 //! use fs_core::Fs;
 //!
 //! // Initialize from S3

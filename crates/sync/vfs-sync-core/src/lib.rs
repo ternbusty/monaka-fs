@@ -1,7 +1,7 @@
 //! Common types for VFS S3 synchronization
 //!
-//! This crate provides shared types used by both native (vfs-sync)
-//! and WASI (vfs-sync-wasi) sync implementations.
+//! This crate provides shared types used by both native (vfs-sync-host)
+//! and WASI (vfs-sync-adapter) sync implementations.
 
 mod config;
 mod file_metadata;

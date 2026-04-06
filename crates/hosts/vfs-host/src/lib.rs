@@ -21,7 +21,7 @@ mod sync_hooks;
 #[cfg(feature = "s3-sync")]
 pub use sync_hooks::{NoOpSyncHooks, S3SyncHooks, SyncHooks};
 #[cfg(feature = "s3-sync")]
-pub use vfs_sync::{init_from_s3, HostSyncManager, S3Storage, SyncConfig};
+pub use vfs_sync_host::{init_from_s3, HostSyncManager, S3Storage, SyncConfig};
 
 /// Wrapper for fs-core file descriptor stored in ResourceTable.
 /// Contains the fd and optionally the path for directory descriptors.

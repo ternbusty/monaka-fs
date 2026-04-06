@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "s3-sync")]
-use vfs_sync::HostSyncManager;
+use vfs_sync_host::HostSyncManager;
 
 /// Trait for receiving filesystem mutation notifications
 ///
