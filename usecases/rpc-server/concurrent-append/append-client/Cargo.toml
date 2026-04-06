@@ -1,9 +1,0 @@
-[package]
-name = "append-client"
-version = "0.1.0"
-edition = "2021"
-
-# Standalone package, not part of workspace
-[workspace]
-
-[dependencies]
