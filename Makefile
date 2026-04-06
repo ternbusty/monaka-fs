@@ -35,10 +35,7 @@ build-wasm:
 	@cargo build --target wasm32-wasip2 \
 		-p vfs-adapter \
 		-p rpc-adapter \
-		-p vfs-rpc-server \
-		-p sensor-ingest \
-		-p sensor-process \
-		-p logger
+		-p vfs-rpc-server
 	@echo "WASM packages built"
 
 # Build all WASM packages (release)
@@ -47,10 +44,7 @@ build-wasm-release:
 	@cargo build --release --target wasm32-wasip2 \
 		-p vfs-adapter \
 		-p rpc-adapter \
-		-p vfs-rpc-server \
-		-p sensor-ingest \
-		-p sensor-process \
-		-p logger
+		-p vfs-rpc-server
 	@echo "WASM packages built (release)"
 
 # Clean build artifacts
