@@ -2,7 +2,9 @@
 
 Multiple WASM instances running in parallel native threads, concurrently appending to the same file through shared VFS (`fs-core`). Validates fs-core's locking implementation (DashMap + per-inode RwLock).
 
-**Deployment method**: [Host Trait](../../examples/host-trait/) (`vfs-host`)
+**Deployment method**: Host Trait (`vfs-host` crate — `cargo add vfs-host`)
+
+> This use case demonstrates the Host Trait method, where a native Rust program hosts WASM instances sharing a single VFS. The `monaka` CLI is not used here; instead, the host program (`host-concurrent-runner`) links against `vfs-host` directly.
 
 ```
 host-runner (native Rust)
@@ -28,7 +30,6 @@ cd usecases/host-trait/concurrent-append/host-runner && cargo build --release &&
 ## Run
 
 ```bash
-# From repository root:
 WASM_PATH=usecases/host-trait/concurrent-append/append-client/target/wasm32-wasip2/release/append-client.wasm \
   usecases/host-trait/concurrent-append/host-runner/target/release/host-concurrent-runner 3 50
 ```

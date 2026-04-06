@@ -3,7 +3,7 @@
 // This is a thin adapter component that exports WASI filesystem interfaces
 // and delegates to fs-core for the actual filesystem implementation.
 //
-// Initial filesystem content can be embedded using halycon-virt tool.
+// Initial filesystem content can be embedded using monaka-virt tool.
 //
 // Optional S3 sync feature enables automatic synchronization with S3.
 
@@ -63,19 +63,19 @@ static mut VFS_STATE: Option<VfsState> = None;
 // Separate static for the FS itself to avoid re-entrancy issues
 static mut VFS_FS: Option<Rc<RefCell<Fs<SystemTimeProvider>>>> = None;
 
-// Runtime-injected snapshot data (set by halycon-pack CLI)
+// Runtime-injected snapshot data (set by monaka-pack CLI)
 // These are mutable globals that the CLI modifies in the WASM binary
 #[no_mangle]
 #[used]
-static mut HALYCON_FS_DATA_PTR: u32 = 0;
+static mut MONAKA_FS_FS_DATA_PTR: u32 = 0;
 
 #[no_mangle]
 #[used]
-static mut HALYCON_FS_DATA_LEN: u32 = 0;
+static mut MONAKA_FS_FS_DATA_LEN: u32 = 0;
 
 /// Try to load the runtime-injected snapshot from memory
 fn load_runtime_snapshot() -> Option<FsSnapshot> {
-    let (ptr, len) = unsafe { (HALYCON_FS_DATA_PTR, HALYCON_FS_DATA_LEN) };
+    let (ptr, len) = unsafe { (MONAKA_FS_FS_DATA_PTR, MONAKA_FS_FS_DATA_LEN) };
 
     if ptr == 0 || len == 0 {
         return None;
@@ -91,7 +91,7 @@ fn load_runtime_snapshot() -> Option<FsSnapshot> {
     }
 }
 
-/// Load snapshot from runtime injection (set by halycon-pack)
+/// Load snapshot from runtime injection (set by monaka-pack)
 fn load_snapshot() -> Option<FsSnapshot> {
     load_runtime_snapshot()
 }

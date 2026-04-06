@@ -2,6 +2,9 @@
 name = "vfs-rpc-protocol"
 version = "0.1.0"
 edition = "2021"
+description = "RPC protocol message types for Monaka VFS"
+license = "MIT"
+repository = "https://github.com/ternbusty/monaka-fs"
 
 [dependencies]
 prost = "0.13"

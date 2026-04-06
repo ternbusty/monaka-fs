@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Common types for VFS S3 synchronization"
 license = "MIT"
+repository = "https://github.com/ternbusty/monaka-fs"
 
 [dependencies]

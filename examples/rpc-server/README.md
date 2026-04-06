@@ -1,101 +1,43 @@
 # RPC Server Examples
 
-TCP-based communication using `vfs-rpc-server`. WASM apps are composed with `rpc-adapter` via `wac plug`, then connect to a running server on port 9000.
+TCP-based communication using `vfs-rpc-server`. WASM apps are composed with `rpc-adapter`, then connect to a running server on port 9000.
 
 ```
-App (std::fs) + rpc-adapter  --[wac plug]-->  Composed WASM  --[TCP:9000]-->  vfs-rpc-server
+App (std::fs) + rpc-adapter  -->  Composed WASM  --[TCP:9000]-->  vfs-rpc-server
 ```
 
 Multiple composed apps can share a single VFS instance through the same server.
 
-## Prerequisites
+## Using `monaka` CLI
 
 ```bash
-rustup target add wasm32-wasip2
-cargo install wac-cli wasmtime-cli
+# Build demo apps
+cargo build -p demo-writer -p demo-reader --target wasm32-wasip2
+
+# Compose with RPC adapter
+make build-cli
+target/release/monaka compose --rpc target/wasm32-wasip2/debug/demo-writer.wasm -o /tmp/rpc-writer.wasm
+target/release/monaka compose --rpc target/wasm32-wasip2/debug/demo-reader.wasm -o /tmp/rpc-reader.wasm
+
+# Extract and start the RPC server
+target/release/monaka extract server -o /tmp/vfs-rpc-server.wasm
+wasmtime run -S inherit-network=y /tmp/vfs-rpc-server.wasm
+
+# In another terminal: run writer then reader
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
+wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
 ```
 
-## Build
+### With S3 Sync
 
 ```bash
-# From repository root:
+# Extract S3-enabled server
+target/release/monaka extract server --s3-sync -o /tmp/vfs-rpc-server-s3.wasm
 
-# 1. Build the RPC server
-cargo build -p vfs-rpc-server --target wasm32-wasip2
-
-# 2. Build the RPC adapter
-cargo build -p rpc-adapter --target wasm32-wasip2
-
-# 3. Build the demo apps (see ../apps/)
-cargo build -p demo-writer --target wasm32-wasip2
-cargo build -p demo-reader --target wasm32-wasip2
-```
-
-## Compose
-
-```bash
-# From repository root:
-wac plug \
-  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
-  target/wasm32-wasip2/debug/demo-writer.wasm \
-  -o target/wasm32-wasip2/debug/composed-demo-writer.wasm
-
-wac plug \
-  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
-  target/wasm32-wasip2/debug/demo-reader.wasm \
-  -o target/wasm32-wasip2/debug/composed-demo-reader.wasm
-```
-
-## Run
-
-### Start the server
-
-```bash
-# From repository root:
-wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/vfs_rpc_server.wasm
-```
-
-### Run demo-writer (in another terminal)
-
-```bash
-wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/composed-demo-writer.wasm
-```
-
-### Run demo-reader (in another terminal)
-
-```bash
-wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/composed-demo-reader.wasm
-```
-
-### Stop the server
-
-```bash
-pkill -f vfs_rpc_server.wasm
-```
-
-## S3 Sync
-
-The RPC server supports automatic S3 synchronization. Files written through the VFS are synced to S3.
-
-### Prerequisites
-
-Start LocalStack from the repository root:
-
-```bash
+# Start LocalStack
 docker compose up -d
-```
 
-### Build
-
-```bash
-# From repository root:
-cargo build -p vfs-rpc-server --target wasm32-wasip2 --features s3-sync
-```
-
-### Start the server with S3
-
-```bash
-# From repository root:
+# Start server with S3
 wasmtime run -S inherit-network=y -S http \
   --env VFS_S3_BUCKET=test-vfs-bucket \
   --env VFS_S3_PREFIX=vfs/ \
@@ -104,23 +46,55 @@ wasmtime run -S inherit-network=y -S http \
   --env AWS_ACCESS_KEY_ID=test \
   --env AWS_SECRET_ACCESS_KEY=test \
   --env AWS_REGION=ap-northeast-1 \
-  target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+  /tmp/vfs-rpc-server-s3.wasm
 ```
 
-### Run demo-writer (in another terminal)
+# Verify S3 sync
+
+```
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
+awslocal s3 ls s3://test-vfs-bucket/ --recursive
+```
+
+## Manual Setup (without `monaka` CLI)
+
+### Prerequisites
 
 ```bash
-wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/composed-demo-writer.wasm
+rustup target add wasm32-wasip2
+cargo install wac-cli wasmtime-cli
 ```
 
-### Verify S3 Sync
+### Build
 
 ```bash
-awslocal s3 ls s3://test-vfs-bucket/vfs/files/ --recursive
+# From repository root:
+cargo build -p vfs-rpc-server --target wasm32-wasip2
+cargo build -p rpc-adapter --target wasm32-wasip2
+cargo build -p demo-writer -p demo-reader --target wasm32-wasip2
 ```
 
-Expected:
+### Compose
 
+```bash
+wac plug \
+  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+  target/wasm32-wasip2/debug/demo-writer.wasm \
+  -o /tmp/rpc-writer.wasm
+
+wac plug \
+  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+  target/wasm32-wasip2/debug/demo-reader.wasm \
+  -o /tmp/rpc-reader.wasm
 ```
-<date> <time>         16 vfs/files/message.txt
+
+### Run
+
+```bash
+# Start server
+wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# In other terminals:
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
+wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
 ```

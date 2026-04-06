@@ -1,0 +1,10 @@
+{
+  "packages": {
+    "crates/tools/monaka-cli": {
+      "release-type": "rust",
+      "component": "monaka",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    }
+  }
+}

@@ -2,8 +2,8 @@
 # wasi-virt-vs-vfs Benchmark Build Script
 # Usage: ./build.sh
 #
-# Builds both wasi-virt and Halycon VFS versions of the benchmark WASM.
-# Prerequisites: wasi-virt, halycon-pack, wac
+# Builds both wasi-virt and Monaka VFS versions of the benchmark WASM.
+# Prerequisites: wasi-virt, monaka-pack, wac
 
 set -e
 
@@ -40,10 +40,10 @@ cd "$ROOT_DIR"
 cargo build --release --target wasm32-wasip2 -p vfs-adapter 2>&1 | grep -v "^warning:"
 VFS_ADAPTER="$BUILD_DIR/vfs_adapter.wasm"
 
-# --- Build halycon-pack ---
-echo -e "${YELLOW}Building halycon-pack...${NC}"
-cargo build --release -p halycon-pack 2>&1 | grep -v "^warning:"
-HALYCON_PACK="$ROOT_DIR/target/release/halycon-pack"
+# --- Build monaka-pack ---
+echo -e "${YELLOW}Building monaka-pack...${NC}"
+cargo build --release -p monaka-pack 2>&1 | grep -v "^warning:"
+MONAKA_FS_PACK="$ROOT_DIR/target/release/monaka-pack"
 
 # --- wasi-virt version ---
 echo -e "${YELLOW}Building wasi-virt version...${NC}"
@@ -72,8 +72,8 @@ echo "  Composing wasi-virt benchmark..."
 wac plug --plug "$SCRIPT_DIR/virt-adapter.wasm" "$BENCH_WASM_VIRT" -o "$SCRIPT_DIR/bench-wasi-virt.wasm"
 rm -f "$SCRIPT_DIR/virt-adapter.wasm"
 
-# --- Halycon VFS version ---
-echo -e "${YELLOW}Building Halycon VFS version...${NC}"
+# --- Monaka VFS version ---
+echo -e "${YELLOW}Building Monaka VFS version...${NC}"
 
 cd "$SCRIPT_DIR/bench-app"
 cargo build --release --target wasm32-wasip2 2>&1 | grep -v "^warning:"
@@ -82,11 +82,11 @@ BENCH_WASM="$SCRIPT_DIR/bench-app/target/wasm32-wasip2/release/bench-wasi-virt-v
 echo "  Composing with vfs-adapter..."
 wac plug --plug "$VFS_ADAPTER" "$BENCH_WASM" -o "$SCRIPT_DIR/bench-composed.wasm"
 
-echo "  Packing with halycon-pack..."
-"$HALYCON_PACK" embed --mount "/data=$TESTDATA_DIR/data" -o "$SCRIPT_DIR/bench-vfs.wasm" "$SCRIPT_DIR/bench-composed.wasm"
+echo "  Packing with monaka-pack..."
+"$MONAKA_FS_PACK" embed --mount "/data=$TESTDATA_DIR/data" -o "$SCRIPT_DIR/bench-vfs.wasm" "$SCRIPT_DIR/bench-composed.wasm"
 rm -f "$SCRIPT_DIR/bench-composed.wasm"
 
 echo ""
 echo -e "${GREEN}=== Build Complete ===${NC}"
 echo "  bench-wasi-virt.wasm  (wasi-virt embedded files)"
-echo "  bench-vfs.wasm        (Halycon VFS snapshot)"
+echo "  bench-vfs.wasm        (Monaka VFS snapshot)"

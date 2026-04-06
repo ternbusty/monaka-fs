@@ -4,7 +4,9 @@ Two WASM applications sharing an in-memory VFS via host-trait (`vfs-host`):
 1. `sensor-ingest` writes simulated sensor data to `/data/sensor.log`
 2. `sensor-process` reads the log and performs statistical analysis
 
-**Deployment method**: [Host Trait](../../examples/host-trait/) (`vfs-host`)
+**Deployment method**: Host Trait (`vfs-host` crate — `cargo add vfs-host`)
+
+> This use case demonstrates the Host Trait method, where a native Rust program hosts WASM instances sharing a single VFS. The `monaka` CLI is not used here; instead, the host program (`sensor-pipeline-runner`) links against `vfs-host` directly.
 
 ## Build
 
@@ -18,7 +20,6 @@ cargo build -p sensor-pipeline-runner
 ## Run
 
 ```bash
-# From repository root:
 cargo run -p sensor-pipeline-runner
 ```
 

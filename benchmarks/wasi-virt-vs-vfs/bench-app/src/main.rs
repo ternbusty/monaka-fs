@@ -1,7 +1,7 @@
 //! Benchmark: wasi-virt vs VFS (Read-only)
 //!
 //! This benchmark measures read performance for pre-embedded files.
-//! Both wasi-virt and Halycon support pre-embedding files into WASM binaries.
+//! Both wasi-virt and Monaka support pre-embedding files into WASM binaries.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

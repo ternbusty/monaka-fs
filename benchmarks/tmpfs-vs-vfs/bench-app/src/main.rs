@@ -4,7 +4,7 @@
 //! performance for various file sizes.
 //!
 //! Modes:
-//! - Default: Full benchmark (write + read) - for Halycon VFS
+//! - Default: Full benchmark (write + read) - for Monaka VFS
 //! - --seq-read-only: Sequential read of pre-created files only
 //! - --random-read-only: Random read of pre-created files only
 
@@ -46,7 +46,7 @@ fn main() {
     }
 }
 
-/// Full benchmark: write + read (for Halycon VFS where no host cache exists)
+/// Full benchmark: write + read (for Monaka VFS where no host cache exists)
 fn run_full_benchmark(file_size: usize, label: &str) {
     let data = generate_test_data(file_size);
 

@@ -1,15 +1,40 @@
 # Static Composition + S3 Sync Demo
 
-This example demonstrates using VFS with S3 synchronization through **static composition** (`wac plug`).
+VFS with S3 synchronization through static composition. The VFS + S3 sync is embedded directly into the WASM component.
 
-Unlike the RPC approach (separate server process), this embeds the VFS + S3 sync directly into the WASM component.
+## Using `monaka` CLI
 
-## Prerequisites
+```bash
+# Build the demo app (standalone package)
+cd examples/static-composition/s3-sync && cargo build --target wasm32-wasip2 && cd ../../..
 
-- Docker (for LocalStack)
-- AWS CLI (`awslocal` via localstack-cli)
-- wasmtime
-- wac-cli
+# Compose with S3 sync adapter
+make build-cli
+target/release/monaka compose --s3-sync \
+  examples/static-composition/s3-sync/target/wasm32-wasip2/debug/static-s3-demo.wasm \
+  -o /tmp/static-s3-composed.wasm
+
+# Start LocalStack (from repository root)
+docker compose up -d
+
+# Run
+wasmtime run -S inherit-network=y -S http \
+    --env VFS_S3_BUCKET=test-vfs-bucket \
+    --env VFS_S3_PREFIX=demo/ \
+    --env VFS_SYNC_MODE=realtime \
+    --env AWS_ENDPOINT_URL=http://localhost:4566 \
+    --env AWS_ACCESS_KEY_ID=test \
+    --env AWS_SECRET_ACCESS_KEY=test \
+    --env AWS_REGION=ap-northeast-1 \
+    /tmp/static-s3-composed.wasm
+```
+
+## Verify S3 Sync
+
+```bash
+awslocal s3 ls s3://test-vfs-bucket/demo/ --recursive
+awslocal s3 cp s3://test-vfs-bucket/demo/files/data/config.json -
+```
 
 ## Architecture
 
@@ -19,7 +44,6 @@ Unlike the RPC approach (separate server process), this embeds the VFS + S3 sync
 │  ┌─────────────┐    ┌───────────────────┐   │
 │  │  App (demo) │───>│    vfs-adapter    │   │
 │  └─────────────┘    │   + s3-sync       │   │
-│                     │                   │   │
 │                     │  ┌─────────────┐  │   │
 │                     │  │ In-memory   │  │   │
 │                     │  │    VFS      │  │   │
@@ -34,58 +58,6 @@ Unlike the RPC approach (separate server process), this embeds the VFS + S3 sync
                         └───────────────┘
 ```
 
-## Build
-
-All commands from the repository root.
-
-```bash
-# Build vfs-adapter with S3 sync
-cargo build -p vfs-adapter --target wasm32-wasip2 --features s3-sync
-
-# Build this demo app
-cargo build --manifest-path examples/static-composition/s3-sync/Cargo.toml --target wasm32-wasip2
-
-# Compose with wac
-wac plug \
-    --plug target/wasm32-wasip2/debug/vfs_adapter.wasm \
-    examples/static-composition/s3-sync/target/wasm32-wasip2/debug/static-s3-demo.wasm \
-    -o target/wasm32-wasip2/debug/static-s3-composed.wasm
-```
-
-## Start LocalStack
-
-From the repository root:
-
-```bash
-docker compose up -d
-```
-
-This creates the `test-vfs-bucket` bucket automatically via the init script.
-
-## Run
-
-```bash
-wasmtime run -S inherit-network=y -S http \
-    --env VFS_S3_BUCKET=test-vfs-bucket \
-    --env VFS_S3_PREFIX=demo/ \
-    --env VFS_SYNC_MODE=realtime \
-    --env AWS_ENDPOINT_URL=http://localhost:4566 \
-    --env AWS_ACCESS_KEY_ID=test \
-    --env AWS_SECRET_ACCESS_KEY=test \
-    --env AWS_REGION=ap-northeast-1 \
-    target/wasm32-wasip2/debug/static-s3-composed.wasm
-```
-
-## Verify S3 Sync
-
-```bash
-# List synced files
-awslocal s3 ls s3://test-vfs-bucket/demo/ --recursive
-
-# Read synced content
-awslocal s3 cp s3://test-vfs-bucket/demo/files/data/config.json -
-```
-
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -98,6 +70,32 @@ awslocal s3 cp s3://test-vfs-bucket/demo/files/data/config.json -
 | `AWS_ACCESS_KEY_ID` | AWS credential | - |
 | `AWS_SECRET_ACCESS_KEY` | AWS credential | - |
 | `AWS_REGION` | AWS region | - |
+
+## Manual Setup (without `monaka` CLI)
+
+### Prerequisites
+
+- Docker (for LocalStack)
+- `awslocal` via localstack-cli
+- wasmtime, wac-cli
+
+### Build & Compose
+
+```bash
+# From repository root:
+
+# Build vfs-adapter with S3 sync
+cargo build -p vfs-adapter --target wasm32-wasip2 --features s3-sync
+
+# Build the demo app
+cargo build -p static-s3-demo --target wasm32-wasip2
+
+# Compose with wac
+wac plug \
+    --plug target/wasm32-wasip2/debug/vfs_adapter.wasm \
+    target/wasm32-wasip2/debug/static-s3-demo.wasm \
+    -o /tmp/static-s3-composed.wasm
+```
 
 ## Comparison with Other Approaches
 

@@ -1,12 +1,12 @@
 [package]
-name = "halycon-pack"
+name = "monaka"
 version = "0.1.0"
 edition = "2024"
-description = "CLI tool to pack files into halycon vfs-adapter"
+description = "CLI tool for Monaka VFS - embed files, compose WASM components, and extract binaries"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "halycon-pack"
+name = "monaka"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,6 +16,9 @@ clap = { version = "4", features = ["derive"] }
 # WASM manipulation
 wasm-encoder = "0.225"
 wasmparser = "0.225"
+
+# WASM composition (wac plug API)
+wac-graph = "0.9"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -29,3 +32,6 @@ anyhow = "1"
 
 # File walking
 walkdir = "2"
+
+# Temp files for compose
+tempfile = "3"

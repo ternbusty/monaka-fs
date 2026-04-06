@@ -1,4 +1,4 @@
-package halycon:vfs@0.1.0;
+package monaka:vfs@0.1.0;
 
 world vfs-rpc-server {
     // Import WASI sockets for TCP server

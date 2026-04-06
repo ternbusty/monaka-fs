@@ -1,5 +1,5 @@
 // Custom logging interface to avoid wasi:cli dependencies
-// This is part of halycon:vfs package
+// This is part of monaka:vfs package
 
 interface log {
     // Log levels

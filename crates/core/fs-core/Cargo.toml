@@ -2,7 +2,12 @@
 name = "fs-core"
 version = "0.1.0"
 edition = "2024"
-resolver="3"
+resolver = "3"
+description = "Ephemeral in-memory filesystem for WebAssembly (no_std compatible)"
+license = "MIT"
+repository = "https://github.com/ternbusty/monaka-fs"
+keywords = ["wasm", "filesystem", "wasi", "no-std", "in-memory"]
+categories = ["wasm", "filesystem", "no-std"]
 
 [dependencies]
 log = { version = "0.4", optional = true, default-features = false }

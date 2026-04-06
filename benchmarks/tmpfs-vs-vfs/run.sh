@@ -2,7 +2,7 @@
 # tmpfs-vs-vfs Benchmark Runner
 # Usage: ./run.sh
 #
-# Runs ext4 vs tmpfs vs Halycon VFS benchmark on a Linux host.
+# Runs ext4 vs tmpfs vs Monaka VFS benchmark on a Linux host.
 # This script must be run on Linux (tmpfs + page cache clearing require it).
 
 set -e
@@ -82,13 +82,13 @@ clear_cache() {
 }
 
 echo -e "${GREEN}==========================================${NC}"
-echo -e "${GREEN}  Benchmark: ext4 vs tmpfs vs Halycon VFS${NC}"
+echo -e "${GREEN}  Benchmark: ext4 vs tmpfs vs Monaka VFS${NC}"
 echo -e "${GREEN}==========================================${NC}"
 echo ""
 
 # Setup directories
 EXT4_DIR=$(mktemp -d)
-TMPFS_DIR="/dev/shm/halycon-bench"
+TMPFS_DIR="/dev/shm/monaka-bench"
 mkdir -p "$TMPFS_DIR"
 trap "rm -rf $TMPFS_DIR $EXT4_DIR" EXIT
 
@@ -128,10 +128,10 @@ run_host_read_bench "$TMPFS_DIR" "TMPFS"
 rm -f "$TMPFS_DIR"/*.dat
 
 # ==========================================
-# Halycon VFS benchmark (full mode)
+# Monaka VFS benchmark (full mode)
 # ==========================================
 echo ""
-echo -e "${YELLOW}=== Running: Halycon VFS ===${NC}"
+echo -e "${YELLOW}=== Running: Monaka VFS ===${NC}"
 echo ""
 
 VFS_RESULTS=$(wasmtime run "$WASM_DIR/bench-composed.wasm" 2>&1)
@@ -157,7 +157,7 @@ echo "$TMPFS_WRITE_RESULTS" | grep "^\[RESULT\]" | grep "seq_write" | sed 's/\[R
 echo "$TMPFS_SEQ_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
 echo "$TMPFS_RAND_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
 echo ""
-echo "--- Halycon VFS ---"
+echo "--- Monaka VFS ---"
 echo "$VFS_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
 
 echo ""

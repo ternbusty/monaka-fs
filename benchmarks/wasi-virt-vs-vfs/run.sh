@@ -2,7 +2,7 @@
 # wasi-virt-vs-vfs Benchmark Runner
 # Usage: ./run.sh
 #
-# Runs wasi-virt vs Halycon VFS read performance comparison.
+# Runs wasi-virt vs Monaka VFS read performance comparison.
 
 set -e
 
@@ -29,7 +29,7 @@ for f in "$SCRIPT_DIR/bench-wasi-virt.wasm" "$SCRIPT_DIR/bench-vfs.wasm"; do
 done
 
 echo -e "${GREEN}==========================================${NC}"
-echo -e "${GREEN}  Benchmark: wasi-virt vs Halycon VFS${NC}"
+echo -e "${GREEN}  Benchmark: wasi-virt vs Monaka VFS${NC}"
 echo -e "${GREEN}==========================================${NC}"
 echo ""
 
@@ -40,8 +40,8 @@ echo "$WASI_VIRT_RESULTS"
 
 echo ""
 
-# --- Halycon VFS ---
-echo -e "${YELLOW}=== Running: Halycon VFS ===${NC}"
+# --- Monaka VFS ---
+echo -e "${YELLOW}=== Running: Monaka VFS ===${NC}"
 VFS_RESULTS=$(wasmtime run "$SCRIPT_DIR/bench-vfs.wasm" 2>&1)
 echo "$VFS_RESULTS"
 
@@ -56,7 +56,7 @@ echo ""
 echo "--- wasi-virt ---"
 echo "$WASI_VIRT_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
 echo ""
-echo "--- Halycon VFS ---"
+echo "--- Monaka VFS ---"
 echo "$VFS_RESULTS" | grep "^\[RESULT\]" | sed 's/\[RESULT\] //'
 
 echo ""
