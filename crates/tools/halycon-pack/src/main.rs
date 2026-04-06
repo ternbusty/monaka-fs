@@ -1,12 +1,6 @@
 //! halycon-pack: Pack files into vfs-adapter WASM binaries
 //!
-//! Two usage modes:
-//!
-//! 1. Generate snapshot file (for build-time embedding):
-//!    halycon-pack snapshot --mount /data=./local-dir -o snapshot.json
-//!    HALYCON_SNAPSHOT=snapshot.json cargo build -p vfs-adapter --target wasm32-wasip2
-//!
-//! 2. Embed into WASM binary (modifies data section directly):
+//! Usage:
 //!    halycon-pack embed --mount /data=./local-dir -o output.wasm input.wasm
 
 use anyhow::{Context, Result, bail};
@@ -31,21 +25,7 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Generate a snapshot JSON file from local directories
-    /// This can be used with HALYCON_SNAPSHOT env var during vfs-adapter build
-    Snapshot {
-        /// Output snapshot file (JSON format)
-        #[arg(short, long, required = true)]
-        output: PathBuf,
-
-        /// Mount a local directory into the virtual filesystem
-        /// Format: /virtual-path=./local-path
-        #[arg(short, long = "mount", value_name = "MOUNT", required = true)]
-        mounts: Vec<String>,
-    },
-
-    /// Embed a snapshot into a WASM binary as a custom section
-    /// (for tools that can read custom sections)
+    /// Embed a filesystem snapshot into a WASM binary
     Embed {
         /// Input WASM file (vfs-adapter)
         #[arg(required = true)]
@@ -794,42 +774,6 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Commands::Snapshot { output, mounts } => {
-            if mounts.is_empty() {
-                anyhow::bail!("At least one --mount is required");
-            }
-
-            // Parse mount points
-            let mounts: Vec<(String, PathBuf)> = mounts
-                .iter()
-                .map(|m| parse_mount(m))
-                .collect::<Result<Vec<_>>>()?;
-
-            // Build snapshot
-            let snapshot = build_snapshot(&mounts)?;
-
-            // Write snapshot to JSON file
-            let json = serde_json::to_string_pretty(&snapshot)?;
-            std::fs::write(&output, &json)?;
-
-            println!(
-                "Wrote snapshot to {} ({} bytes, {} files)",
-                output.display(),
-                json.len(),
-                snapshot
-                    .inodes
-                    .iter()
-                    .filter(|i| !i.metadata.is_dir)
-                    .count()
-            );
-            println!();
-            println!("To build vfs-adapter with this snapshot:");
-            println!(
-                "  HALYCON_SNAPSHOT={} cargo build -p vfs-adapter --target wasm32-wasip2 --release",
-                output.canonicalize().unwrap_or(output.clone()).display()
-            );
-        }
-
         Commands::Embed {
             input,
             output,
