@@ -1,0 +1,10 @@
+[package]
+name = "demo-embed-read"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "demo-embed-read"
+path = "src/main.rs"
