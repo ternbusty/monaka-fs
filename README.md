@@ -23,7 +23,6 @@ halycon/
 │   │   └── rpc-adapter/        # RPC communication adapter
 │   ├── hosts/
 │   │   ├── vfs-host/           # Host implementation for vfs-adapter
-│   │   └── vfs-rpc-host/       # Host implementation for rpc-adapter
 │   └── rpc/
 │       ├── vfs-rpc-protocol/   # RPC protocol definitions
 │       └── vfs-rpc-server/     # RPC server (WASM component)
@@ -45,7 +44,7 @@ halycon/
 ### Build Native Crates
 
 ```bash
-cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host -p vfs-rpc-host
+cargo build -p fs-core -p vfs-rpc-protocol -p vfs-host
 ```
 
 ### Build WASM Components

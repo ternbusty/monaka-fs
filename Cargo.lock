@@ -3703,18 +3703,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vfs-rpc-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "log",
- "wasmtime",
- "wasmtime-wasi",
-]
-
-[[package]]
 name = "vfs-rpc-protocol"
 version = "0.1.0"
 dependencies = [
