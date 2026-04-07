@@ -1,7 +1,9 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -10,6 +12,7 @@ permissions:
 
 jobs:
   release-please:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
@@ -31,7 +34,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact: monaka-darwin-arm64
             use_cross: false
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: monaka-darwin-amd64
             use_cross: false
