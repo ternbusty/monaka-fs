@@ -1,17 +1,71 @@
 {
   "packages": {
-    ".": {
+    "crates/tools/monaka-cli": {
       "release-type": "rust",
-      "component": "monaka",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": [
-        "crates/tools/monaka-cli/Cargo.toml",
-        "crates/core/fs-core/Cargo.toml",
-        "crates/sync/vfs-sync-core/Cargo.toml",
-        "crates/sync/vfs-sync-host/Cargo.toml",
-        "crates/hosts/vfs-host/Cargo.toml"
+      "component": "monaka"
+    },
+    "crates/core/fs-core": {
+      "release-type": "rust",
+      "component": "fs-core"
+    },
+    "crates/sync/vfs-sync-core": {
+      "release-type": "rust",
+      "component": "vfs-sync-core"
+    },
+    "crates/sync/vfs-sync-host": {
+      "release-type": "rust",
+      "component": "vfs-sync-host"
+    },
+    "crates/sync/vfs-sync-adapter": {
+      "release-type": "rust",
+      "component": "vfs-sync-adapter"
+    },
+    "crates/hosts/vfs-host": {
+      "release-type": "rust",
+      "component": "vfs-host"
+    },
+    "crates/hosts/vfs-rpc-host": {
+      "release-type": "rust",
+      "component": "vfs-rpc-host"
+    },
+    "crates/adapters/vfs-adapter": {
+      "release-type": "rust",
+      "component": "vfs-adapter"
+    },
+    "crates/adapters/rpc-adapter": {
+      "release-type": "rust",
+      "component": "rpc-adapter"
+    },
+    "crates/rpc/vfs-rpc-protocol": {
+      "release-type": "rust",
+      "component": "vfs-rpc-protocol"
+    },
+    "crates/rpc/vfs-rpc-server": {
+      "release-type": "rust",
+      "component": "vfs-rpc-server"
+    }
+  },
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": false
+    },
+    {
+      "type": "linked-versions",
+      "groupName": "monaka",
+      "components": [
+        "monaka",
+        "fs-core",
+        "vfs-sync-core",
+        "vfs-sync-host",
+        "vfs-sync-adapter",
+        "vfs-host",
+        "vfs-rpc-host",
+        "vfs-adapter",
+        "rpc-adapter",
+        "vfs-rpc-protocol",
+        "vfs-rpc-server"
       ]
     }
-  }
+  ]
 }
