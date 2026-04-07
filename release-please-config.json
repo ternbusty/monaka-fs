@@ -1,10 +1,17 @@
 {
   "packages": {
-    "crates/tools/monaka-cli": {
+    ".": {
       "release-type": "rust",
       "component": "monaka",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "crates/tools/monaka-cli/Cargo.toml",
+        "crates/core/fs-core/Cargo.toml",
+        "crates/sync/vfs-sync-core/Cargo.toml",
+        "crates/sync/vfs-sync-host/Cargo.toml",
+        "crates/hosts/vfs-host/Cargo.toml"
+      ]
     }
   }
 }

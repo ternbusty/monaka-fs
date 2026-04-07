@@ -73,7 +73,6 @@ jobs:
             target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      # Build WASM components (same on all runners, only need wasm32-wasip2)
       - name: Build WASM (S3 sync variants)
         run: |
           cargo build --release --target wasm32-wasip2 -p vfs-adapter --features s3-sync
@@ -85,7 +84,6 @@ jobs:
       - name: Build WASM (non-S3 variants)
         run: cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
 
-      # Build CLI binary
       - name: Build CLI (native)
         if: ${{ !matrix.use_cross }}
         run: cargo build --release --target ${{ matrix.target }} -p monaka
