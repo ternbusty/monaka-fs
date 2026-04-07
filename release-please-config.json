@@ -24,10 +24,6 @@
       "release-type": "rust",
       "component": "vfs-host"
     },
-    "crates/hosts/vfs-rpc-host": {
-      "release-type": "rust",
-      "component": "vfs-rpc-host"
-    },
     "crates/adapters/vfs-adapter": {
       "release-type": "rust",
       "component": "vfs-adapter"
@@ -60,7 +56,6 @@
         "vfs-sync-host",
         "vfs-sync-adapter",
         "vfs-host",
-        "vfs-rpc-host",
         "vfs-adapter",
         "rpc-adapter",
         "vfs-rpc-protocol",

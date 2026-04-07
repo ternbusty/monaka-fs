@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
-      monaka_tag_name: ${{ steps.release.outputs['monaka--tag_name'] }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -23,7 +23,7 @@ jobs:
 
   build:
     needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     strategy:
       matrix:
         include:
@@ -101,11 +101,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
-          tag_name: ${{ needs.release-please.outputs.monaka_tag_name }}
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
 
   publish:
     needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created }}
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

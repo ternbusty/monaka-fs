@@ -5,7 +5,6 @@
   "crates/sync/vfs-sync-host": "0.1.1",
   "crates/sync/vfs-sync-adapter": "0.1.1",
   "crates/hosts/vfs-host": "0.1.1",
-  "crates/hosts/vfs-rpc-host": "0.1.1",
   "crates/adapters/vfs-adapter": "0.1.1",
   "crates/adapters/rpc-adapter": "0.1.1",
   "crates/rpc/vfs-rpc-protocol": "0.1.1",
