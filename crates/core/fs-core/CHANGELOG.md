@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/ternbusty/monaka-fs/compare/fs-core-v0.2.1...fs-core-v0.2.2) (2026-04-08)
+
+
+### Miscellaneous Chores
+
+* **fs-core:** Synchronize monaka versions
+
 ## [0.2.1](https://github.com/ternbusty/monaka-fs/compare/fs-core-v0.2.0...fs-core-v0.2.1) (2026-04-08)
 
 
