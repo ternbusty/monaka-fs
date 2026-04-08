@@ -4,7 +4,6 @@ Native host binary that runs `demo-fs-operations` via Wasmtime's `Linker` API wi
 
 ## Build
 
-All commands from the repository root.
 
 ```bash
 # Build the WASM app

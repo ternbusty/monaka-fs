@@ -12,15 +12,21 @@ Two WASM applications sharing an in-memory VFS via host-trait (`vfs-host`):
 
 ```bash
 # From repository root:
-cargo build -p sensor-ingest --target wasm32-wasip2
-cargo build -p sensor-process --target wasm32-wasip2
-cargo build -p sensor-pipeline-runner
+
+# Build the WASM apps (standalone packages)
+cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --target wasm32-wasip2 && cd ../../../..
+cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --target wasm32-wasip2 && cd ../../../..
+
+# Build the host binary (standalone package)
+cd usecases/host-trait/sensor-pipeline/runtime-linker
+cargo build
 ```
 
 ## Run
 
 ```bash
-cargo run -p sensor-pipeline-runner
+# From usecases/host-trait/sensor-pipeline/runtime-linker/:
+cargo run
 ```
 
 ## Expected Output

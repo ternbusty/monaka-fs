@@ -25,20 +25,21 @@ This creates the `test-vfs-bucket` bucket automatically via the init script.
 # Build the WASM app that will be loaded (see examples/apps/)
 cargo build -p demo-writer --target wasm32-wasip2
 
-# Build the host binary
-cargo build -p runtime-linker-s3
+# Build the host binary (standalone package)
+cd examples/host-trait/runtime-linker-s3
+cargo build
 ```
 
 ## Run
 
 ```bash
-# From repository root:
+# From examples/host-trait/runtime-linker-s3/:
 VFS_S3_BUCKET=test-vfs-bucket \
 AWS_ENDPOINT_URL=http://localhost:4566 \
 AWS_ACCESS_KEY_ID=test \
 AWS_SECRET_ACCESS_KEY=test \
 AWS_REGION=ap-northeast-1 \
-cargo run -p runtime-linker-s3
+cargo run
 ```
 
 ## Verify S3 Sync

@@ -1,8 +1,18 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
 use vfs_host::{self};
+
+/// Resolve the workspace root (3 levels above CARGO_MANIFEST_DIR).
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("failed to resolve workspace root")
+}
 
 fn main() -> Result<()> {
     let mut config = Config::new();
@@ -14,11 +24,9 @@ fn main() -> Result<()> {
     let mut linker = wasmtime::component::Linker::new(&engine);
     vfs_host::add_to_linker_with_vfs(&mut linker)?;
 
-    let component = Component::from_file(
-        &engine,
-        "target/wasm32-wasip2/debug/demo-fs-operations.wasm",
-    )
-    .context("Failed to load demo-fs-operations.wasm")?;
+    let wasm_path = workspace_root().join("target/wasm32-wasip2/debug/demo-fs-operations.wasm");
+    let component = Component::from_file(&engine, &wasm_path)
+        .context("Failed to load demo-fs-operations.wasm")?;
 
     use wasmtime_wasi::bindings::sync::Command;
     let command = Command::instantiate(&mut store, &component, &linker)

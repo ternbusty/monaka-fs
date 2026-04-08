@@ -21,18 +21,28 @@
 //! docker run -d -p 4566:4566 localstack/localstack
 //! aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket
 //!
-//! # Run the example
+//! # Run the example (from examples/host-trait/runtime-linker-s3/)
 //! VFS_S3_BUCKET=test-bucket \
 //! AWS_ENDPOINT_URL=http://localhost:4566 \
-//! cargo run -p runtime-linker-s3
+//! cargo run
 //! ```
 
-use anyhow::{Context, Result};
+use std::path::PathBuf;
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
 use vfs_host::{self, VfsHostState};
+
+/// Resolve the workspace root (3 levels above CARGO_MANIFEST_DIR).
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("failed to resolve workspace root")
+}
 
 /// Initialize VFS with S3 sync (async operation)
 async fn init_vfs_with_s3() -> Result<VfsHostState> {
@@ -63,12 +73,12 @@ fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState) -> Result<VfsHostStat
 
     // Try to load demo-writer if available
     // Note: cargo run executes from workspace root
-    let writer_path = "target/wasm32-wasip2/debug/demo-writer.wasm";
-    if std::path::Path::new(writer_path).exists() {
+    let writer_path = workspace_root().join("target/wasm32-wasip2/debug/demo-writer.wasm");
+    if writer_path.exists() {
         log::info!("Running demo-writer...");
 
-        let writer_component =
-            Component::from_file(engine, writer_path).context("Failed to load demo-writer.wasm")?;
+        let writer_component = Component::from_file(engine, &writer_path)
+            .context("Failed to load demo-writer.wasm")?;
 
         use wasmtime_wasi::bindings::sync::Command;
         let writer_command = Command::instantiate(&mut store, &writer_component, &linker)
@@ -82,7 +92,7 @@ fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState) -> Result<VfsHostStat
     } else {
         log::warn!(
             "demo-writer.wasm not found at {}. Build it first with: cargo build -p demo-writer --target wasm32-wasip2",
-            writer_path
+            writer_path.display()
         );
     }
 
@@ -102,13 +112,13 @@ async fn main() -> Result<()> {
         eprintln!("Error: VFS_S3_BUCKET environment variable is required");
         eprintln!();
         eprintln!("Usage:");
-        eprintln!("  VFS_S3_BUCKET=my-bucket cargo run -p runtime-linker-s3");
+        eprintln!("  VFS_S3_BUCKET=my-bucket cargo run");
         eprintln!();
         eprintln!("With LocalStack:");
         eprintln!("  docker run -d -p 4566:4566 localstack/localstack");
         eprintln!("  aws --endpoint-url=http://localhost:4566 s3 mb s3://test-bucket");
         eprintln!("  VFS_S3_BUCKET=test-bucket AWS_ENDPOINT_URL=http://localhost:4566 \\");
-        eprintln!("    cargo run -p runtime-linker-s3");
+        eprintln!("    cargo run");
         std::process::exit(1);
     }
 

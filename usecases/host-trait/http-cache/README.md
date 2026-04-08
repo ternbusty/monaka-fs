@@ -16,15 +16,21 @@ HTTP Request --> axum server --> spawn_blocking --> WASM handler
 ## Build
 
 ```bash
-# From repository root:
-cargo build -p http-cache-handler --target wasm32-wasip2
-cargo build -p http-cache-server
+# From the repository root
+
+# Build the WASM handler (standalone package)
+cd usecases/host-trait/http-cache/request-handler && cargo build --target wasm32-wasip2 && cd ../../../..
+
+# Build the host binary (standalone package)
+cd usecases/host-trait/http-cache/http-server
+cargo build
 ```
 
 ## Run
 
 ```bash
-cargo run -p http-cache-server
+# From usecases/host-trait/http-cache/http-server/:
+cargo run
 ```
 
 In another terminal:
