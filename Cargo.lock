@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "fs-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "dashmap",
  "log",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "http-cache-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "monaka"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2835,7 +2835,7 @@ dependencies = [
 
 [[package]]
 name = "rpc-adapter"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "log",
  "prost",
@@ -2845,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-linker"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "vfs-host",
@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-linker-demo-fs"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "vfs-host",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-linker-s3"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -3101,7 +3101,7 @@ version = "0.1.0"
 
 [[package]]
 name = "sensor-pipeline-runner"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "vfs-host",
@@ -3758,7 +3758,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vfs-adapter"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "fs-core",
  "log",
@@ -3771,7 +3771,7 @@ dependencies = [
 
 [[package]]
 name = "vfs-host"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "vfs-rpc-protocol"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "prost",
@@ -3795,7 +3795,7 @@ dependencies = [
 
 [[package]]
 name = "vfs-rpc-server"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "fs-core",
  "log",
@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "vfs-sync-adapter"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -3827,11 +3827,11 @@ dependencies = [
 
 [[package]]
 name = "vfs-sync-core"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "vfs-sync-host"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
