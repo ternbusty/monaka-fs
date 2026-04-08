@@ -11,25 +11,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  release-please:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    outputs:
-      releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
-      tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
-      any_released: ${{ steps.release.outputs.releases_created }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
-        with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  # Create tags for packages with skip-github-release: true
-  # release-please requires tags to track release boundaries
+  # Ensure tags exist for packages with skip-github-release: true
+  # Must run BEFORE release-please so it can find them
   tag-packages:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.any_released == 'true' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +45,19 @@ jobs:
             fi
           done
           git push --tags
+
+  release-please:
+    needs: tag-packages
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
+      tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   build:
     needs: release-please
