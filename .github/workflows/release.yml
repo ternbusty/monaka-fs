@@ -17,12 +17,49 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
       tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
+      any_released: ${{ steps.release.outputs.releases_created }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Create tags for packages with skip-github-release: true
+  # release-please requires tags to track release boundaries
+  tag-packages:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.any_released == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create tags for skip-github-release packages
+        run: |
+          declare -A PACKAGES=(
+            ["crates/core/fs-core"]="fs-core"
+            ["crates/sync/vfs-sync-core"]="vfs-sync-core"
+            ["crates/sync/vfs-sync-host"]="vfs-sync-host"
+            ["crates/sync/vfs-sync-adapter"]="vfs-sync-adapter"
+            ["crates/hosts/vfs-host"]="vfs-host"
+            ["crates/adapters/vfs-adapter"]="vfs-adapter"
+            ["crates/adapters/rpc-adapter"]="rpc-adapter"
+            ["crates/rpc/vfs-rpc-protocol"]="vfs-rpc-protocol"
+            ["crates/rpc/vfs-rpc-server"]="vfs-rpc-server"
+          )
+          for path in "${!PACKAGES[@]}"; do
+            component="${PACKAGES[$path]}"
+            version=$(jq -r ".\"$path\"" .release-please-manifest.json)
+            tag="${component}-v${version}"
+            if ! git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "Creating tag: $tag"
+              git tag "$tag"
+            else
+              echo "Tag already exists: $tag"
+            fi
+          done
+          git push --tags
 
   build:
     needs: release-please
