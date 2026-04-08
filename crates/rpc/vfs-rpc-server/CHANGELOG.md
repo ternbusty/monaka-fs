@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/ternbusty/monaka-fs/compare/vfs-rpc-server-v0.2.0...vfs-rpc-server-v0.3.0) (2026-04-08)
+
+
+### Features
+
+* add rename function ([#35](https://github.com/ternbusty/monaka-fs/issues/35)) ([79d4cba](https://github.com/ternbusty/monaka-fs/commit/79d4cba490aec8a68e74e4d497a391db10e64b7c))
+
 ## [0.2.0](https://github.com/ternbusty/monaka-fs/compare/vfs-rpc-server-v0.1.1...vfs-rpc-server-v0.2.0) (2026-04-07)
 
 
