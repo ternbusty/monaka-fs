@@ -1,6 +1,6 @@
 # MonakaFS
 
-An ephemeral in-memory filesystem for WebAssembly. Multiple WASM apps can share a virtual filesystem transparently using standard `std::fs` APIs.
+An in-memory filesystem for WebAssembly. Multiple WASM apps can share a virtual filesystem transparently using standard `std::fs` APIs.
 
 ## Install
 
