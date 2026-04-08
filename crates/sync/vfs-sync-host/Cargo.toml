@@ -8,7 +8,7 @@ repository = "https://github.com/ternbusty/monaka-fs"
 
 [dependencies]
 vfs-sync-core = { version = "0.2.0", path = "../vfs-sync-core" }
-fs-core = { version = "0.2.0", path = "../../core/fs-core" }
+fs-core = { version = "0.2.0", path = "../../core/fs-core", features = ["thread-safe"] }
 log = "0.4"
 
 # AWS SDK
