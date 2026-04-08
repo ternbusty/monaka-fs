@@ -6,39 +6,48 @@
     },
     "crates/core/fs-core": {
       "release-type": "rust",
-      "component": "fs-core"
+      "component": "fs-core",
+      "skip-github-release": true
     },
     "crates/sync/vfs-sync-core": {
       "release-type": "rust",
-      "component": "vfs-sync-core"
+      "component": "vfs-sync-core",
+      "skip-github-release": true
     },
     "crates/sync/vfs-sync-host": {
       "release-type": "rust",
-      "component": "vfs-sync-host"
+      "component": "vfs-sync-host",
+      "skip-github-release": true
     },
     "crates/sync/vfs-sync-adapter": {
       "release-type": "rust",
-      "component": "vfs-sync-adapter"
+      "component": "vfs-sync-adapter",
+      "skip-github-release": true
     },
     "crates/hosts/vfs-host": {
       "release-type": "rust",
-      "component": "vfs-host"
+      "component": "vfs-host",
+      "skip-github-release": true
     },
     "crates/adapters/vfs-adapter": {
       "release-type": "rust",
-      "component": "vfs-adapter"
+      "component": "vfs-adapter",
+      "skip-github-release": true
     },
     "crates/adapters/rpc-adapter": {
       "release-type": "rust",
-      "component": "rpc-adapter"
+      "component": "rpc-adapter",
+      "skip-github-release": true
     },
     "crates/rpc/vfs-rpc-protocol": {
       "release-type": "rust",
-      "component": "vfs-rpc-protocol"
+      "component": "vfs-rpc-protocol",
+      "skip-github-release": true
     },
     "crates/rpc/vfs-rpc-server": {
       "release-type": "rust",
-      "component": "vfs-rpc-server"
+      "component": "vfs-rpc-server",
+      "skip-github-release": true
     }
   },
   "plugins": [
