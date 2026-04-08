@@ -11,25 +11,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  release-please:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
-    outputs:
-      releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
-      tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
-      any_released: ${{ steps.release.outputs.releases_created }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
-        with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  # Create tags for packages with skip-github-release: true
-  # release-please requires tags to track release boundaries
+  # Ensure tags exist for packages with skip-github-release: true
+  # Must run BEFORE release-please so it can find them
   tag-packages:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.any_released == 'true' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +46,19 @@ jobs:
           done
           git push --tags
 
+  release-please:
+    needs: tag-packages
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
+      tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   build:
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
@@ -70,19 +68,15 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: monaka-darwin-arm64
-            use_cross: false
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: monaka-darwin-amd64
-            use_cross: false
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: monaka-linux-amd64
-            use_cross: false
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: monaka-linux-arm64
-            use_cross: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -99,10 +93,6 @@ jobs:
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
-
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -124,13 +114,8 @@ jobs:
       - name: Build WASM (non-S3 variants)
         run: cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
 
-      - name: Build CLI (native)
-        if: ${{ !matrix.use_cross }}
+      - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }} -p monaka
-
-      - name: Build CLI (cross)
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }} -p monaka
 
       - name: Package binary
         run: |
