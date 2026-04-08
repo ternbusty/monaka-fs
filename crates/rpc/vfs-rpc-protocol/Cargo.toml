@@ -1,6 +1,6 @@
 [package]
 name = "vfs-rpc-protocol"
-version = "0.3.0"
+version = "0.1.0"
 edition = "2021"
 description = "RPC protocol message types for Monaka VFS"
 license = "MIT"

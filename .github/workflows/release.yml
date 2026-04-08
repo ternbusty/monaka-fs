@@ -15,8 +15,8 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      releases_created: ${{ steps.release.outputs['crates/tools/monaka-cli--release_created'] }}
+      tag_name: ${{ steps.release.outputs['crates/tools/monaka-cli--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release

@@ -1,6 +1,6 @@
 [package]
 name = "runtime-linker-s3"
-version = "0.1.2"
+version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Example: vfs-host with S3 sync enabled"
