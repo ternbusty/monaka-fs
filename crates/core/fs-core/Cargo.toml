@@ -1,6 +1,6 @@
 [package]
 name = "fs-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 resolver = "3"
 description = "Ephemeral in-memory filesystem for WebAssembly (no_std compatible)"
