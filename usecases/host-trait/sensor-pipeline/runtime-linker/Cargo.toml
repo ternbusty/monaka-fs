@@ -2,6 +2,7 @@
 name = "sensor-pipeline-runner"
 version = "0.1.1"
 edition = "2021"
+publish = false
 
 [dependencies]
 wasmtime = { version = "27.0", features = ["component-model"] }
