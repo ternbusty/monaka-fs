@@ -2854,6 +2854,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-linker-demo-fs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vfs-host",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
 name = "runtime-linker-s3"
 version = "0.1.1"
 dependencies = [

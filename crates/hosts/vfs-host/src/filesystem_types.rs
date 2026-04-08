@@ -817,13 +817,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn rename_at(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _old_path: String,
+        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        old_path: String,
         _new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _new_path: String,
+        new_path: String,
     ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
-        // fs-core doesn't support rename
-        Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
+        let (_, dir_path) = self
+            .get_fs_descriptor(&self_)
+            .map_err(TrappableError::trap)?;
+        let old_full = self.resolve_path(&dir_path, &old_path);
+        let new_full = self.resolve_path(&dir_path, &new_path);
+
+        self.shared_vfs
+            .rename(&old_full, &new_full)
+            .map_err(convert_fs_error_to_trappable)?;
+
+        Ok(())
     }
 
     fn symlink_at(

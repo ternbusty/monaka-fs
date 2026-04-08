@@ -799,11 +799,23 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn rename_at(
         &self,
-        _old_path: String,
+        old_path: String,
         _new_descriptor: DescriptorBorrow<'_>,
-        _new_path: String,
+        new_path: String,
     ) -> Result<(), ErrorCode> {
-        Err(ErrorCode::Unsupported)
+        with_vfs_state(|state| {
+            let old_full = if self.handle == 0 {
+                format!("/{}", old_path.trim_start_matches('/'))
+            } else {
+                return Err(ErrorCode::Unsupported);
+            };
+            let new_full = format!("/{}", new_path.trim_start_matches('/'));
+            state
+                .fs
+                .borrow_mut()
+                .rename(&old_full, &new_full)
+                .map_err(to_error_code)
+        })
     }
 
     fn symlink_at(&self, _old_path: String, _new_path: String) -> Result<(), ErrorCode> {

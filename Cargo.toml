@@ -30,6 +30,7 @@ members = [
 
   # Examples - Host Trait
   "examples/host-trait/runtime-linker",
+  "examples/host-trait/runtime-linker-demo-fs",
   "examples/host-trait/runtime-linker-s3",
 
   # Use Cases - Host Trait

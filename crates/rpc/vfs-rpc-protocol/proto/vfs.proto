@@ -21,6 +21,7 @@ message RpcRequest {
     ReaddirFd readdir_fd = 16;
     Rmdir rmdir = 17;
     AppendWrite append_write = 18;
+    Rename rename = 19;
   }
 }
 
@@ -41,6 +42,7 @@ message Readdir { string path = 1; }
 message ReaddirFd { uint32 fd = 1; }
 message Rmdir { string path = 1; }
 message AppendWrite { uint32 fd = 1; bytes data = 2; }
+message Rename { string old_path = 1; string new_path = 2; }
 
 message RpcResponse {
   oneof response {

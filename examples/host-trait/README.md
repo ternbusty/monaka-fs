@@ -15,7 +15,8 @@ Loads apps from [apps/](../apps/) as WASM components.
 
 | Directory | Description |
 |-----------|-------------|
-| [runtime-linker/](./runtime-linker/) | Basic runtime dynamic linking |
+| [runtime-linker/](./runtime-linker/) | Shared VFS demo (writer → reader) |
+| [runtime-linker-demo-fs/](./runtime-linker-demo-fs/) | All FS operations demo (including rename) |
 | [runtime-linker-s3/](./runtime-linker-s3/) | Runtime dynamic linking with S3 sync |
 
 ## Prerequisites

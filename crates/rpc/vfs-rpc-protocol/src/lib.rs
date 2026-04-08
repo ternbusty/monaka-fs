@@ -150,6 +150,10 @@ pub enum Request {
         fd: u32,
         data: Vec<u8>,
     },
+    Rename {
+        old_path: String,
+        new_path: String,
+    },
 }
 
 /// Internal response enum
@@ -236,6 +240,10 @@ pub fn from_proto_request(proto_req: vfs::RpcRequest) -> Result<RpcRequestMessag
         Some(R::AppendWrite(a)) => Request::AppendWrite {
             fd: a.fd,
             data: a.data,
+        },
+        Some(R::Rename(r)) => Request::Rename {
+            old_path: r.old_path,
+            new_path: r.new_path,
         },
         None => return Err("Missing request"),
     };
@@ -341,6 +349,10 @@ pub fn to_proto_request_bytes(rpc_request: &RpcRequestMessage) -> Vec<u8> {
         Request::AppendWrite { fd, data } => R::AppendWrite(vfs::AppendWrite {
             fd: *fd,
             data: data.clone(),
+        }),
+        Request::Rename { old_path, new_path } => R::Rename(vfs::Rename {
+            old_path: old_path.clone(),
+            new_path: new_path.clone(),
         }),
     };
 
