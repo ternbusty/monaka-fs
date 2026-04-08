@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/ternbusty/monaka-fs/compare/monaka-v0.2.1...monaka-v0.2.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* release please bug ([#45](https://github.com/ternbusty/monaka-fs/issues/45)) ([b104826](https://github.com/ternbusty/monaka-fs/commit/b104826c6620040f135a4cc5548e992de43480f9))
+
 ## [0.2.1](https://github.com/ternbusty/monaka-fs/compare/monaka-v0.2.0...monaka-v0.2.1) (2026-04-08)
 
 
