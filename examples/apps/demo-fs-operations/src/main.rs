@@ -20,6 +20,9 @@ fn main() {
     // Test 4: Error handling
     test_error_handling();
 
+    // Test 5: Rename/move operations
+    test_rename_operations();
+
     // Additional test: Comprehensive operation
     test_operation();
 
@@ -229,6 +232,78 @@ fn test_metadata_operations() {
 
     // Clean up
     let _ = fs::remove_file(filename);
+    println!();
+}
+
+fn test_rename_operations() {
+    println!("Test 5: Rename/Move Operations");
+    println!("------------------------------");
+
+    // Rename a file
+    let _ = fs::write("/rename_test.txt", "Hello, Monaka!");
+    match fs::rename("/rename_test.txt", "/renamed.txt") {
+        Ok(_) => println!("  Renamed /rename_test.txt -> /renamed.txt"),
+        Err(e) => println!("  Failed to rename: {}", e),
+    }
+    match fs::metadata("/rename_test.txt") {
+        Ok(_) => println!("  Old path still exists"),
+        Err(_) => println!("  Old path no longer exists"),
+    }
+    match fs::read_to_string("/renamed.txt") {
+        Ok(content) => println!("  /renamed.txt contains '{}'", content),
+        Err(e) => println!("  Failed to read /renamed.txt: {}", e),
+    }
+    let _ = fs::remove_file("/renamed.txt");
+
+    // Move file across directories
+    fs::create_dir("/src_dir").unwrap();
+    fs::create_dir("/dst_dir").unwrap();
+    let _ = fs::write("/src_dir/data.txt", "moving data");
+    match fs::rename("/src_dir/data.txt", "/dst_dir/data.txt") {
+        Ok(_) => println!("  Moved /src_dir/data.txt -> /dst_dir/data.txt"),
+        Err(e) => println!("  Failed to move: {}", e),
+    }
+    match fs::read_to_string("/dst_dir/data.txt") {
+        Ok(content) => println!("  /dst_dir/data.txt contains '{}'", content),
+        Err(e) => println!("  Failed to read: {}", e),
+    }
+    let _ = fs::remove_file("/dst_dir/data.txt");
+    let _ = fs::remove_dir("/src_dir");
+    let _ = fs::remove_dir("/dst_dir");
+
+    // Rename a directory
+    fs::create_dir("/mydir").unwrap();
+    let _ = fs::write("/mydir/child.txt", "child");
+    match fs::rename("/mydir", "/mydir_new") {
+        Ok(_) => println!("  Renamed /mydir -> /mydir_new"),
+        Err(e) => println!("  Failed to rename dir: {}", e),
+    }
+    match fs::read_to_string("/mydir_new/child.txt") {
+        Ok(content) => println!("  /mydir_new/child.txt contains '{}'", content),
+        Err(e) => println!("  Failed to read: {}", e),
+    }
+    let _ = fs::remove_file("/mydir_new/child.txt");
+    let _ = fs::remove_dir("/mydir_new");
+
+    // Overwrite rename
+    let _ = fs::write("/src.txt", "new");
+    let _ = fs::write("/dst.txt", "old");
+    match fs::rename("/src.txt", "/dst.txt") {
+        Ok(_) => println!("  Overwrite rename: /src.txt -> /dst.txt"),
+        Err(e) => println!("  Failed to overwrite rename: {}", e),
+    }
+    match fs::read_to_string("/dst.txt") {
+        Ok(content) => println!("  /dst.txt now contains '{}'", content),
+        Err(e) => println!("  Failed to read: {}", e),
+    }
+    let _ = fs::remove_file("/dst.txt");
+
+    // Error: rename non-existent file
+    match fs::rename("/no_such_file.txt", "/new.txt") {
+        Ok(_) => println!("  Should have failed for non-existent file"),
+        Err(e) => println!("  Correctly handled missing file: {}", e),
+    }
+
     println!();
 }
 

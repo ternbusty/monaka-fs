@@ -935,6 +935,138 @@ impl<T: TimeProvider> Fs<T> {
         }
         // Note: The inode will be automatically cleaned up when the Rc ref count reaches 0
     }
+
+    /// Rename or move a file or directory
+    pub fn rename(&mut self, old_path: &str, new_path: &str) -> Result<(), FsError> {
+        debug!("rename: old_path={}, new_path={}", old_path, new_path);
+
+        if old_path.is_empty() || new_path.is_empty() {
+            error!("rename: empty path");
+            return Err(FsError::InvalidArgument);
+        }
+
+        let old_comps: alloc::vec::Vec<&str> = old_path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let new_comps: alloc::vec::Vec<&str> = new_path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if old_comps.is_empty() || new_comps.is_empty() {
+            // Cannot rename root directory
+            return Err(FsError::InvalidArgument);
+        }
+
+        // Same path is a no-op
+        if old_comps == new_comps {
+            return Ok(());
+        }
+
+        // Navigate to old parent directory
+        let root_inode = self
+            .inode_table
+            .get(&self.root_inode)
+            .ok_or(FsError::NotFound)?
+            .clone();
+        let mut old_parent = root_inode.clone();
+
+        for comp in old_comps.iter().take(old_comps.len() - 1) {
+            old_parent = self.find_inode(&old_parent, comp)?;
+            let inode = old_parent.borrow();
+            if matches!(inode.content, FileContent::File(_)) {
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        let old_name = old_comps[old_comps.len() - 1];
+
+        // Verify the source exists and get its type
+        let source_inode = self.find_inode(&old_parent, old_name)?;
+        let source_is_dir = {
+            let inode = source_inode.borrow();
+            inode.metadata.is_dir
+        };
+
+        // Navigate to new parent directory
+        let mut new_parent = root_inode;
+
+        for comp in new_comps.iter().take(new_comps.len() - 1) {
+            new_parent = self.find_inode(&new_parent, comp)?;
+            let inode = new_parent.borrow();
+            if matches!(inode.content, FileContent::File(_)) {
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        let new_name = new_comps[new_comps.len() - 1];
+
+        // Check if destination exists and validate type compatibility
+        if let Ok(dest_inode) = self.find_inode(&new_parent, new_name) {
+            let dest = dest_inode.borrow();
+            let dest_is_dir = dest.metadata.is_dir;
+
+            if source_is_dir && !dest_is_dir {
+                return Err(FsError::NotADirectory);
+            }
+            if !source_is_dir && dest_is_dir {
+                return Err(FsError::IsADirectory);
+            }
+            if dest_is_dir
+                && matches!(&dest.content, FileContent::Dir(entries) if !entries.is_empty())
+            {
+                return Err(FsError::NotEmpty);
+            }
+        }
+
+        // Determine if same directory by comparing inode IDs
+        let old_parent_id = old_parent.borrow().id;
+        let new_parent_id = new_parent.borrow().id;
+
+        let timestamp = self.time_provider.now();
+
+        if old_parent_id == new_parent_id {
+            // Same directory: single borrow_mut to avoid double-borrow panic
+            let mut parent = old_parent.borrow_mut();
+            if let FileContent::Dir(entries) = &mut parent.content {
+                if let Some(inode_id) = entries.remove(old_name) {
+                    entries.insert(alloc::string::String::from(new_name), inode_id);
+                    parent.metadata.modified = timestamp;
+                } else {
+                    return Err(FsError::NotFound);
+                }
+            } else {
+                return Err(FsError::NotADirectory);
+            }
+        } else {
+            // Cross-directory: remove from old, then insert into new
+            let inode_id = {
+                let mut parent = old_parent.borrow_mut();
+                if let FileContent::Dir(entries) = &mut parent.content {
+                    let id = entries.remove(old_name).ok_or(FsError::NotFound)?;
+                    parent.metadata.modified = timestamp;
+                    id
+                } else {
+                    return Err(FsError::NotADirectory);
+                }
+            };
+
+            let mut parent = new_parent.borrow_mut();
+            if let FileContent::Dir(entries) = &mut parent.content {
+                entries.insert(alloc::string::String::from(new_name), inode_id);
+                parent.metadata.modified = timestamp;
+            } else {
+                return Err(FsError::NotADirectory);
+            }
+        }
+
+        debug!("rename: {} -> {}", old_path, new_path);
+        Ok(())
+    }
 }
 
 impl Default for Fs<MonotonicCounter> {

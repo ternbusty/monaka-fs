@@ -347,6 +347,13 @@ impl ServerContext {
                 Err(e) => map_fs_error(e),
             },
 
+            Request::Rename { old_path, new_path } => {
+                match self.fs.borrow_mut().rename(&old_path, &new_path) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => map_fs_error(e),
+                }
+            }
+
             Request::AppendWrite { fd, data } => {
                 let result = self.fs.borrow_mut().append_write(fd, &data);
                 match result {

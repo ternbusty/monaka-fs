@@ -98,3 +98,22 @@ wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/vfs_rpc_server.wasm
 wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
 wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
 ```
+
+## Running demo-fs-operations (all FS operations including rename)
+
+```bash
+# Build
+cargo build -p demo-fs-operations -p vfs-rpc-server -p rpc-adapter --target wasm32-wasip2
+
+# Compose with RPC adapter
+wac plug \
+  --plug target/wasm32-wasip2/debug/rpc_adapter.wasm \
+  target/wasm32-wasip2/debug/demo-fs-operations.wasm \
+  -o /tmp/rpc-demo-fs-operations.wasm
+
+# Start server (terminal 1)
+wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/vfs_rpc_server.wasm
+
+# Run demo (terminal 2)
+wasmtime run -S inherit-network=y /tmp/rpc-demo-fs-operations.wasm
+```

@@ -511,6 +511,170 @@ mod unlink {
 }
 
 #[cfg(test)]
+mod rename {
+    use super::*;
+
+    #[test]
+    fn success_rename_file() {
+        let fs = Fs::new();
+        let fd = fs.open_path("/old.txt").unwrap();
+        fs.write(fd, b"hello").unwrap();
+        fs.close(fd).unwrap();
+
+        fs.rename("/old.txt", "/new.txt").unwrap();
+
+        // Old path should be gone
+        assert!(matches!(fs.stat("/old.txt"), Err(FsError::NotFound)));
+
+        // New path should have the content
+        let fd = fs.open_path("/new.txt").unwrap();
+        let mut buf = [0u8; 16];
+        let n = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        fs.close(fd).unwrap();
+    }
+
+    #[test]
+    fn success_rename_cross_directory() {
+        let fs = Fs::new();
+        fs.mkdir("/dir1").unwrap();
+        fs.mkdir("/dir2").unwrap();
+        let fd = fs.open_path("/dir1/file.txt").unwrap();
+        fs.write(fd, b"moved").unwrap();
+        fs.close(fd).unwrap();
+
+        fs.rename("/dir1/file.txt", "/dir2/file.txt").unwrap();
+
+        assert!(matches!(fs.stat("/dir1/file.txt"), Err(FsError::NotFound)));
+        let fd = fs.open_path("/dir2/file.txt").unwrap();
+        let mut buf = [0u8; 16];
+        let n = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"moved");
+        fs.close(fd).unwrap();
+    }
+
+    #[test]
+    fn success_rename_directory() {
+        let fs = Fs::new();
+        fs.mkdir("/olddir").unwrap();
+        let fd = fs.open_path("/olddir/child.txt").unwrap();
+        fs.write(fd, b"child").unwrap();
+        fs.close(fd).unwrap();
+
+        fs.rename("/olddir", "/newdir").unwrap();
+
+        assert!(matches!(fs.stat("/olddir"), Err(FsError::NotFound)));
+        assert!(fs.stat("/newdir").unwrap().is_dir);
+        let fd = fs.open_path("/newdir/child.txt").unwrap();
+        let mut buf = [0u8; 16];
+        let n = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"child");
+        fs.close(fd).unwrap();
+    }
+
+    #[test]
+    fn success_rename_overwrite_file() {
+        let fs = Fs::new();
+        let fd = fs.open_path("/a.txt").unwrap();
+        fs.write(fd, b"aaa").unwrap();
+        fs.close(fd).unwrap();
+        let fd = fs.open_path("/b.txt").unwrap();
+        fs.write(fd, b"bbb").unwrap();
+        fs.close(fd).unwrap();
+
+        fs.rename("/a.txt", "/b.txt").unwrap();
+
+        assert!(matches!(fs.stat("/a.txt"), Err(FsError::NotFound)));
+        let fd = fs.open_path("/b.txt").unwrap();
+        let mut buf = [0u8; 16];
+        let n = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"aaa");
+        fs.close(fd).unwrap();
+    }
+
+    #[test]
+    fn success_rename_overwrite_empty_dir() {
+        let fs = Fs::new();
+        fs.mkdir("/src").unwrap();
+        fs.mkdir("/dst").unwrap();
+
+        fs.rename("/src", "/dst").unwrap();
+
+        assert!(matches!(fs.stat("/src"), Err(FsError::NotFound)));
+        assert!(fs.stat("/dst").unwrap().is_dir);
+    }
+
+    #[test]
+    fn success_same_path_noop() {
+        let fs = Fs::new();
+        let fd = fs.open_path("/file.txt").unwrap();
+        fs.write(fd, b"data").unwrap();
+        fs.close(fd).unwrap();
+
+        fs.rename("/file.txt", "/file.txt").unwrap();
+
+        assert!(fs.stat("/file.txt").is_ok());
+    }
+
+    #[test]
+    fn error_not_found() {
+        let fs = Fs::new();
+        let result = fs.rename("/nonexistent.txt", "/new.txt");
+        assert!(matches!(result, Err(FsError::NotFound)));
+    }
+
+    #[test]
+    fn error_new_parent_not_found() {
+        let fs = Fs::new();
+        let fd = fs.open_path("/file.txt").unwrap();
+        fs.close(fd).unwrap();
+        let result = fs.rename("/file.txt", "/nodir/file.txt");
+        assert!(matches!(result, Err(FsError::NotFound)));
+    }
+
+    #[test]
+    fn error_rename_root() {
+        let fs = Fs::new();
+        let result = fs.rename("/", "/newroot");
+        assert!(matches!(result, Err(FsError::InvalidArgument)));
+    }
+
+    #[test]
+    fn error_file_over_dir() {
+        let fs = Fs::new();
+        let fd = fs.open_path("/file.txt").unwrap();
+        fs.close(fd).unwrap();
+        fs.mkdir("/dir").unwrap();
+
+        let result = fs.rename("/file.txt", "/dir");
+        assert!(matches!(result, Err(FsError::IsADirectory)));
+    }
+
+    #[test]
+    fn error_dir_over_file() {
+        let fs = Fs::new();
+        fs.mkdir("/dir").unwrap();
+        let fd = fs.open_path("/file.txt").unwrap();
+        fs.close(fd).unwrap();
+
+        let result = fs.rename("/dir", "/file.txt");
+        assert!(matches!(result, Err(FsError::NotADirectory)));
+    }
+
+    #[test]
+    fn error_dir_over_nonempty_dir() {
+        let fs = Fs::new();
+        fs.mkdir("/src").unwrap();
+        fs.mkdir("/dst").unwrap();
+        let fd = fs.open_path("/dst/file.txt").unwrap();
+        fs.close(fd).unwrap();
+
+        let result = fs.rename("/src", "/dst");
+        assert!(matches!(result, Err(FsError::NotEmpty)));
+    }
+}
+
+#[cfg(test)]
 mod readdir {
     use super::*;
 
