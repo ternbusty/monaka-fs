@@ -1,6 +1,6 @@
 # vfs-host
 
-wasmtime Host trait implementation that enables multiple WASM applications to share a single in memory filesystem at runtime.
+Host trait implementation that enables multiple WASM applications to share a single in memory filesystem at runtime.
 
 ## Overview
 
