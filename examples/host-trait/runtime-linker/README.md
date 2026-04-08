@@ -18,15 +18,16 @@ All commands from the repository root.
 cargo build -p demo-writer --target wasm32-wasip2
 cargo build -p demo-reader --target wasm32-wasip2
 
-# Build the host binary
-cargo build -p runtime-linker
+# Build the host binary (standalone package)
+cd examples/host-trait/runtime-linker
+cargo build
 ```
 
 ## Run
 
 ```bash
-# From repository root:
-cargo run -p runtime-linker
+# From examples/host-trait/runtime-linker/:
+cargo run
 ```
 
 ## Expected Output

@@ -8,10 +8,5 @@
   "crates/adapters/vfs-adapter": "0.2.1",
   "crates/adapters/rpc-adapter": "0.2.1",
   "crates/rpc/vfs-rpc-protocol": "0.2.1",
-  "crates/rpc/vfs-rpc-server": "0.2.1",
-  "usecases/host-trait/http-cache/http-server": "0.1.2",
-  "examples/host-trait/runtime-linker": "0.1.2",
-  "examples/host-trait/runtime-linker-demo-fs": "0.1.2",
-  "examples/host-trait/runtime-linker-s3": "0.1.2",
-  "usecases/host-trait/sensor-pipeline/runtime-linker": "0.1.2"
+  "crates/rpc/vfs-rpc-server": "0.2.1"
 }
