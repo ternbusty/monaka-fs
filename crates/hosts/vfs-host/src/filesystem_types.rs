@@ -31,6 +31,7 @@ pub struct FsInputStreamWrapper {
     /// Current offset position
     offset: u64,
     /// File path for sync hooks
+    #[cfg(feature = "s3-sync")]
     path: Option<String>,
     /// Optional sync hooks for S3 synchronization
     #[cfg(feature = "s3-sync")]
@@ -46,6 +47,7 @@ impl FsInputStreamWrapper {
             shared_vfs,
             fd,
             offset,
+            #[cfg(feature = "s3-sync")]
             path: None,
             #[cfg(feature = "s3-sync")]
             sync_hooks: None,
@@ -83,6 +85,7 @@ pub struct FsOutputStreamWrapper {
     /// Current offset position (None means append mode)
     offset: Option<u64>,
     /// File path for sync hooks
+    #[cfg(feature = "s3-sync")]
     path: Option<String>,
     /// Optional sync hooks for S3 synchronization
     #[cfg(feature = "s3-sync")]
@@ -95,6 +98,7 @@ impl FsOutputStreamWrapper {
             shared_vfs,
             fd,
             offset,
+            #[cfg(feature = "s3-sync")]
             path: None,
             #[cfg(feature = "s3-sync")]
             sync_hooks: None,
@@ -124,12 +128,14 @@ impl FsOutputStreamWrapper {
         shared_vfs: Arc<Fs>,
         fd: u32,
         offset: Option<u64>,
-        path: Option<String>,
+        #[cfg(feature = "s3-sync")] path: Option<String>,
+        #[cfg(not(feature = "s3-sync"))] _path: Option<String>,
     ) -> Self {
         Self {
             shared_vfs,
             fd,
             offset,
+            #[cfg(feature = "s3-sync")]
             path,
             #[cfg(feature = "s3-sync")]
             sync_hooks: None,
@@ -397,7 +403,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
         TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
     > {
-        let (fd, path) = self
+        let (fd, _path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
@@ -406,7 +412,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             Arc::clone(&self.shared_vfs),
             fd,
             offset,
-            path,
+            _path,
             self.sync_hooks.clone(),
         );
 

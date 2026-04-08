@@ -4,9 +4,19 @@
 //! - sensor-ingest: Collects sensor data, writes to /data/sensor.log
 //! - sensor-process: Reads log, performs statistical analysis
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
+
+/// Resolve the directory containing this usecase (1 level above CARGO_MANIFEST_DIR).
+fn usecase_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .expect("failed to resolve usecase root")
+}
 
 fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     println!("=== VFS Sharing Demo: Sensor Data Pipeline ===");
@@ -26,9 +36,9 @@ fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     let mut linker1 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker1)?;
 
-    let ingest_path = "target/wasm32-wasip2/debug/sensor-ingest.wasm";
+    let ingest_path = usecase_root().join("sensor-ingest/target/wasm32-wasip2/debug/sensor-ingest.wasm");
     let ingest_component =
-        Component::from_file(engine, ingest_path).context("Failed to load sensor-ingest.wasm")?;
+        Component::from_file(engine, &ingest_path).context("Failed to load sensor-ingest.wasm")?;
 
     use wasmtime_wasi::bindings::sync::Command;
     let ingest_command = Command::instantiate(&mut store1, &ingest_component, &linker1)
@@ -47,9 +57,9 @@ fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     let mut linker2 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker2)?;
 
-    let process_path = "target/wasm32-wasip2/debug/sensor-process.wasm";
+    let process_path = usecase_root().join("sensor-process/target/wasm32-wasip2/debug/sensor-process.wasm");
     let process_component =
-        Component::from_file(engine, process_path).context("Failed to load sensor-process.wasm")?;
+        Component::from_file(engine, &process_path).context("Failed to load sensor-process.wasm")?;
 
     let process_command = Command::instantiate(&mut store2, &process_component, &linker2)
         .context("Failed to instantiate sensor-process")?;

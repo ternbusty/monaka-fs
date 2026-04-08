@@ -11,9 +11,8 @@ cargo install wasmtime-cli
 
 ## Build
 
-All commands from the repository root.
-
 ```bash
+# From the repository root
 # Build the WASM apps that will be loaded (see examples/apps/)
 cargo build -p demo-writer --target wasm32-wasip2
 cargo build -p demo-reader --target wasm32-wasip2

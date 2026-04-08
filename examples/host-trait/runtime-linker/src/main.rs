@@ -1,9 +1,19 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
 // Import VFS Host trait implementations from vfs-host crate
 use vfs_host::{self};
+
+/// Resolve a path relative to the workspace root (3 levels above CARGO_MANIFEST_DIR).
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("failed to resolve workspace root")
+}
 
 fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     println!("Demonstrating that multiple WASM applications can share the same VFS instance.");
@@ -23,7 +33,7 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     let mut linker1 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker1)?;
 
-    let writer_path = "target/wasm32-wasip2/debug/demo-writer.wasm";
+    let writer_path = workspace_root().join("target/wasm32-wasip2/debug/demo-writer.wasm");
     let writer_component =
         Component::from_file(engine, writer_path).context("Failed to load demo-writer.wasm")?;
 
@@ -45,7 +55,7 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     let mut linker2 = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker2)?;
 
-    let reader_path = "target/wasm32-wasip2/debug/demo-reader.wasm";
+    let reader_path = workspace_root().join("target/wasm32-wasip2/debug/demo-reader.wasm");
     let reader_component =
         Component::from_file(engine, reader_path).context("Failed to load demo-reader.wasm")?;
 

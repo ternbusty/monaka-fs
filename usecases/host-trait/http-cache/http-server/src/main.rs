@@ -3,6 +3,9 @@
 //! Real HTTP server using axum that invokes WASM handlers for each request.
 //! WASM handlers share a VFS for caching across requests.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
@@ -10,7 +13,6 @@ use axum::{
     routing::get,
     Router,
 };
-use std::sync::Arc;
 use vfs_host::Fs;
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
@@ -92,12 +94,16 @@ async fn main() -> Result<()> {
     let engine = Engine::new(&config)?;
 
     // Path to WASM handler
-    let handler_path = "target/wasm32-wasip2/debug/http-cache-handler.wasm";
+    let handler_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .expect("failed to resolve usecase root")
+        .join("request-handler/target/wasm32-wasip2/debug/http-cache-handler.wasm");
 
     // Load handler component
-    println!("Loading handler: {}", handler_path);
+    println!("Loading handler: {}", handler_path.display());
     let handler_component =
-        Component::from_file(&engine, handler_path).context("Failed to load handler component")?;
+        Component::from_file(&engine, &handler_path).context("Failed to load handler component")?;
 
     // Create initial VFS state and extract shared VFS (no WASM adapter needed)
     println!("Initializing VFS...");
