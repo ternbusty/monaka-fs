@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/ternbusty/monaka-fs/compare/vfs-sync-host-v0.2.0...vfs-sync-host-v0.3.0) (2026-04-08)
+
+
+### Miscellaneous Chores
+
+* **vfs-sync-host:** Synchronize monaka versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * vfs-sync-core bumped from 0.2.0 to 0.3.0
+    * fs-core bumped from 0.2.0 to 0.3.0
+
 ## [0.2.0](https://github.com/ternbusty/monaka-fs/compare/vfs-sync-host-v0.1.1...vfs-sync-host-v0.2.0) (2026-04-07)
 
 

@@ -1,12 +1,17 @@
 {
-  "crates/tools/monaka-cli": "0.2.0",
-  "crates/core/fs-core": "0.2.0",
-  "crates/sync/vfs-sync-core": "0.2.0",
-  "crates/sync/vfs-sync-host": "0.2.0",
-  "crates/sync/vfs-sync-adapter": "0.2.0",
-  "crates/hosts/vfs-host": "0.2.0",
-  "crates/adapters/vfs-adapter": "0.2.0",
-  "crates/adapters/rpc-adapter": "0.2.0",
-  "crates/rpc/vfs-rpc-protocol": "0.2.0",
-  "crates/rpc/vfs-rpc-server": "0.2.0"
+  "crates/tools/monaka-cli": "0.3.0",
+  "crates/core/fs-core": "0.3.0",
+  "crates/sync/vfs-sync-core": "0.3.0",
+  "crates/sync/vfs-sync-host": "0.3.0",
+  "crates/sync/vfs-sync-adapter": "0.3.0",
+  "crates/hosts/vfs-host": "0.3.0",
+  "crates/adapters/vfs-adapter": "0.3.0",
+  "crates/adapters/rpc-adapter": "0.3.0",
+  "crates/rpc/vfs-rpc-protocol": "0.3.0",
+  "crates/rpc/vfs-rpc-server": "0.3.0",
+  "usecases/host-trait/http-cache/http-server": "0.1.2",
+  "examples/host-trait/runtime-linker": "0.1.2",
+  "examples/host-trait/runtime-linker-demo-fs": "0.1.1",
+  "examples/host-trait/runtime-linker-s3": "0.1.2",
+  "usecases/host-trait/sensor-pipeline/runtime-linker": "0.1.2"
 }
