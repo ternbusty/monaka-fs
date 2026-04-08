@@ -42,7 +42,6 @@ default-members = [
 ]
 exclude = [
   ".tmp",
-  "deprecated",
   "test-app",
   "test-simple",
   "vfs-rpc-client",
