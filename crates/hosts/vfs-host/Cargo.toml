@@ -1,6 +1,6 @@
 [package]
 name = "vfs-host"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Host trait implementation for VFS adapter - enables multiple applications to share a single VFS instance"
 license = "MIT"
@@ -18,7 +18,7 @@ s3-sync = ["dep:vfs-sync-host", "dep:tokio"]
 
 [dependencies]
 # vfs-host requires thread-safe fs-core (wasmtime Host trait requires Send+Sync)
-fs-core = { version = "0.2.0", path = "../../core/fs-core", features = ["thread-safe"] }
+fs-core = { version = "0.2.1", path = "../../core/fs-core", features = ["thread-safe"] }
 wasmtime = "27.0.0"
 wasmtime-wasi = "27.0.0"
 anyhow = "1.0"
@@ -27,7 +27,7 @@ async-trait = "0.1"
 log = "0.4"
 
 # S3 sync (optional)
-vfs-sync-host = { version = "0.2.0", path = "../../sync/vfs-sync-host", optional = true }
+vfs-sync-host = { version = "0.2.1", path = "../../sync/vfs-sync-host", optional = true }
 tokio = { version = "1", features = ["rt", "time", "sync"], optional = true }
 
 [lib]
