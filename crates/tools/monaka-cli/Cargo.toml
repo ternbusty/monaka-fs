@@ -4,7 +4,7 @@ version = "0.2.1"
 edition = "2024"
 publish = false
 description = "CLI tool for Monaka VFS - embed files, compose WASM components, and extract binaries"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [[bin]]
 name = "monaka"
