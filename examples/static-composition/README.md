@@ -9,20 +9,29 @@ App (std::fs) + vfs-adapter  -->  Composed WASM
 ## Quick Start with `monaka` CLI
 
 ```bash
-# Install (from repository root)
+# From repository root:
+
+# Build CLI and demo app
 make build-cli
+cargo build -p demo-fs-operations --target wasm32-wasip2
 
-# Compose any app with vfs-adapter
-monaka compose my-app.wasm -o composed.wasm
-
-# With file embedding
-monaka compose --mount /data=./local-dir my-app.wasm -o composed.wasm
-
-# With S3 sync
-monaka compose --s3-sync my-app.wasm -o composed.wasm
+# Compose with vfs-adapter
+target/release/monaka compose \
+  target/wasm32-wasip2/debug/demo-fs-operations.wasm \
+  -o /tmp/composed-demo-fs-operations.wasm
 
 # Run
-wasmtime run composed.wasm
+wasmtime run /tmp/composed-demo-fs-operations.wasm
+```
+
+Other options:
+
+```bash
+# With file embedding
+target/release/monaka compose --mount /data=./local-dir app.wasm -o composed.wasm
+
+# With S3 sync
+target/release/monaka compose --s3-sync app.wasm -o composed.wasm
 ```
 
 ## Examples

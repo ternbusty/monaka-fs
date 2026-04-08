@@ -2,7 +2,8 @@
 name = "http-cache-handler"
 version = "0.1.0"
 edition = "2021"
-publish = false
+
+[workspace]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

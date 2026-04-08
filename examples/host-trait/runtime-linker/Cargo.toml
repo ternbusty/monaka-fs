@@ -1,8 +1,9 @@
 [package]
 name = "runtime-linker"
-version = "0.1.2"
+version = "0.1.0"
 edition = "2021"
-publish = false
+
+[workspace]
 
 [dependencies]
 wasmtime = { version = "27.0", features = ["component-model"] }

@@ -10,12 +10,14 @@ All commands from the repository root.
 # Build the WASM app
 cargo build -p demo-fs-operations --target wasm32-wasip2
 
-# Build the host binary
-cargo build -p runtime-linker-demo-fs
+# Build the host binary (standalone package)
+cd examples/host-trait/runtime-linker-demo-fs
+cargo build
 ```
 
 ## Run
 
 ```bash
-cargo run -p runtime-linker-demo-fs
+# From examples/host-trait/runtime-linker-demo-fs/:
+cargo run
 ```

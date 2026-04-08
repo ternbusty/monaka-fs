@@ -28,18 +28,6 @@ members = [
   "examples/apps/demo-reader",
   "examples/static-composition/embed",
 
-  # Examples - Host Trait
-  "examples/host-trait/runtime-linker",
-  "examples/host-trait/runtime-linker-demo-fs",
-  "examples/host-trait/runtime-linker-s3",
-
-  # Use Cases - Host Trait
-  "usecases/host-trait/sensor-pipeline/sensor-ingest",
-  "usecases/host-trait/sensor-pipeline/sensor-process",
-  "usecases/host-trait/sensor-pipeline/runtime-linker",
-  "usecases/host-trait/http-cache/request-handler",
-  "usecases/host-trait/http-cache/http-server",
-
   # Use Cases - RPC Server
   "usecases/rpc-server/s3-sync-logging/logger",
   "usecases/rpc-server/ci-cache/ci-job",
@@ -51,11 +39,9 @@ default-members = [
   "crates/core/fs-core",
   "crates/hosts/vfs-host",
   "crates/rpc/vfs-rpc-protocol",
-  "examples/host-trait/runtime-linker",
 ]
 exclude = [
   ".tmp",
-  "deprecated",
   "test-app",
   "test-simple",
   "vfs-rpc-client",

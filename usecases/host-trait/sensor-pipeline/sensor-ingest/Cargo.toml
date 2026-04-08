@@ -2,7 +2,8 @@
 name = "sensor-ingest"
 version = "0.1.0"
 edition = "2021"
-publish = false
+
+[workspace]
 
 [[bin]]
 name = "sensor-ingest"
