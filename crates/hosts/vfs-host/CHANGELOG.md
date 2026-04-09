@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.3](https://github.com/ternbusty/monaka-fs/compare/vfs-host-v0.2.2...vfs-host-v0.2.3) (2026-04-09)
+
+
+### Bug Fixes
+
+* host trait build issue ([#49](https://github.com/ternbusty/monaka-fs/issues/49)) ([004e9a6](https://github.com/ternbusty/monaka-fs/commit/004e9a642fed5750d5b8d7c5012f63e8b4cdb60a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * fs-core bumped from 0.2.2 to 0.2.3
+    * vfs-sync-host bumped from 0.2.2 to 0.2.3
+
 ## [0.2.2](https://github.com/ternbusty/monaka-fs/compare/vfs-host-v0.2.1...vfs-host-v0.2.2) (2026-04-08)
 
 

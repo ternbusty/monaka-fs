@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/ternbusty/monaka-fs/compare/vfs-adapter-v0.2.2...vfs-adapter-v0.2.3) (2026-04-09)
+
+
+### Miscellaneous Chores
+
+* **vfs-adapter:** Synchronize monaka versions
+
 ## [0.2.2](https://github.com/ternbusty/monaka-fs/compare/vfs-adapter-v0.2.1...vfs-adapter-v0.2.2) (2026-04-08)
 
 
