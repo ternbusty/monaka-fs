@@ -1,6 +1,6 @@
 [package]
 name = "vfs-sync-adapter"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 publish = false
 description = "S3 synchronization for Monaka VFS (WASI environment)"
