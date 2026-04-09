@@ -77,6 +77,9 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: monaka-linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: monaka-windows-amd64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +97,10 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -104,6 +111,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build WASM (S3 sync variants)
+        if: runner.os != 'Windows'
         run: |
           cargo build --release --target wasm32-wasip2 -p vfs-adapter --features s3-sync
           mkdir -p target/wasm32-wasip2/s3-release
@@ -112,15 +120,31 @@ jobs:
           cp target/wasm32-wasip2/release/vfs_rpc_server.wasm target/wasm32-wasip2/s3-release/vfs_rpc_server.wasm
 
       - name: Build WASM (non-S3 variants)
+        if: runner.os != 'Windows'
         run: cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
+
+      - name: Build WASM (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --target wasm32-wasip2 -p vfs-adapter --features s3-sync
+          New-Item -ItemType Directory -Force -Path target/wasm32-wasip2/s3-release
+          Copy-Item target/wasm32-wasip2/release/vfs_adapter.wasm target/wasm32-wasip2/s3-release/vfs_adapter.wasm
+          cargo build --release --target wasm32-wasip2 -p vfs-rpc-server --features s3-sync
+          Copy-Item target/wasm32-wasip2/release/vfs_rpc_server.wasm target/wasm32-wasip2/s3-release/vfs_rpc_server.wasm
+          cargo build --release --target wasm32-wasip2 -p vfs-adapter -p rpc-adapter -p vfs-rpc-server
 
       - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }} -p monaka
 
-      - name: Package binary
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           cp target/${{ matrix.target }}/release/monaka ${{ matrix.artifact }}
           chmod +x ${{ matrix.artifact }}
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        run: copy target\${{ matrix.target }}\release\monaka.exe ${{ matrix.artifact }}
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
