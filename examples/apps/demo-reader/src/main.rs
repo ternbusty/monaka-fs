@@ -1,36 +1,20 @@
-//! VFS Demo App 2 - File Reader
-//! Uses std::fs transparently over RPC
-
+use std::env;
 use std::fs;
 
 fn main() {
-    println!("=== VFS Demo App 2: File Reader ===");
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: demo-reader <path>");
+        return;
+    }
 
-    // Read file metadata
-    println!("\nGetting file metadata: /message.txt");
-    match fs::metadata("/message.txt") {
-        Ok(meta) => {
-            println!("  File size: {} bytes", meta.len());
-        }
+    let path = &args[1];
+
+    match fs::read_to_string(path) {
+        Ok(content) => print!("{}", content),
         Err(e) => {
-            eprintln!("  Failed to get metadata: {}", e);
-            eprintln!("  Make sure App1 has been run first!");
+            eprintln!("Failed to read {}: {}", path, e);
             return;
         }
     }
-
-    // Read file content
-    println!("\nReading file: /message.txt");
-    match fs::read_to_string("/message.txt") {
-        Ok(content) => {
-            println!("  Content ({} bytes):", content.len());
-            println!("  \"{}\"", content);
-        }
-        Err(e) => {
-            eprintln!("  Failed to read: {}", e);
-            return;
-        }
-    }
-
-    println!("\n=== App2 completed ===");
 }

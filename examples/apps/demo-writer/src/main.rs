@@ -1,18 +1,21 @@
+use std::env;
 use std::fs;
 
 fn main() {
-    println!("=== VFS Demo App 1: File Writer ===");
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: demo-writer <path> <content>");
+        return;
+    }
 
-    // Write file
-    let message = "Hello from App1!";
-    println!("\nWriting file: /message.txt");
-    match fs::write("/message.txt", message) {
-        Ok(()) => println!("  Wrote {} bytes", message.len()),
+    let path = &args[1];
+    let content = &args[2];
+
+    match fs::write(path, content) {
+        Ok(()) => println!("Wrote {} bytes to {}", content.len(), path),
         Err(e) => {
-            eprintln!("  Failed to write: {}", e);
+            eprintln!("Failed to write to {}: {}", path, e);
             return;
         }
     }
-
-    println!("\n=== App1 completed successfully ===");
 }

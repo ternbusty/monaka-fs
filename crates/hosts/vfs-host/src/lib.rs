@@ -217,6 +217,26 @@ impl VfsHostState {
         }
     }
 
+    /// Create a new VfsHostState that shares the same VFS core with custom CLI arguments
+    /// This enables passing arguments to WASM applications via WASI
+    pub fn clone_shared_with_args(&self, args: &[&str]) -> Self {
+        let mut builder = WasiCtxBuilder::new();
+        builder.inherit_stdio().inherit_stderr();
+        builder.args(args);
+
+        Self {
+            wasi_ctx: builder.build(),
+            table: ResourceTable::new(),
+            shared_vfs: Arc::clone(&self.shared_vfs),
+            #[cfg(feature = "s3-sync")]
+            sync_hooks: self.sync_hooks.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_manager: self.sync_manager.clone(),
+            #[cfg(feature = "s3-sync")]
+            sync_thread: None, // Don't clone the thread handle
+        }
+    }
+
     /// Create a new VfsHostState that shares the same VFS core with custom environment variables
     /// This enables passing configuration to WASM handlers
     pub fn clone_shared_with_env(&self, env_vars: &[(&str, &str)]) -> Self {

@@ -22,8 +22,10 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
 
     // Create shared VfsHostState (now uses fs-core directly, no WASM adapter needed)
     println!("Creating shared VfsHostState...");
-    let vfs_host_state1 = vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
-    let vfs_host_state2 = vfs_host_state1.clone_shared();
+    let vfs_host_state = vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
+    let vfs_host_state1 =
+        vfs_host_state.clone_shared_with_args(&["demo-writer", "/message.txt", "Hello from App1!"]);
+    let vfs_host_state2 = vfs_host_state.clone_shared_with_args(&["demo-reader", "/message.txt"]);
 
     // Run demo-writer (App1)
     println!();

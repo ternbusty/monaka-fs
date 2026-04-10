@@ -38,24 +38,9 @@ App1 (demo-writer) creates a file, App2 (demo-reader) reads it.
 Creating shared VfsHostState...
 
 Running demo-writer (App1)...
-=== VFS Demo App 1: File Writer ===
-
-Writing file: /message.txt
-  Wrote 16 bytes
-
-=== App1 completed successfully ===
+Wrote 16 bytes to /message.txt
 demo-writer executed successfully
 
 Running demo-reader (App2) with shared VFS...
-=== VFS Demo App 2: File Reader ===
-
-Getting file metadata: /message.txt
-  File size: 16 bytes
-
-Reading file: /message.txt
-  Content (16 bytes):
-  "Hello from App1!"
-
-=== App2 completed ===
-demo-reader executed successfully
+Hello from App1!demo-reader executed successfully
 ```

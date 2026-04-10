@@ -67,15 +67,17 @@ async fn init_vfs_with_s3() -> Result<VfsHostState> {
 fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState) -> Result<VfsHostState> {
     log::info!("VFS initialized, running WASM applications...");
 
-    let mut store = Store::new(engine, vfs_host_state);
-    let mut linker = wasmtime::component::Linker::new(engine);
-    vfs_host::add_to_linker_with_vfs(&mut linker)?;
-
     // Try to load demo-writer if available
     // Note: cargo run executes from workspace root
     let writer_path = workspace_root().join("target/wasm32-wasip2/debug/demo-writer.wasm");
     if writer_path.exists() {
         log::info!("Running demo-writer...");
+
+        let writer_state = vfs_host_state
+            .clone_shared_with_args(&["demo-writer", "/message.txt", "Hello from App1!"]);
+        let mut store = Store::new(engine, writer_state);
+        let mut linker = wasmtime::component::Linker::new(engine);
+        vfs_host::add_to_linker_with_vfs(&mut linker)?;
 
         let writer_component = Component::from_file(engine, &writer_path)
             .context("Failed to load demo-writer.wasm")?;
@@ -96,8 +98,8 @@ fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState) -> Result<VfsHostStat
         );
     }
 
-    // Return the state so we can wait for sync
-    Ok(store.into_data())
+    // Return the original state (with sync thread) so we can wait for sync
+    Ok(vfs_host_state)
 }
 
 #[tokio::main]
