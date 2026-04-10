@@ -24,8 +24,8 @@ target/release/monaka extract server -o /tmp/vfs-rpc-server.wasm
 wasmtime run -S inherit-network=y /tmp/vfs-rpc-server.wasm
 
 # In another terminal: run writer then reader
-wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
-wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm /message.txt "Hello from Writer"
+wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm /message.txt
 ```
 
 ### With S3 Sync
@@ -52,7 +52,7 @@ wasmtime run -S inherit-network=y -S http \
 # Verify S3 sync
 
 ```
-wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm /message.txt 'Hello'
 awslocal s3 ls s3://test-vfs-bucket/ --recursive
 ```
 
@@ -95,8 +95,8 @@ wac plug \
 wasmtime run -S inherit-network=y target/wasm32-wasip2/debug/vfs_rpc_server.wasm
 
 # In other terminals:
-wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm
-wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm
+wasmtime run -S inherit-network=y /tmp/rpc-writer.wasm /message.txt 'Hello'
+wasmtime run -S inherit-network=y /tmp/rpc-reader.wasm /message.txt
 ```
 
 ## Running demo-fs-operations (all FS operations including rename)
