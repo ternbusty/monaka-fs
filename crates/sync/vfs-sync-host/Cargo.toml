@@ -1,14 +1,14 @@
 [package]
 name = "vfs-sync-host"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "S3 synchronization for Monaka VFS (native environment)"
 license = "MIT"
 repository = "https://github.com/ternbusty/monaka-fs"
 
 [dependencies]
-vfs-sync-core = { version = "0.2.3", path = "../vfs-sync-core" }
-fs-core = { version = "0.2.3", path = "../../core/fs-core", features = ["thread-safe"] }
+vfs-sync-core = { version = "0.2.4", path = "../vfs-sync-core" }
+fs-core = { version = "0.2.4", path = "../../core/fs-core", features = ["thread-safe"] }
 log = "0.4"
 
 # AWS SDK
