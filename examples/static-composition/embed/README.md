@@ -22,19 +22,11 @@ wasmtime run /tmp/embed-example.wasm
 ## Expected Output
 
 ```
-=== Embedded File Read Test ===
-
-Listing /data:
-  /data/hello.txt
-  /data/world.txt
-
-Reading /data/hello.txt:
-  "hello from embedded file"
-
-Reading /data/world.txt:
-  "another file"
-
-=== Done ===
+/data/dir1 (dir)
+  /data/dir1/test1.txt:
+    "Hello from test1"
+/data/test2.txt:
+  "Hello from test1"
 ```
 
 ## Manual Setup (without `monaka` CLI)
