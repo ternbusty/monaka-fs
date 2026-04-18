@@ -377,6 +377,8 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             UnifiedInputStream::File(FileInputStream {
                 handle: self.handle,
                 offset: Cell::new(offset),
+                buf: RefCell::new(Vec::new()),
+                buf_offset: Cell::new(0),
             }),
         ))
     }
@@ -790,10 +792,13 @@ struct DirectoryEntryStreamImpl {
     index: Cell<usize>,
 }
 
-// File input stream implementation for read_via_stream
+const READ_AHEAD_SIZE: usize = 256 * 1024;
+
 struct FileInputStream {
-    handle: u32,       // Descriptor handle
-    offset: Cell<u64>, // Current read position
+    handle: u32,
+    offset: Cell<u64>,
+    buf: RefCell<Vec<u8>>,
+    buf_offset: Cell<u64>,
 }
 
 impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
@@ -802,15 +807,40 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
     }
 
     fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
-        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle)).map_err(|_| {
-            // Use Closed error since we can't create a valid Error resource
-            exports::wasi::io::streams::StreamError::Closed
-        })?;
-
         let current_offset = self.offset.get();
+        let len = len as usize;
+
+        let buf_start = self.buf_offset.get();
+        let buf = self.buf.borrow();
+        let buf_end = buf_start + buf.len() as u64;
+
+        if current_offset >= buf_start && current_offset + len as u64 <= buf_end {
+            let local = (current_offset - buf_start) as usize;
+            let data = buf[local..local + len].to_vec();
+            drop(buf);
+            self.offset.set(current_offset + data.len() as u64);
+            return Ok(data);
+        }
+        drop(buf);
+
+        let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))
+            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)?;
+
+        // Only read ahead when this request is a contiguous continuation of the
+        // cached buffer. A fresh stream (empty buf) or a non-contiguous offset
+        // (random access via a re-created stream) falls back to fetching just
+        // the requested length, so random reads don't pay for wasted prefetch.
+        let is_sequential = {
+            let buf = self.buf.borrow();
+            !buf.is_empty() && current_offset == buf_start + buf.len() as u64
+        };
+        let fetch_len = if is_sequential {
+            len.max(READ_AHEAD_SIZE)
+        } else {
+            len
+        };
 
         let result = with_connection(|conn| {
-            // Seek to offset
             let seek_request = Request::Seek {
                 fd: server_fd,
                 offset: current_offset as i64,
@@ -824,10 +854,9 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
                 _ => return Err(ErrorCode::Io),
             }
 
-            // Read data
             let read_request = Request::Read {
                 fd: server_fd,
-                length: len as usize,
+                length: fetch_len,
             };
             conn.send(&read_request)?;
 
@@ -840,12 +869,15 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
 
         match result {
             Ok(bytes) => {
-                self.offset.set(current_offset + bytes.len() as u64);
                 if bytes.is_empty() {
-                    Err(exports::wasi::io::streams::StreamError::Closed)
-                } else {
-                    Ok(bytes)
+                    return Err(exports::wasi::io::streams::StreamError::Closed);
                 }
+                let ret_len = bytes.len().min(len);
+                let data = bytes[..ret_len].to_vec();
+                self.buf_offset.set(current_offset);
+                *self.buf.borrow_mut() = bytes;
+                self.offset.set(current_offset + ret_len as u64);
+                Ok(data)
             }
             Err(_) => Err(exports::wasi::io::streams::StreamError::Closed),
         }
