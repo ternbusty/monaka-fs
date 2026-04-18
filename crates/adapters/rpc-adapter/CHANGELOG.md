@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/ternbusty/monaka-fs/compare/rpc-adapter-v0.2.3...rpc-adapter-v0.2.4) (2026-04-18)
+
+
+### Bug Fixes
+
+* rpc read behavior ([#53](https://github.com/ternbusty/monaka-fs/issues/53)) ([c21c590](https://github.com/ternbusty/monaka-fs/commit/c21c590bced21fe47cbc9d64108e21dc90e38070))
+
 ## [0.2.3](https://github.com/ternbusty/monaka-fs/compare/rpc-adapter-v0.2.2...rpc-adapter-v0.2.3) (2026-04-09)
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "vfs-sync-core"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Common types for VFS S3 synchronization"
 license = "MIT"

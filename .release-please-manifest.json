@@ -1,12 +1,12 @@
 {
-  "crates/tools/monaka-cli": "0.2.3",
-  "crates/core/fs-core": "0.2.3",
-  "crates/sync/vfs-sync-core": "0.2.3",
-  "crates/sync/vfs-sync-host": "0.2.3",
-  "crates/sync/vfs-sync-adapter": "0.2.3",
-  "crates/hosts/vfs-host": "0.2.3",
-  "crates/adapters/vfs-adapter": "0.2.3",
-  "crates/adapters/rpc-adapter": "0.2.3",
-  "crates/rpc/vfs-rpc-protocol": "0.2.3",
-  "crates/rpc/vfs-rpc-server": "0.2.3"
+  "crates/tools/monaka-cli": "0.2.4",
+  "crates/core/fs-core": "0.2.4",
+  "crates/sync/vfs-sync-core": "0.2.4",
+  "crates/sync/vfs-sync-host": "0.2.4",
+  "crates/sync/vfs-sync-adapter": "0.2.4",
+  "crates/hosts/vfs-host": "0.2.4",
+  "crates/adapters/vfs-adapter": "0.2.4",
+  "crates/adapters/rpc-adapter": "0.2.4",
+  "crates/rpc/vfs-rpc-protocol": "0.2.4",
+  "crates/rpc/vfs-rpc-server": "0.2.4"
 }
