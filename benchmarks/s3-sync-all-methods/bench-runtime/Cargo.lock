@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "fs-core"
-version = "0.1.0"
+version = "0.2.3"
 dependencies = [
  "dashmap",
 ]
@@ -3269,7 +3269,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vfs-host"
-version = "0.1.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3277,14 +3277,18 @@ dependencies = [
  "fs-core",
  "log",
  "tokio",
- "vfs-sync",
+ "vfs-sync-host",
  "wasmtime",
  "wasmtime-wasi",
 ]
 
 [[package]]
-name = "vfs-sync"
-version = "0.1.0"
+name = "vfs-sync-core"
+version = "0.2.3"
+
+[[package]]
+name = "vfs-sync-host"
+version = "0.2.3"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -3294,10 +3298,6 @@ dependencies = [
  "tokio",
  "vfs-sync-core",
 ]
-
-[[package]]
-name = "vfs-sync-core"
-version = "0.1.0"
 
 [[package]]
 name = "vsimd"

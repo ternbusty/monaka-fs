@@ -1,0 +1,20 @@
+{
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": [
+    "--target-dir",
+    "target/ra-check"
+  ],
+  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "usecases/host-trait/concurrent-append/host-runner/Cargo.toml",
+    "usecases/host-trait/concurrent-append/append-client/Cargo.toml",
+    "usecases/host-trait/sensor-pipeline/runtime-linker/Cargo.toml",
+    "usecases/host-trait/sensor-pipeline/sensor-process/Cargo.toml",
+    "usecases/host-trait/sensor-pipeline/sensor-ingest/Cargo.toml",
+    "usecases/host-trait/http-cache/http-server/Cargo.toml",
+    "usecases/host-trait/http-cache/request-handler/Cargo.toml"
+  ]
+}

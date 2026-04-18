@@ -48,7 +48,8 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu 2>&1 | grep -v "^war
 echo -e "${YELLOW}Building adapters and RPC server...${NC}"
 cd "$ROOT_DIR"
 cargo build --release --target wasm32-wasip2 -p vfs-adapter --features s3-sync 2>&1 | grep -v "^warning:"
-cargo build --release --target wasm32-wasip2 -p rpc-adapter -p vfs-rpc-server 2>&1 | grep -v "^warning:"
+cargo build --release --target wasm32-wasip2 -p rpc-adapter 2>&1 | grep -v "^warning:"
+cargo build --release --target wasm32-wasip2 -p vfs-rpc-server --features s3-sync 2>&1 | grep -v "^warning:"
 
 # Compose WASM files
 echo -e "${YELLOW}Composing WASM components...${NC}"
