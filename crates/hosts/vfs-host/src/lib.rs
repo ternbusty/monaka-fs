@@ -115,14 +115,14 @@ impl VfsHostState {
         );
 
         // Initialize S3 storage
-        let s3 = S3Storage::new(bucket, prefix).await;
+        let s3 = vfs_sync_host::new_s3_storage(bucket, prefix).await;
 
-        // Load existing files from S3
+        // Load existing files from S3 (returns Arc<Fs> already)
         let (fs, metadata_cache) = init_from_s3(&s3)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to initialize from S3: {}", e))?;
 
-        let fs = Arc::new(fs);
+        let s3 = Arc::new(s3);
         let config = SyncConfig::from_env();
 
         log::info!("[vfs-host] Sync mode: {:?}", config.mode);
@@ -148,7 +148,12 @@ impl VfsHostState {
         }
 
         // Create sync manager
-        let sync_manager = Arc::new(HostSyncManager::new(s3, fs.clone(), metadata_cache, config));
+        let sync_manager = Arc::new(HostSyncManager::new(
+            s3,
+            vfs_sync_host::HostFs(fs.clone()),
+            metadata_cache,
+            config,
+        ));
 
         // Create sync hooks
         let sync_hooks: Arc<dyn SyncHooks> = Arc::new(S3SyncHooks::new_with_options(

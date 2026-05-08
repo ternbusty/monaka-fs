@@ -3580,6 +3580,13 @@ dependencies = [
 [[package]]
 name = "vfs-sync-core"
 version = "0.2.4"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "futures",
+ "log",
+ "tokio",
+]
 
 [[package]]
 name = "vfs-sync-host"
@@ -3588,9 +3595,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "fs-core",
- "futures",
  "log",
- "tokio",
  "vfs-sync-core",
 ]
 

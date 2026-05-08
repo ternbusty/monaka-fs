@@ -1,22 +1,21 @@
-//! S3 Client for WASI environment
+//! S3 client for VFS persistence (host- and WASI-shared).
 //!
-//! Provides S3 operations for per-file synchronization with bidirectional sync support.
+//! All S3 operations live here. The `new()` constructor is environment-
+//! specific (different HTTP clients), so consumers build an
+//! `aws_config::SdkConfig` themselves and call [`S3Storage::from_sdk_config`].
 
-use aws_config::BehaviorVersion;
+use aws_config::SdkConfig;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
-use aws_smithy_async::rt::sleep::TokioSleep;
 
-pub use vfs_sync_core::{S3Error, S3ObjectInfo};
-
-use crate::wasi_http::ChunkedWasiHttpClient;
+use crate::types::{S3Error, S3ObjectInfo};
 
 /// Multipart upload threshold (10MB)
 const MULTIPART_THRESHOLD: usize = 10 * 1024 * 1024;
 /// Part size for multipart upload (10MB)
 const PART_SIZE: usize = 10 * 1024 * 1024;
 
-/// S3 client wrapper for VFS persistence
+/// S3 client wrapper for VFS persistence.
 pub struct S3Storage {
     client: Client,
     bucket: String,
@@ -24,38 +23,16 @@ pub struct S3Storage {
 }
 
 impl S3Storage {
-    /// Create a new S3 storage client
+    /// Build an `S3Storage` from a pre-configured `SdkConfig`. Consumers in
+    /// `vfs-sync-host` and `vfs-sync-adapter` set up their environment-
+    /// specific HTTP client (hyper / WASI-HTTP) before calling this.
     ///
-    /// # Arguments
-    /// * `bucket` - S3 bucket name
-    /// * `prefix` - Key prefix for all objects (e.g., "vfs/")
-    ///
-    /// # Environment Variables
-    /// * `AWS_ENDPOINT_URL` - Custom endpoint URL (e.g., http://localhost:4566 for LocalStack)
-    /// * `AWS_REGION` - AWS region (default: us-east-1)
-    pub async fn new(bucket: String, prefix: String) -> Self {
-        let http_client = ChunkedWasiHttpClient::new();
-        let sleep = TokioSleep::new();
-
-        let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
-            .http_client(http_client)
-            .sleep_impl(sleep);
-
-        // Check for custom endpoint (LocalStack, MinIO, etc.)
-        if let Ok(endpoint) = std::env::var("AWS_ENDPOINT_URL") {
-            log::debug!("[s3] Using custom endpoint: {}", endpoint);
-            config_loader = config_loader.endpoint_url(&endpoint);
-        }
-
-        let config = config_loader.load().await;
-
-        // Create S3 client with path-style access for LocalStack compatibility
-        let s3_config = aws_sdk_s3::config::Builder::from(&config)
+    /// Path-style addressing is forced for LocalStack/MinIO compatibility.
+    pub fn from_sdk_config(bucket: String, prefix: String, config: &SdkConfig) -> Self {
+        let s3_config = aws_sdk_s3::config::Builder::from(config)
             .force_path_style(true)
             .build();
-
         let client = Client::from_conf(s3_config);
-
         Self {
             client,
             bucket,
@@ -113,11 +90,8 @@ impl S3Storage {
                     if let (Some(key), Some(etag), Some(size)) =
                         (obj.key.as_ref(), obj.e_tag.as_ref(), obj.size)
                     {
-                        // Convert S3 key to VFS path
                         let files_prefix = self.key("files");
                         let path = key.strip_prefix(&files_prefix).unwrap_or(key).to_string();
-
-                        // Extract last_modified timestamp
                         let last_modified = obj.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
 
                         objects.push(S3ObjectInfo {
@@ -140,9 +114,46 @@ impl S3Storage {
         Ok(objects)
     }
 
-    /// Get a single file from S3
-    ///
-    /// Returns (content, etag, last_modified) or None if not found
+    /// Get file metadata from S3 (HEAD request, no content download).
+    /// Returns `(etag, last_modified, size)` or `None` if not found.
+    pub async fn head_file(&self, path: &str) -> Result<Option<(String, u64, u64)>, S3Error> {
+        let key = self.key(&format!("files{}", path));
+
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                let etag = output
+                    .e_tag
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string();
+                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
+                let size = output.content_length.unwrap_or(0) as u64;
+
+                Ok(Some((etag, last_modified, size)))
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                if error_str.contains("NotFound") || error_str.contains("404") {
+                    Ok(None)
+                } else {
+                    Err(S3Error::Read {
+                        key,
+                        message: error_str,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Get a single file from S3.
+    /// Returns `(content, etag, last_modified)` or `None` if not found.
     pub async fn get_file(&self, path: &str) -> Result<Option<(Vec<u8>, String, u64)>, S3Error> {
         let key = self.key(&format!("files{}", path));
 
@@ -183,48 +194,7 @@ impl S3Storage {
         }
     }
 
-    /// Get file metadata from S3 (HEAD request, no content download)
-    ///
-    /// Returns (etag, last_modified, size) or None if not found
-    pub async fn head_file(&self, path: &str) -> Result<Option<(String, u64, u64)>, S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                let etag = output
-                    .e_tag
-                    .unwrap_or_default()
-                    .trim_matches('"')
-                    .to_string();
-                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
-                let size = output.content_length.unwrap_or(0) as u64;
-
-                Ok(Some((etag, last_modified, size)))
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                if error_str.contains("NotFound") || error_str.contains("404") {
-                    Ok(None)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Check if a directory object exists in S3 (HEAD with trailing slash)
-    ///
-    /// Returns true if an object with key `files{path}/` exists
+    /// Check if a directory marker object (`files{path}/`) exists.
     pub async fn head_directory_object(&self, path: &str) -> Result<bool, S3Error> {
         let key = self.key(&format!("files{}/", path));
 
@@ -251,9 +221,7 @@ impl S3Storage {
         }
     }
 
-    /// Check if any objects exist under a prefix in S3 (ListObjectsV2 with max-keys=2)
-    ///
-    /// Returns true if any objects exist under `files{path}/`
+    /// Check if any objects exist under `files{path}/` (max-keys=2 LIST).
     pub async fn has_children(&self, path: &str) -> Result<bool, S3Error> {
         let prefix = self.key(&format!("files{}/", path));
 
@@ -280,8 +248,8 @@ impl S3Storage {
         Ok(has_objects)
     }
 
-    /// Upload a file and return the ETag
-    /// Uses multipart upload for files >= 5MB
+    /// Upload a file and return the ETag. Uses multipart upload for files
+    /// `>= 10MB`.
     pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {
         let key = self.key(&format!("files{}", path));
 
@@ -314,7 +282,7 @@ impl S3Storage {
             .to_string())
     }
 
-    /// Multipart upload for large files with parallel part uploads
+    /// Multipart upload with parallel part uploads.
     async fn multipart_upload(&self, key: &str, data: Vec<u8>) -> Result<String, S3Error> {
         let total_parts = data.len().div_ceil(PART_SIZE);
         log::info!(
@@ -324,7 +292,6 @@ impl S3Storage {
             total_parts
         );
 
-        // 1. Create multipart upload
         let create_output = self
             .client
             .create_multipart_upload()
@@ -345,7 +312,6 @@ impl S3Storage {
             })?
             .to_string();
 
-        // 2. Upload parts in parallel
         let upload_futures: Vec<_> = data
             .chunks(PART_SIZE)
             .enumerate()
@@ -382,10 +348,8 @@ impl S3Storage {
             })
             .collect();
 
-        // Execute all uploads concurrently
         let results = futures::future::join_all(upload_futures).await;
 
-        // Collect results and check for errors
         let mut parts: Vec<CompletedPart> = Vec::with_capacity(total_parts);
         for result in results {
             match result {
@@ -398,7 +362,6 @@ impl S3Storage {
             }
         }
 
-        // Sort parts by part number (required by S3)
         parts.sort_by_key(|p| p.part_number().unwrap_or(0));
 
         log::info!(
@@ -406,7 +369,6 @@ impl S3Storage {
             total_parts
         );
 
-        // 3. Complete multipart upload
         let completed = CompletedMultipartUpload::builder()
             .set_parts(Some(parts))
             .build();

@@ -22,7 +22,9 @@ use vfs_rpc_protocol::{
 };
 
 #[cfg(feature = "s3-sync")]
-use vfs_sync_adapter::{init_from_s3, MetadataCache, S3Storage, SyncConfig, SyncManager};
+use std::sync::Arc;
+#[cfg(feature = "s3-sync")]
+use vfs_sync_adapter::{init_from_s3, new_s3_storage, MetadataCache, SyncConfig, SyncManager};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -555,27 +557,30 @@ async fn init_server() -> ServerContext {
             s3_prefix
         );
 
-        let s3 = Rc::new(S3Storage::new(bucket, s3_prefix).await);
+        let s3 = Arc::new(new_s3_storage(bucket, s3_prefix).await);
 
-        let (fs, metadata_cache) = match init_from_s3(&s3).await {
+        let (fs, metadata_cache) = match init_from_s3::<MonotonicCounter>(&s3).await {
             Ok((fs, cache)) => (fs, cache),
             Err(e) => {
                 log::error!(
                     "Failed to load from S3: {}, starting with empty filesystem",
                     e
                 );
-                (Fs::new(), MetadataCache::new())
+                (Rc::new(RefCell::new(Fs::new())), MetadataCache::new())
             }
         };
-
-        let fs = Rc::new(RefCell::new(fs));
 
         let config = SyncConfig::default();
         log::info!(
             "Sync mode: {:?} (set VFS_SYNC_MODE=realtime for immediate sync)",
             config.mode
         );
-        let sync_manager = SyncManager::new(s3, fs.clone(), metadata_cache, config);
+        let sync_manager = SyncManager::new(
+            s3,
+            vfs_sync_adapter::AdapterFs(fs.clone()),
+            metadata_cache,
+            config,
+        );
 
         (fs, Some(sync_manager))
     } else {

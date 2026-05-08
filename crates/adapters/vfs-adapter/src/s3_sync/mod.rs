@@ -5,7 +5,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vfs_sync_adapter::{MetadataCache, S3Storage, SyncConfig, SyncManager};
+use std::sync::Arc;
+
+use vfs_sync_adapter::{new_s3_storage, AdapterFs, MetadataCache, SyncConfig, SyncManager};
 
 use crate::Fs;
 use crate::SystemTimeProvider;
@@ -37,12 +39,12 @@ pub fn init_s3_sync(fs: Rc<RefCell<Fs<SystemTimeProvider>>>) {
 
     // Initialize S3 client and sync manager
     let sync_manager = runtime.block_on(async {
-        let s3 = S3Storage::new(bucket, prefix).await;
-        let s3 = Rc::new(s3);
+        let s3 = new_s3_storage(bucket, prefix).await;
+        let s3 = Arc::new(s3);
         let config = SyncConfig::from_env();
         let cache = MetadataCache::new();
 
-        SyncManager::new(s3, fs, cache, config)
+        SyncManager::new(s3, AdapterFs(fs), cache, config)
     });
 
     unsafe {
