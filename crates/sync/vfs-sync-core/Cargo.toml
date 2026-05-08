@@ -2,8 +2,18 @@
 name = "vfs-sync-core"
 version = "0.2.4"
 edition = "2021"
-description = "Common types for VFS S3 synchronization"
+description = "Common S3 sync logic for Monaka VFS (host- and WASI-shared)"
 license = "MIT"
 repository = "https://github.com/ternbusty/monaka-fs"
 
 [dependencies]
+log = "0.4"
+
+# AWS SDK (default-features disabled so WASI consumers can opt in to a custom
+# http client without pulling in hyper-based defaults)
+aws-sdk-s3 = { version = "1", default-features = false }
+aws-config = { version = "1", default-features = false }
+
+# Async runtime - only the bits used by sync_manager
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "time", "sync"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }

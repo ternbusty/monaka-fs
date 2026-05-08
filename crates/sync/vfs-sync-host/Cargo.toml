@@ -11,10 +11,6 @@ vfs-sync-core = { version = "0.2.4", path = "../vfs-sync-core" }
 fs-core = { version = "0.2.4", path = "../../core/fs-core", features = ["thread-safe"] }
 log = "0.4"
 
-# AWS SDK
+# AWS SDK with default features (hyper-based HTTP client) for native use.
 aws-sdk-s3 = "1"
 aws-config = "1"
-
-# Async runtime
-tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
-futures = "0.3"
