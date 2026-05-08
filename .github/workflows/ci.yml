@@ -135,3 +135,11 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --verbose
+
+      # fs-core ships two filesystem implementations (single-threaded vs
+      # `thread-safe` feature). The default `cargo test --all-features` run
+      # above only exercises the thread-safe path, so re-run fs-core's tests
+      # against the single-threaded build that vfs-adapter / vfs-rpc-server
+      # use in production.
+      - name: Run fs-core single-threaded tests
+        run: cargo test -p fs-core --no-default-features --features std --verbose

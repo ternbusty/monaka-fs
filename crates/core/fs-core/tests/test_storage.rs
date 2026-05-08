@@ -1,3 +1,6 @@
+// See test_fs.rs for the rationale behind allowing `unused_mut` here.
+#![allow(unused_mut)]
+
 use fs_core::{BLOCK_SIZE, Fs};
 
 #[cfg(test)]
@@ -6,7 +9,7 @@ mod block_storage {
 
     #[test]
     fn success_large_file_multiple_blocks() {
-        let fs = Fs::new();
+        let mut fs = Fs::new();
         let fd = fs.open_path("/large.bin").unwrap();
 
         // Write data that spans multiple blocks
@@ -27,7 +30,7 @@ mod block_storage {
 
     #[test]
     fn success_boundary_operations() {
-        let fs = Fs::new();
+        let mut fs = Fs::new();
         let fd = fs.open_path("/boundary.txt").unwrap();
 
         // Write data that ends exactly at block boundary
@@ -56,7 +59,7 @@ mod sparse_files {
 
     #[test]
     fn success_with_gaps() {
-        let fs = Fs::new();
+        let mut fs = Fs::new();
         let fd = fs.open_path("/sparse.dat").unwrap();
 
         // Write at offset 0
