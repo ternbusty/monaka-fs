@@ -23,12 +23,9 @@ pub fn run(output: &PathBuf, mounts: &[String], s3_sync: bool) -> Result<()> {
     embed_snapshot_bytes(adapter_bytes, output, &snapshot)
 }
 
-/// Embed files into a WASM binary provided as bytes. Used by both `embed` and `compose --mount`.
-pub fn embed_into_bytes(wasm_bytes: &[u8], mounts: &[(String, PathBuf)]) -> Result<Vec<u8>> {
-    let snapshot = build_snapshot(mounts)?;
-    let snapshot_json = serde_json::to_string(&snapshot)?;
-    let snapshot_bytes = snapshot_json.as_bytes();
-
+/// Verify that the given bytes are a WASM Component, returning an error
+/// otherwise. Both `embed` and `compose --mount` reject bare core modules.
+fn ensure_wasm_component(wasm_bytes: &[u8]) -> Result<()> {
     let is_component = wasmparser::Parser::new(0)
         .parse_all(wasm_bytes)
         .find_map(|payload| {
@@ -43,6 +40,16 @@ pub fn embed_into_bytes(wasm_bytes: &[u8], mounts: &[(String, PathBuf)]) -> Resu
     if !is_component {
         bail!("Only WASM Components are supported.");
     }
+    Ok(())
+}
+
+/// Embed files into a WASM binary provided as bytes. Used by both `embed` and `compose --mount`.
+pub fn embed_into_bytes(wasm_bytes: &[u8], mounts: &[(String, PathBuf)]) -> Result<Vec<u8>> {
+    let snapshot = build_snapshot(mounts)?;
+    let snapshot_json = serde_json::to_string(&snapshot)?;
+    let snapshot_bytes = snapshot_json.as_bytes();
+
+    ensure_wasm_component(wasm_bytes)?;
 
     embed_into_component(wasm_bytes, snapshot_bytes)
 }
@@ -61,20 +68,7 @@ fn embed_snapshot_bytes(wasm_bytes: &[u8], output: &Path, snapshot: &FsSnapshot)
             .count()
     );
 
-    let is_component = wasmparser::Parser::new(0)
-        .parse_all(wasm_bytes)
-        .find_map(|payload| {
-            if let Ok(wasmparser::Payload::Version { encoding, .. }) = payload {
-                Some(encoding == wasmparser::Encoding::Component)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(false);
-
-    if !is_component {
-        bail!("Only WASM Components are supported.");
-    }
+    ensure_wasm_component(wasm_bytes)?;
 
     let output_wasm = embed_into_component(wasm_bytes, snapshot_bytes)?;
     std::fs::write(output, &output_wasm)?;

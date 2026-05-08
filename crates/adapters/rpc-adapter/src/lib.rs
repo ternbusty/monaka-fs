@@ -307,6 +307,46 @@ fn rpc_error_to_wasi(code: RpcErrorCode) -> ErrorCode {
     }
 }
 
+// Normalise a relative path coming from a WASI caller into the absolute form
+// (`/foo/bar`) the RPC server expects.
+fn normalize_path(path: &str) -> String {
+    format!("/{}", path.trim_start_matches('/'))
+}
+
+// Build a `DescriptorStat` from RPC metadata. Timestamps are not carried by
+// the protocol today, so they are returned as `None`.
+fn make_descriptor_stat(is_dir: bool, size: u64) -> DescriptorStat {
+    DescriptorStat {
+        type_: if is_dir {
+            DescriptorType::Directory
+        } else {
+            DescriptorType::RegularFile
+        },
+        link_count: 1,
+        size: size as Filesize,
+        data_access_timestamp: None,
+        data_modification_timestamp: None,
+        status_change_timestamp: None,
+    }
+}
+
+// Issue a `Seek { fd, offset, whence: 0 }` request on the given persistent
+// connection and consume the response. Used by the read/write paths that
+// need to set the file cursor before doing IO atomically.
+fn seek_via_conn(conn: &mut PersistentConnection, fd: u32, offset: u64) -> Result<(), ErrorCode> {
+    let seek_request = Request::Seek {
+        fd,
+        offset: offset as i64,
+        whence: 0,
+    };
+    conn.send(&seek_request)?;
+    match conn.receive()? {
+        Response::Position { .. } => Ok(()),
+        Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
+        _ => Err(ErrorCode::Io),
+    }
+}
+
 // Convert WASI flags to fs-core flags
 fn convert_flags(open_flags: OpenFlags, descriptor_flags: DescriptorFlags) -> u32 {
     let mut flags = 0u32;
@@ -471,19 +511,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
         // Use persistent connection to perform seek + read atomically
         with_connection(|conn| {
-            // Seek to offset
-            let seek_request = Request::Seek {
-                fd: server_fd,
-                offset: offset as i64,
-                whence: 0,
-            };
-            conn.send(&seek_request)?;
-
-            match conn.receive()? {
-                Response::Position { .. } => {}
-                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                _ => return Err(ErrorCode::Io),
-            }
+            seek_via_conn(conn, server_fd, offset)?;
 
             // Read data
             let read_request = Request::Read {
@@ -508,19 +536,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
         // Use persistent connection to perform seek + write atomically
         with_connection(|conn| {
-            // Seek to offset
-            let seek_request = Request::Seek {
-                fd: server_fd,
-                offset: offset as i64,
-                whence: 0,
-            };
-            conn.send(&seek_request)?;
-
-            match conn.receive()? {
-                Response::Position { .. } => {}
-                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                _ => return Err(ErrorCode::Io),
-            }
+            seek_via_conn(conn, server_fd, offset)?;
 
             // Write data
             let write_request = Request::Write {
@@ -577,7 +593,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn create_directory_at(&self, path: String) -> Result<(), ErrorCode> {
         // For root directory, use direct path
         let full_path = if self.handle == 0 {
-            format!("/{}", path.trim_start_matches('/'))
+            normalize_path(&path)
         } else {
             // Would need to track paths, for now just use relative
             path
@@ -594,32 +610,16 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn stat(&self) -> Result<DescriptorStat, ErrorCode> {
         if self.handle == 0 {
             // Root directory
-            return Ok(DescriptorStat {
-                type_: DescriptorType::Directory,
-                link_count: 1,
-                size: 0,
-                data_access_timestamp: None,
-                data_modification_timestamp: None,
-                status_change_timestamp: None,
-            });
+            return Ok(make_descriptor_stat(true, 0));
         }
 
         let server_fd = with_rpc_state(|state| state.get_server_fd(self.handle))?;
 
         let request = Request::Fstat { fd: server_fd };
         match rpc_call(&request)? {
-            Response::Metadata { metadata } => Ok(DescriptorStat {
-                type_: if metadata.is_dir {
-                    DescriptorType::Directory
-                } else {
-                    DescriptorType::RegularFile
-                },
-                link_count: 1,
-                size: metadata.size as Filesize,
-                data_access_timestamp: None,
-                data_modification_timestamp: None,
-                status_change_timestamp: None,
-            }),
+            Response::Metadata { metadata } => {
+                Ok(make_descriptor_stat(metadata.is_dir, metadata.size))
+            }
             Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
             _ => Err(ErrorCode::Io),
         }
@@ -627,25 +627,16 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn stat_at(&self, _path_flags: PathFlags, path: String) -> Result<DescriptorStat, ErrorCode> {
         let full_path = if self.handle == 0 {
-            format!("/{}", path.trim_start_matches('/'))
+            normalize_path(&path)
         } else {
             path
         };
 
         let request = Request::Stat { path: full_path };
         match rpc_call(&request)? {
-            Response::Metadata { metadata } => Ok(DescriptorStat {
-                type_: if metadata.is_dir {
-                    DescriptorType::Directory
-                } else {
-                    DescriptorType::RegularFile
-                },
-                link_count: 1,
-                size: metadata.size as Filesize,
-                data_access_timestamp: None,
-                data_modification_timestamp: None,
-                status_change_timestamp: None,
-            }),
+            Response::Metadata { metadata } => {
+                Ok(make_descriptor_stat(metadata.is_dir, metadata.size))
+            }
             Response::Error { code, .. } => Err(rpc_error_to_wasi(code)),
             _ => Err(ErrorCode::Io),
         }
@@ -679,7 +670,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         flags: DescriptorFlags,
     ) -> Result<Descriptor, ErrorCode> {
         let full_path = if self.handle == 0 {
-            format!("/{}", path.trim_start_matches('/'))
+            normalize_path(&path)
         } else {
             path
         };
@@ -708,7 +699,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn remove_directory_at(&self, path: String) -> Result<(), ErrorCode> {
         let full_path = if self.handle == 0 {
-            format!("/{}", path.trim_start_matches('/'))
+            normalize_path(&path)
         } else {
             path
         };
@@ -728,12 +719,12 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         new_path: String,
     ) -> Result<(), ErrorCode> {
         let old_full = if self.handle == 0 {
-            format!("/{}", old_path.trim_start_matches('/'))
+            normalize_path(&old_path)
         } else {
             old_path
         };
         let new_full = if self.handle == 0 {
-            format!("/{}", new_path.trim_start_matches('/'))
+            normalize_path(&new_path)
         } else {
             new_path
         };
@@ -754,7 +745,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn unlink_file_at(&self, path: String) -> Result<(), ErrorCode> {
         let full_path = if self.handle == 0 {
-            format!("/{}", path.trim_start_matches('/'))
+            normalize_path(&path)
         } else {
             path
         };
@@ -841,18 +832,7 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
         };
 
         let result = with_connection(|conn| {
-            let seek_request = Request::Seek {
-                fd: server_fd,
-                offset: current_offset as i64,
-                whence: 0,
-            };
-            conn.send(&seek_request)?;
-
-            match conn.receive()? {
-                Response::Position { .. } => {}
-                Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                _ => return Err(ErrorCode::Io),
-            }
+            seek_via_conn(conn, server_fd, current_offset)?;
 
             let read_request = Request::Read {
                 fd: server_fd,
@@ -942,18 +922,7 @@ impl FileOutputStream {
             })
         } else {
             with_connection(|conn| {
-                // Seek to start offset
-                let seek_request = Request::Seek {
-                    fd: server_fd,
-                    offset: start_offset as i64,
-                    whence: 0,
-                };
-                conn.send(&seek_request)?;
-                match conn.receive()? {
-                    Response::Position { .. } => {}
-                    Response::Error { code, .. } => return Err(rpc_error_to_wasi(code)),
-                    _ => return Err(ErrorCode::Io),
-                }
+                seek_via_conn(conn, server_fd, start_offset)?;
 
                 // Write all data at once
                 let write_request = Request::Write {
