@@ -149,7 +149,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     env:
-      WASMTIME_VERSION: v27.0.0
+      # Track local dev environment. Older releases (v27 in particular)
+      # had WASI socket / streaming write quirks that surfaced as
+      # spurious "os error 29" failures in the RPC tier.
+      WASMTIME_VERSION: v39.0.1
       WAC_VERSION: 0.9.0
     steps:
       - uses: actions/checkout@v4
