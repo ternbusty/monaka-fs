@@ -143,3 +143,94 @@ jobs:
       # use in production.
       - name: Run fs-core single-threaded tests
         run: cargo test -p fs-core --no-default-features --features std --verbose
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      WASMTIME_VERSION: v27.0.0
+      WAC_VERSION: 0.9.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler netcat-openbsd
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      # Share cache with format / lint / build / test jobs.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      # E2E-specific tooling. wac-cli builds from source (~1-2 min) so cache
+      # the resulting binary keyed on its pinned version.
+      - name: Cache wac-cli binary
+        id: cache-wac
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wac
+          key: ${{ runner.os }}-wac-${{ env.WAC_VERSION }}
+
+      - name: Install wac-cli
+        if: steps.cache-wac.outputs.cache-hit != 'true'
+        run: cargo install wac-cli --version ${{ env.WAC_VERSION }} --locked
+
+      - name: Cache wasmtime binary
+        id: cache-wasmtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.wasmtime
+          key: ${{ runner.os }}-wasmtime-${{ env.WASMTIME_VERSION }}
+
+      - name: Install wasmtime
+        if: steps.cache-wasmtime.outputs.cache-hit != 'true'
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version ${{ env.WASMTIME_VERSION }}
+
+      - name: Add wasmtime to PATH
+        run: echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Install awscli-local
+        run: pipx install awscli-local awscli
+
+      - name: Build WASM and CLI (cache hits ⇒ relink only)
+        run: |
+          make build-wasm-release
+          make build-cli
+
+      - name: Start LocalStack
+        run: docker compose up -d --wait
+
+      - name: Run E2E suite
+        run: bash scripts/e2e.sh
+
+      - name: Stop LocalStack
+        if: always()
+        run: docker compose down
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: /tmp/e2e-logs/
+          if-no-files-found: ignore
