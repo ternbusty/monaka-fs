@@ -276,6 +276,22 @@ info "workspace WASM packages (debug, for runtime-linker examples) built"
 make build-cli >"$LOG_DIR/build-cli.log" 2>&1
 info "monaka CLI + bundled WASMs built"
 
+# Pre-build the host-trait runtime-linker examples so that
+# `cargo run --release` in Tier 1 / Tier 3 / Tier 4 hits the per-demo
+# timeout only on the actual run, not on a cold compile of wasmtime,
+# tokio, AWS SDK, etc. Each lives in its own workspace so the root
+# cargo cache doesn't help them.
+for sub in \
+    examples/host-trait/runtime-linker \
+    examples/host-trait/runtime-linker-demo-fs \
+    examples/host-trait/runtime-linker-s3 \
+    usecases/host-trait/sensor-pipeline/runtime-linker
+do
+    ( cd "$sub" && cargo build --release ) \
+        >"$LOG_DIR/build-$(echo "$sub" | tr / -).log" 2>&1
+done
+info "host-trait runtime-linker examples pre-built"
+
 MONAKA="$REPO_ROOT/target/release/monaka"
 ADAPTER_WASM="$REPO_ROOT/target/wasm32-wasip2/release/vfs_adapter.wasm"
 RPC_ADAPTER_WASM="$REPO_ROOT/target/wasm32-wasip2/release/rpc_adapter.wasm"
