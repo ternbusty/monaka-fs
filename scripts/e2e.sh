@@ -255,7 +255,17 @@ cargo build --release --target wasm32-wasip2 \
     -p logger \
     -p image-processor \
     >"$LOG_DIR/build-workspace-wasm.log" 2>&1
-info "workspace WASM packages built"
+info "workspace WASM packages (release) built"
+
+# The host-trait runtime-linker examples hard-code
+# `target/wasm32-wasip2/debug/<name>.wasm` paths, so build the demo apps
+# they consume in debug mode too. Pure relink pass once release is cached.
+cargo build --target wasm32-wasip2 \
+    -p demo-writer \
+    -p demo-reader \
+    -p demo-fs-operations \
+    >"$LOG_DIR/build-workspace-wasm-debug.log" 2>&1
+info "workspace WASM packages (debug, for runtime-linker examples) built"
 
 make build-cli >"$LOG_DIR/build-cli.log" 2>&1
 info "monaka CLI + bundled WASMs built"
@@ -306,11 +316,13 @@ run_demo "tier1-runtime-linker-demo-fs" \
     "demo-fs-operations executed successfully"
 
 # 1.3 usecases/host-trait/sensor-pipeline
-# Needs sensor-ingest / sensor-process built into wasm first; the runtime-linker
-# package has its own Cargo workspace and will pick them up via path-deps.
-( cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --release --target wasm32-wasip2 ) \
+# Needs sensor-ingest / sensor-process built into wasm first. The
+# `runtime-linker` package looks them up via
+# `<usecase>/sensor-{ingest,process}/target/wasm32-wasip2/debug/...`, so
+# match that with debug builds.
+( cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --target wasm32-wasip2 ) \
     >"$LOG_DIR/build-sensor-ingest.log" 2>&1
-( cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --release --target wasm32-wasip2 ) \
+( cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --target wasm32-wasip2 ) \
     >"$LOG_DIR/build-sensor-process.log" 2>&1
 run_demo "tier1-sensor-pipeline" \
     "cd usecases/host-trait/sensor-pipeline/runtime-linker && cargo run --release --quiet" \
