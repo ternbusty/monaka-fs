@@ -207,7 +207,11 @@ jobs:
       - name: Install wasmtime
         if: steps.cache-wasmtime.outputs.cache-hit != 'true'
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version ${{ env.WASMTIME_VERSION }}
+          # The standard install script grabs the latest stable.
+          # Trying to pin via `--version` has been flaky in our CI.
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          # Sanity-check that the install matches what we expected.
+          test -x "$HOME/.wasmtime/bin/wasmtime"
 
       - name: Add wasmtime to PATH
         run: echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
