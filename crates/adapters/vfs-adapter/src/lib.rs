@@ -244,6 +244,29 @@ fn to_error_code(err: FsError) -> ErrorCode {
     }
 }
 
+// Normalise a relative path coming from a WASI caller into the absolute form
+// fs-core expects (`/foo/bar`).
+fn normalize_path(path: &str) -> String {
+    format!("/{}", path.trim_start_matches('/'))
+}
+
+// Build a `DescriptorStat` from the given type and fs-core metadata,
+// populating WASI timestamps from the metadata's `created` / `modified` fields.
+fn make_descriptor_stat(type_: DescriptorType, metadata: &fs_core::Metadata) -> DescriptorStat {
+    let to_datetime = |secs: u64| wasi::clocks::wall_clock::Datetime {
+        seconds: secs,
+        nanoseconds: 0,
+    };
+    DescriptorStat {
+        type_,
+        link_count: 1,
+        size: metadata.size,
+        data_access_timestamp: Some(to_datetime(metadata.created)),
+        data_modification_timestamp: Some(to_datetime(metadata.modified)),
+        status_change_timestamp: Some(to_datetime(metadata.modified)),
+    }
+}
+
 // Convert WASI flags to fs-core flags
 fn convert_flags(open_flags: OpenFlags, descriptor_flags: DescriptorFlags) -> u32 {
     let mut flags = 0u32;
@@ -596,7 +619,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 state
                     .fs
                     .borrow_mut()
-                    .mkdir(&format!("/{}", path.trim_start_matches('/')))
+                    .mkdir(&normalize_path(&path))
                     .map_err(to_error_code)
             } else {
                 Err(ErrorCode::Unsupported)
@@ -608,23 +631,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         with_vfs_state(|state| {
             if self.handle == 0 {
                 let metadata = state.fs.borrow_mut().stat("/").map_err(to_error_code)?;
-                return Ok(DescriptorStat {
-                    type_: DescriptorType::Directory,
-                    link_count: 1,
-                    size: metadata.size,
-                    data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                        seconds: metadata.created,
-                        nanoseconds: 0,
-                    }),
-                    data_modification_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                        seconds: metadata.modified,
-                        nanoseconds: 0,
-                    }),
-                    status_change_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                        seconds: metadata.modified,
-                        nanoseconds: 0,
-                    }),
-                });
+                return Ok(make_descriptor_stat(DescriptorType::Directory, &metadata));
             }
 
             let fd = state.get_fd(self.handle)?;
@@ -636,30 +643,14 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 DescriptorType::RegularFile
             };
 
-            Ok(DescriptorStat {
-                type_,
-                link_count: 1,
-                size: metadata.size,
-                data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.created,
-                    nanoseconds: 0,
-                }),
-                data_modification_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.modified,
-                    nanoseconds: 0,
-                }),
-                status_change_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.modified,
-                    nanoseconds: 0,
-                }),
-            })
+            Ok(make_descriptor_stat(type_, &metadata))
         })
     }
 
     fn stat_at(&self, _path_flags: PathFlags, path: String) -> Result<DescriptorStat, ErrorCode> {
         with_vfs_state(|state| {
             let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
+                normalize_path(&path)
             } else {
                 return Err(ErrorCode::Unsupported);
             };
@@ -676,23 +667,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 DescriptorType::RegularFile
             };
 
-            Ok(DescriptorStat {
-                type_,
-                link_count: 1,
-                size: metadata.size,
-                data_access_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.created,
-                    nanoseconds: 0,
-                }),
-                data_modification_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.modified,
-                    nanoseconds: 0,
-                }),
-                status_change_timestamp: Some(wasi::clocks::wall_clock::Datetime {
-                    seconds: metadata.modified,
-                    nanoseconds: 0,
-                }),
-            })
+            Ok(make_descriptor_stat(type_, &metadata))
         })
     }
 
@@ -745,7 +720,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             // Use open_at if available, otherwise fall back to absolute path for root
             let (fd, full_path) = if self.handle == 0 {
                 // Root directory: use absolute path
-                let full_path = format!("/{}", path.trim_start_matches('/'));
+                let full_path = normalize_path(&path);
                 let fd = state
                     .fs
                     .borrow_mut()
@@ -783,7 +758,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         with_vfs_state(|state| {
             // For root descriptor, use absolute path
             let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
+                normalize_path(&path)
             } else {
                 return Err(ErrorCode::Unsupported);
             };
@@ -805,11 +780,11 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     ) -> Result<(), ErrorCode> {
         with_vfs_state(|state| {
             let old_full = if self.handle == 0 {
-                format!("/{}", old_path.trim_start_matches('/'))
+                normalize_path(&old_path)
             } else {
                 return Err(ErrorCode::Unsupported);
             };
-            let new_full = format!("/{}", new_path.trim_start_matches('/'));
+            let new_full = normalize_path(&new_path);
             state
                 .fs
                 .borrow_mut()
@@ -826,7 +801,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         with_vfs_state(|state| {
             // For root descriptor, use absolute path
             let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
+                normalize_path(&path)
             } else {
                 return Err(ErrorCode::Unsupported);
             };
@@ -872,7 +847,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     ) -> Result<exports::wasi::filesystem::types::MetadataHashValue, ErrorCode> {
         with_vfs_state(|state| {
             let full_path = if self.handle == 0 {
-                format!("/{}", path.trim_start_matches('/'))
+                normalize_path(&path)
             } else {
                 return Err(ErrorCode::Unsupported);
             };
