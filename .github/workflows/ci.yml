@@ -224,10 +224,14 @@ jobs:
       # creates `test-vfs-bucket` is still mounted in the same place.
       - name: Start LocalStack
         run: |
+          # ACTIVATE_PRO=0 disables the Pro license check that newer
+          # localstack/localstack images perform on startup. Community
+          # services (S3, SQS, ...) still work fine without it.
           docker run -d --name halycon-localstack-1 \
             -p 4566:4566 \
             -e SERVICES=s3 \
             -e DEBUG=1 \
+            -e ACTIVATE_PRO=0 \
             -e AWS_DEFAULT_REGION=ap-northeast-1 \
             -v "${GITHUB_WORKSPACE}/localstack-init:/etc/localstack/init/ready.d" \
             localstack/localstack:latest
