@@ -29,10 +29,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 RUN_S3=1
+RUN_RPC=1
 START_STACK=0
 for arg in "$@"; do
     case "$arg" in
         --no-s3)       RUN_S3=0 ;;
+        --no-rpc)      RUN_RPC=0 ;;
         --start-stack) START_STACK=1 ;;
         -h|--help)
             sed -n '2,20p' "$0"
@@ -44,6 +46,10 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Tier 4's S3 round-trip relies on the rpc-server. If RPC is skipped,
+# the round-trip portion of Tier 4 is skipped too; the S3 preload
+# portion (which uses runtime-linker-s3, no rpc-adapter) still runs.
 
 LOG_DIR="${E2E_LOG_DIR:-/tmp/e2e-logs}"
 TMP_DIR="$(mktemp -d -t monaka-e2e.XXXXXX)"
@@ -370,6 +376,10 @@ run_demo "tier1-image-pipeline" \
 # Tier 2: rpc-server lifecycle (no S3)
 # ---------------------------------------------------------------------------
 
+if (( !RUN_RPC )); then
+    log "Skipping Tier 2 (--no-rpc)"
+else
+
 log "Tier 2 / 4: RPC server lifecycle (no S3)"
 
 # 2.1 examples/rpc-server (writer + reader)
@@ -419,6 +429,8 @@ else
     FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 stop_rpc_server
+
+fi  # end RUN_RPC for Tier 2
 
 # ---------------------------------------------------------------------------
 # Tier 3 + 4: LocalStack S3
@@ -478,36 +490,40 @@ else
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 
-    # 3.3 usecases/rpc-server/s3-sync-logging
-    s3_reset_bucket
-    start_rpc_server "$RPC_SERVER_WASM_S3" "tier3-rpc-server-s3.log" \
-        --env "VFS_S3_BUCKET=$S3_BUCKET" \
-        --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
-        --env "AWS_ACCESS_KEY_ID=test" \
-        --env "AWS_SECRET_ACCESS_KEY=test" \
-        --env "AWS_REGION=ap-northeast-1"
-    log_dir="$LOG_DIR/tier3-s3-logging"
-    mkdir -p "$log_dir"
-    {
-        wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$log_dir/r1.log" 2>&1 &
-        r1=$!
-        wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$log_dir/r2.log" 2>&1 &
-        r2=$!
-        wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$log_dir/r3.log" 2>&1 &
-        r3=$!
-        wait $r1 $r2 $r3
-    } || true
-    # Give the server a moment to flush.
-    sleep 4
-    s3_log_lines_run1=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-    if (( s3_log_lines_run1 >= 30 )); then
-        info "[OK] tier3-s3-sync-logging: $s3_log_lines_run1 lines in S3"
-        PASS_COUNT=$((PASS_COUNT + 1))
+    # 3.3 usecases/rpc-server/s3-sync-logging (RPC required)
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        start_rpc_server "$RPC_SERVER_WASM_S3" "tier3-rpc-server-s3.log" \
+            --env "VFS_S3_BUCKET=$S3_BUCKET" \
+            --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
+            --env "AWS_ACCESS_KEY_ID=test" \
+            --env "AWS_SECRET_ACCESS_KEY=test" \
+            --env "AWS_REGION=ap-northeast-1"
+        log_dir="$LOG_DIR/tier3-s3-logging"
+        mkdir -p "$log_dir"
+        {
+            wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$log_dir/r1.log" 2>&1 &
+            r1=$!
+            wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$log_dir/r2.log" 2>&1 &
+            r2=$!
+            wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$log_dir/r3.log" 2>&1 &
+            r3=$!
+            wait $r1 $r2 $r3
+        } || true
+        # Give the server a moment to flush.
+        sleep 4
+        s3_log_lines_run1=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+        if (( s3_log_lines_run1 >= 30 )); then
+            info "[OK] tier3-s3-sync-logging: $s3_log_lines_run1 lines in S3"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier3-s3-sync-logging: expected >=30 lines in S3, got $s3_log_lines_run1"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        stop_rpc_server
     else
-        fail_msg "tier3-s3-sync-logging: expected >=30 lines in S3, got $s3_log_lines_run1"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
+        info "Skipping tier3-s3-sync-logging (--no-rpc)"
     fi
-    stop_rpc_server
 
     # ---------------------------------------------------------------
     # Tier 4: S3 -> app (load / restore direction)
@@ -534,64 +550,68 @@ else
         "Found 1 files in S3" \
         "Loaded: /preload.txt"
 
-    # 4.2 S3 round-trip via s3-sync-logging run twice.
+    # 4.2 S3 round-trip via s3-sync-logging run twice (RPC required).
     # Run #1: empty bucket, server starts fresh, three replicas append.
     # Run #2: bucket has the previous run's log, server's init_from_s3 should
     # load it, three more replicas append on top, line count grows.
-    s3_reset_bucket
-    rt_log_dir="$LOG_DIR/tier4-roundtrip"
-    mkdir -p "$rt_log_dir"
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        rt_log_dir="$LOG_DIR/tier4-roundtrip"
+        mkdir -p "$rt_log_dir"
 
-    info "round-trip run #1 (empty S3)"
-    start_rpc_server "$RPC_SERVER_WASM_S3" "tier4-roundtrip-server1.log" \
-        --env "VFS_S3_BUCKET=$S3_BUCKET" \
-        --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
-        --env "AWS_ACCESS_KEY_ID=test" \
-        --env "AWS_SECRET_ACCESS_KEY=test" \
-        --env "AWS_REGION=ap-northeast-1"
-    {
-        wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$rt_log_dir/r1-1.log" 2>&1 &
-        wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$rt_log_dir/r1-2.log" 2>&1 &
-        wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$rt_log_dir/r1-3.log" 2>&1 &
-        wait
-    } || true
-    sleep 4
-    stop_rpc_server
-    sleep 1
-    run1_lines=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-    info "run #1 produced $run1_lines lines in S3"
+        info "round-trip run #1 (empty S3)"
+        start_rpc_server "$RPC_SERVER_WASM_S3" "tier4-roundtrip-server1.log" \
+            --env "VFS_S3_BUCKET=$S3_BUCKET" \
+            --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
+            --env "AWS_ACCESS_KEY_ID=test" \
+            --env "AWS_SECRET_ACCESS_KEY=test" \
+            --env "AWS_REGION=ap-northeast-1"
+        {
+            wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$rt_log_dir/r1-1.log" 2>&1 &
+            wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$rt_log_dir/r1-2.log" 2>&1 &
+            wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$rt_log_dir/r1-3.log" 2>&1 &
+            wait
+        } || true
+        sleep 4
+        stop_rpc_server
+        sleep 1
+        run1_lines=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+        info "run #1 produced $run1_lines lines in S3"
 
-    info "round-trip run #2 (bucket has prior log)"
-    start_rpc_server "$RPC_SERVER_WASM_S3" "tier4-roundtrip-server2.log" \
-        --env "VFS_S3_BUCKET=$S3_BUCKET" \
-        --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
-        --env "AWS_ACCESS_KEY_ID=test" \
-        --env "AWS_SECRET_ACCESS_KEY=test" \
-        --env "AWS_REGION=ap-northeast-1"
-    {
-        wasmtime run -S inherit-network=y --env REPLICA_ID=4 "$RPC_LOGGER" >"$rt_log_dir/r2-1.log" 2>&1 &
-        wasmtime run -S inherit-network=y --env REPLICA_ID=5 "$RPC_LOGGER" >"$rt_log_dir/r2-2.log" 2>&1 &
-        wasmtime run -S inherit-network=y --env REPLICA_ID=6 "$RPC_LOGGER" >"$rt_log_dir/r2-3.log" 2>&1 &
-        wait
-    } || true
-    sleep 4
-    stop_rpc_server
-    run2_lines=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-    info "run #2 produced $run2_lines lines in S3"
+        info "round-trip run #2 (bucket has prior log)"
+        start_rpc_server "$RPC_SERVER_WASM_S3" "tier4-roundtrip-server2.log" \
+            --env "VFS_S3_BUCKET=$S3_BUCKET" \
+            --env "AWS_ENDPOINT_URL=$S3_ENDPOINT" \
+            --env "AWS_ACCESS_KEY_ID=test" \
+            --env "AWS_SECRET_ACCESS_KEY=test" \
+            --env "AWS_REGION=ap-northeast-1"
+        {
+            wasmtime run -S inherit-network=y --env REPLICA_ID=4 "$RPC_LOGGER" >"$rt_log_dir/r2-1.log" 2>&1 &
+            wasmtime run -S inherit-network=y --env REPLICA_ID=5 "$RPC_LOGGER" >"$rt_log_dir/r2-2.log" 2>&1 &
+            wasmtime run -S inherit-network=y --env REPLICA_ID=6 "$RPC_LOGGER" >"$rt_log_dir/r2-3.log" 2>&1 &
+            wait
+        } || true
+        sleep 4
+        stop_rpc_server
+        run2_lines=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/logs/app.log" - 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+        info "run #2 produced $run2_lines lines in S3"
 
-    if grep -q "Loaded: /logs/app.log" "$LOG_DIR/tier4-roundtrip-server2.log"; then
-        info "[OK] init_from_s3 reported loading the previous log"
+        if grep -q "Loaded: /logs/app.log" "$LOG_DIR/tier4-roundtrip-server2.log"; then
+            info "[OK] init_from_s3 reported loading the previous log"
+        else
+            fail_msg "tier4-roundtrip: server2 didn't report 'Loaded: /logs/app.log'"
+            tail -n 50 "$LOG_DIR/tier4-roundtrip-server2.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        if (( run2_lines > run1_lines )); then
+            info "[OK] tier4-roundtrip: run2 ($run2_lines) > run1 ($run1_lines)"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier4-roundtrip: run2 ($run2_lines) did not exceed run1 ($run1_lines)"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
     else
-        fail_msg "tier4-roundtrip: server2 didn't report 'Loaded: /logs/app.log'"
-        tail -n 50 "$LOG_DIR/tier4-roundtrip-server2.log" >&2
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-    fi
-    if (( run2_lines > run1_lines )); then
-        info "[OK] tier4-roundtrip: run2 ($run2_lines) > run1 ($run1_lines)"
-        PASS_COUNT=$((PASS_COUNT + 1))
-    else
-        fail_msg "tier4-roundtrip: run2 ($run2_lines) did not exceed run1 ($run1_lines)"
-        FAIL_COUNT=$((FAIL_COUNT + 1))
+        info "Skipping tier4-roundtrip (--no-rpc)"
     fi
 fi
 
