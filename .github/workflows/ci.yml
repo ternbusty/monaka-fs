@@ -217,15 +217,56 @@ jobs:
           make build-wasm-release
           make build-cli
 
+      # Bring LocalStack up via `docker run` rather than docker-compose so we
+      # can omit the host bind-mounts (`./localstack-data`, docker.sock) that
+      # the local dev compose file uses. Those mounts caused LocalStack to
+      # exit with code 55 on GitHub-hosted runners. The init script that
+      # creates `test-vfs-bucket` is still mounted in the same place.
       - name: Start LocalStack
-        run: docker compose up -d --wait
+        run: |
+          docker run -d --name halycon-localstack-1 \
+            -p 4566:4566 \
+            -e SERVICES=s3 \
+            -e DEBUG=1 \
+            -e AWS_DEFAULT_REGION=ap-northeast-1 \
+            -v "${GITHUB_WORKSPACE}/localstack-init:/etc/localstack/init/ready.d" \
+            localstack/localstack:latest
+          # Wait for the gateway to come up.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4566/_localstack/health >/dev/null; then
+              echo "LocalStack ready"
+              break
+            fi
+            if (( i == 60 )); then
+              echo "LocalStack didn't become ready in time" >&2
+              docker logs halycon-localstack-1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          # The init script runs once /etc/localstack/init/ready.d/init-s3.sh
+          # is invoked; poll until the bucket actually exists so the e2e
+          # script's pre-flight check doesn't race.
+          for i in $(seq 1 30); do
+            if AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=ap-northeast-1 \
+                 aws --endpoint-url=http://localhost:4566 s3 ls s3://test-vfs-bucket >/dev/null 2>&1; then
+              echo "test-vfs-bucket ready"
+              break
+            fi
+            if (( i == 30 )); then
+              echo "test-vfs-bucket was not created in time" >&2
+              docker logs halycon-localstack-1 || true
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Run E2E suite
         run: bash scripts/e2e.sh
 
       - name: Stop LocalStack
         if: always()
-        run: docker compose down
+        run: docker rm -f halycon-localstack-1 || true
 
       - name: Upload E2E logs on failure
         if: failure()
