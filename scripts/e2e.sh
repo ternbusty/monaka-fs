@@ -342,9 +342,9 @@ run_demo "tier1-concurrent-append" \
 
 # 1.5 examples/static-composition/embed
 EMBED_OUT="$TMP_DIR/embed-example.wasm"
-"$MONAKA" compose --mount "/data=examples/static-composition/embed/testdata" \
+"$MONAKA" compose --mount "/data=$REPO_ROOT/examples/static-composition/embed/testdata" \
     "$REPO_ROOT/target/wasm32-wasip2/release/demo-embed-read.wasm" \
-    -o "$EMBED_OUT" >/dev/null
+    -o "$EMBED_OUT" >"$LOG_DIR/build-embed-compose.log" 2>&1
 run_demo "tier1-static-composition-embed" \
     "wasmtime run \"$EMBED_OUT\"" \
     "/data/dir1" \
