@@ -17,3 +17,9 @@ aws-config = { version = "1", default-features = false }
 # Async runtime - only the bits used by sync_manager
 tokio = { version = "1", default-features = false, features = ["macros", "rt", "time", "sync"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Tests construct `S3Storage` directly to satisfy `SyncManager`'s constructor.
+# The S3 client builder needs a `sleep_impl`; reuse the same `TokioSleep`
+# that the production wrappers in vfs-sync-host/-adapter feed it.
+aws-smithy-async = { version = "1", features = ["rt-tokio"] }

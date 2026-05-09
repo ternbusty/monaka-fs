@@ -637,3 +637,259 @@ fn modify_core_module(
 
     Ok(final_result)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // --- parse_mount ---------------------------------------------------------
+
+    #[test]
+    fn parse_mount_accepts_valid_format() {
+        let dir = tempdir().unwrap();
+        let arg = format!("/data={}", dir.path().display());
+
+        let (virt, local) = parse_mount(&arg).expect("valid mount");
+
+        assert_eq!(virt, "/data");
+        assert_eq!(local, dir.path());
+    }
+
+    #[test]
+    fn parse_mount_keeps_only_first_equals() {
+        // splitn(2, '=') means everything after the first `=` becomes the
+        // local path, including more `=`. Document this behaviour.
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a=b");
+        fs::create_dir_all(&nested).unwrap();
+        let arg = format!("/v={}", nested.display());
+
+        let (virt, local) = parse_mount(&arg).expect("valid mount");
+
+        assert_eq!(virt, "/v");
+        assert_eq!(local, nested);
+    }
+
+    #[test]
+    fn parse_mount_rejects_missing_equals() {
+        let err = parse_mount("/no-equals-here").expect_err("must error");
+        assert!(
+            err.to_string().contains("Invalid mount format"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_mount_rejects_nonexistent_local_path() {
+        let err =
+            parse_mount("/v=/this/path/should/not/exist/at/all/xyzzy").expect_err("must error");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_mount_with_existing_file() {
+        // The right-hand side may be a file, not just a directory.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("hello.txt");
+        fs::write(&file, b"hi").unwrap();
+        let arg = format!("/data/hello.txt={}", file.display());
+
+        let (virt, local) = parse_mount(&arg).expect("valid mount");
+        assert_eq!(virt, "/data/hello.txt");
+        assert_eq!(local, file);
+    }
+
+    // --- write_leb128_u32 ----------------------------------------------------
+    //
+    // We pin the encoding for known boundary values, then round-trip a wider
+    // range through wasmparser's decoder so any drift in the encoder is
+    // caught immediately.
+
+    #[test]
+    fn leb128_known_encodings() {
+        let cases: &[(u32, &[u8])] = &[
+            (0, &[0x00]),
+            (1, &[0x01]),
+            (127, &[0x7f]),
+            (128, &[0x80, 0x01]),
+            (255, &[0xff, 0x01]),
+            (16_383, &[0xff, 0x7f]),
+            (16_384, &[0x80, 0x80, 0x01]),
+            (u32::MAX, &[0xff, 0xff, 0xff, 0xff, 0x0f]),
+        ];
+        for (value, expected) in cases {
+            let mut buf = Vec::new();
+            write_leb128_u32(&mut buf, *value);
+            assert_eq!(buf.as_slice(), *expected, "encoding for {}", value);
+        }
+    }
+
+    #[test]
+    fn leb128_round_trip_matches_wasmparser() {
+        // wasmparser is the decoder we always read these bytes back with,
+        // so use its `BinaryReader::read_var_u32` as the oracle.
+        let values: &[u32] = &[
+            0,
+            1,
+            7,
+            127,
+            128,
+            255,
+            1024,
+            16_383,
+            16_384,
+            65_535,
+            65_536,
+            1 << 20,
+            1 << 28,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        for &v in values {
+            let mut buf = Vec::new();
+            write_leb128_u32(&mut buf, v);
+            let mut reader = wasmparser::BinaryReader::new(&buf, 0);
+            let decoded = reader.read_var_u32().expect("decode");
+            assert_eq!(decoded, v, "round trip for {}", v);
+        }
+    }
+
+    // --- WASM helpers --------------------------------------------------------
+    //
+    // Hand-roll minimal valid bytes via wasm-encoder so the tests are
+    // deterministic and don't depend on whether the bundled adapters have
+    // been built.
+
+    fn empty_core_module_bytes() -> Vec<u8> {
+        wasm_encoder::Module::new().finish()
+    }
+
+    fn empty_component_bytes() -> Vec<u8> {
+        wasm_encoder::Component::new().finish()
+    }
+
+    #[test]
+    fn embed_into_bytes_rejects_core_module() {
+        let core = empty_core_module_bytes();
+        let err = embed_into_bytes(&core, &[]).expect_err("must error");
+        assert!(
+            err.to_string().contains("WASM Components"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn embed_into_bytes_rejects_garbage() {
+        // Bytes that aren't a WASM file at all should fall through the
+        // is_component check and report the same user-facing error.
+        let err = embed_into_bytes(&[0xff, 0xff, 0xff, 0xff], &[]).expect_err("must error");
+        assert!(
+            err.to_string().contains("WASM Components"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn embed_into_bytes_rejects_empty_input() {
+        let err = embed_into_bytes(&[], &[]).expect_err("must error");
+        assert!(
+            err.to_string().contains("WASM Components"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn embed_into_bytes_accepts_component_but_fails_without_monaka_globals() {
+        // A valid component without monaka globals should pass the
+        // is_component gate and fail later, with a different error.
+        let component = empty_component_bytes();
+        let err = embed_into_bytes(&component, &[]).expect_err("must error");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("WASM Components"),
+            "is_component check incorrectly fired for a real component: {msg}"
+        );
+        assert!(
+            msg.contains("MONAKA_FS") || msg.contains("module") || msg.contains("globals"),
+            "expected a downstream error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn has_monaka_globals_false_for_empty_module() {
+        assert!(!has_monaka_globals(&empty_core_module_bytes()));
+    }
+
+    #[test]
+    fn has_monaka_globals_false_for_module_with_other_exports() {
+        // Build a minimal module that exports a global named something else
+        // and confirm we don't pick it up as a monaka marker.
+        use wasm_encoder::{
+            ConstExpr, ExportKind, ExportSection, GlobalSection, GlobalType, Module, ValType,
+        };
+
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+
+        let mut exports = ExportSection::new();
+        exports.export("not_monaka", ExportKind::Global, 0);
+
+        let mut module = Module::new();
+        module.section(&globals);
+        module.section(&exports);
+        let bytes = module.finish();
+
+        assert!(!has_monaka_globals(&bytes));
+    }
+
+    #[test]
+    fn has_monaka_globals_true_when_monaka_export_present() {
+        // Build a module that exports a global named MONAKA_FS_FS_DATA_PTR
+        // so we exercise the positive path of the matcher.
+        use wasm_encoder::{
+            ConstExpr, ExportKind, ExportSection, GlobalSection, GlobalType, Module, ValType,
+        };
+
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+
+        let mut exports = ExportSection::new();
+        exports.export("MONAKA_FS_FS_DATA_PTR", ExportKind::Global, 0);
+
+        let mut module = Module::new();
+        module.section(&globals);
+        module.section(&exports);
+        let bytes = module.finish();
+
+        assert!(has_monaka_globals(&bytes));
+    }
+
+    #[test]
+    fn find_monaka_target_returns_none_for_component_without_monaka_module() {
+        let component = empty_component_bytes();
+        assert!(find_monaka_target(&component).is_none());
+    }
+}

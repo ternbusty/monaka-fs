@@ -3583,6 +3583,7 @@ version = "0.2.4"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "aws-smithy-async",
  "futures",
  "log",
  "tokio",
