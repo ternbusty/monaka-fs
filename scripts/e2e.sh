@@ -104,7 +104,10 @@ run_demo() {
     info "cmd: $cmd"
     info "log: $logfile"
 
-    if run_with_timeout 120 bash -c "$cmd" >"$logfile" 2>&1; then
+    # 5 minutes is enough headroom even for the host-trait examples that
+    # live in their own workspace and have to compile wasmtime/anyhow on
+    # a cold CI runner before they can run.
+    if run_with_timeout 300 bash -c "$cmd" >"$logfile" 2>&1; then
         local missing=""
         for expected in "$@"; do
             if ! grep -qF -- "$expected" "$logfile"; then
