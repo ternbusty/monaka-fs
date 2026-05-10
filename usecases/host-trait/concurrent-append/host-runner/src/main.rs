@@ -7,7 +7,8 @@
 //!   host-concurrent-runner [num_clients] [append_count]
 //!   host-concurrent-runner 3 50
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use std::thread;
 use vfs_host::{add_to_linker_with_vfs, VfsHostState};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::bindings::sync::Command;
+use wasmtime_wasi::p2::bindings::sync::Command;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

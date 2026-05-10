@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 // Re-export fs-core types so users don't need to depend on fs-core directly
 pub use fs_core::{Fs, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
-use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime::component::{HasSelf, ResourceTable};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 pub mod filesystem_preopens;
 pub mod filesystem_types;
@@ -320,21 +320,20 @@ impl Default for VfsHostState {
 }
 
 impl WasiView for VfsHostState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi_ctx
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.table,
+        }
     }
 }
 
 /// Helper function to convert fs-core error to WASI error code
 pub fn convert_fs_error(
     error: fs_core::FsError,
-) -> wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode {
+) -> wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode {
     use fs_core::FsError;
-    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
+    use wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode;
 
     match error {
         FsError::NotFound => ErrorCode::NoEntry,
@@ -351,21 +350,6 @@ pub fn convert_fs_error(
 // Public API exports
 // Users can import VfsHostState and related types from vfs_host crate root
 
-// Helper to annotate closure type for lifetime inference (same pattern as wasmtime-wasi)
-fn type_annotate_wasi<F>(val: F) -> F
-where
-    F: Fn(&mut VfsHostState) -> wasmtime_wasi::WasiImpl<&mut VfsHostState>,
-{
-    val
-}
-
-fn type_annotate_identity<F>(val: F) -> F
-where
-    F: Fn(&mut VfsHostState) -> &mut VfsHostState,
-{
-    val
-}
-
 /// Add WASI interfaces to linker with custom VFS filesystem implementation.
 ///
 /// This function registers all standard WASI interfaces but replaces the
@@ -374,69 +358,61 @@ where
 pub fn add_to_linker_with_vfs(
     linker: &mut wasmtime::component::Linker<VfsHostState>,
 ) -> Result<()> {
-    use wasmtime_wasi::WasiImpl;
+    use wasmtime_wasi::cli::{WasiCli, WasiCliView};
+    use wasmtime_wasi::clocks::{WasiClocks, WasiClocksView};
+    use wasmtime_wasi::p2::bindings;
+    use wasmtime_wasi::random::{WasiRandom, WasiRandomView};
+    use wasmtime_wasi::sockets::{WasiSockets, WasiSocketsView};
 
-    // Closure for standard WASI implementations (via WasiImpl)
-    let wasi_closure = type_annotate_wasi(|t| WasiImpl(t));
+    type T = VfsHostState;
 
-    // Closure for custom filesystem (returns VfsHostState directly)
-    let fs_closure = type_annotate_identity(|t| t);
+    // Standard non-blocking interfaces (no filesystem)
+    bindings::clocks::wall_clock::add_to_linker::<T, WasiClocks>(linker, T::clocks)?;
+    bindings::clocks::monotonic_clock::add_to_linker::<T, WasiClocks>(linker, T::clocks)?;
+    bindings::random::random::add_to_linker::<T, WasiRandom>(linker, T::random)?;
+    bindings::random::insecure::add_to_linker::<T, WasiRandom>(linker, T::random)?;
+    bindings::random::insecure_seed::add_to_linker::<T, WasiRandom>(linker, T::random)?;
+    bindings::cli::stdin::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::stdout::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::stderr::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::environment::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::terminal_input::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::terminal_output::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::terminal_stdin::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::terminal_stdout::add_to_linker::<T, WasiCli>(linker, T::cli)?;
+    bindings::cli::terminal_stderr::add_to_linker::<T, WasiCli>(linker, T::cli)?;
 
-    // Register standard WASI interfaces (non-filesystem)
-    wasmtime_wasi::bindings::clocks::wall_clock::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::clocks::monotonic_clock::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::io::error::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::sync::io::poll::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::sync::io::streams::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::random::random::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::random::insecure::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::random::insecure_seed::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::environment::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::stdin::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::stdout::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::stderr::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::terminal_input::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::terminal_output::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::terminal_stdin::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::terminal_stdout::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::cli::terminal_stderr::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::sync::sockets::tcp::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::sockets::tcp_create_socket::add_to_linker_get_host(
+    // Sockets (sync variants)
+    bindings::sync::sockets::tcp::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+    bindings::sync::sockets::udp::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+    bindings::sockets::tcp_create_socket::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+    bindings::sockets::udp_create_socket::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+    bindings::sockets::instance_network::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+    bindings::sockets::ip_name_lookup::add_to_linker::<T, WasiSockets>(linker, T::sockets)?;
+
+    // I/O (sync variants - error/poll/streams operate on ResourceTable)
+    wasmtime_wasi_io::bindings::wasi::io::error::add_to_linker::<T, HasSelf<ResourceTable>>(
         linker,
-        wasi_closure,
+        |t| &mut t.table,
     )?;
-    wasmtime_wasi::bindings::sync::sockets::udp::add_to_linker_get_host(linker, wasi_closure)?;
-    wasmtime_wasi::bindings::sockets::udp_create_socket::add_to_linker_get_host(
-        linker,
-        wasi_closure,
-    )?;
-    wasmtime_wasi::bindings::sockets::instance_network::add_to_linker_get_host(
-        linker,
-        wasi_closure,
-    )?;
-    wasmtime_wasi::bindings::sockets::ip_name_lookup::add_to_linker_get_host(linker, wasi_closure)?;
+    bindings::sync::io::poll::add_to_linker::<T, HasSelf<ResourceTable>>(linker, |t| &mut t.table)?;
+    bindings::sync::io::streams::add_to_linker::<T, HasSelf<ResourceTable>>(linker, |t| {
+        &mut t.table
+    })?;
 
-    // Register custom VFS filesystem implementation
-    // These use VfsHostState's Host trait implementations directly
-    wasmtime_wasi::bindings::sync::filesystem::types::add_to_linker_get_host(linker, fs_closure)?;
-    wasmtime_wasi::bindings::sync::filesystem::preopens::add_to_linker_get_host(
-        linker, fs_closure,
-    )?;
+    // Custom VFS filesystem implementation - implemented on VfsHostState directly
+    bindings::sync::filesystem::types::add_to_linker::<T, HasSelf<VfsHostState>>(linker, |t| t)?;
+    bindings::sync::filesystem::preopens::add_to_linker::<T, HasSelf<VfsHostState>>(linker, |t| t)?;
 
-    // cli::exit requires LinkOptions. Use default
-    let exit_options = wasmtime_wasi::bindings::cli::exit::LinkOptions::default();
-    wasmtime_wasi::bindings::cli::exit::add_to_linker_get_host(
-        linker,
-        &exit_options,
-        wasi_closure,
-    )?;
+    // Interfaces requiring LinkOptions
+    let exit_options = bindings::cli::exit::LinkOptions::default();
+    bindings::cli::exit::add_to_linker::<T, WasiCli>(linker, &exit_options, T::cli)?;
 
-    // sockets::network requires LinkOptions. Use default
-    let network_options = wasmtime_wasi::bindings::sockets::network::LinkOptions::default();
-    wasmtime_wasi::bindings::sockets::network::add_to_linker_get_host(
+    let network_options = bindings::sockets::network::LinkOptions::default();
+    bindings::sockets::network::add_to_linker::<T, WasiSockets>(
         linker,
         &network_options,
-        wasi_closure,
+        T::sockets,
     )?;
 
     Ok(())

@@ -3,7 +3,8 @@
 //! Runs WASM benchmark app using vfs-host with S3 synchronization.
 //! Supports full S3 passthrough mode (realtime + read-through + metadata sync).
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use std::sync::Arc;
 use std::time::Instant;
 use wasmtime::component::Component;
@@ -13,8 +14,10 @@ use vfs_host::{self, VfsHostState};
 
 /// Initialize VFS with S3 sync (async operation)
 async fn init_vfs_with_s3() -> Result<VfsHostState> {
-    let bucket = std::env::var("VFS_S3_BUCKET")
-        .context("VFS_S3_BUCKET environment variable is required")?;
+    let bucket = anyhow::Context::context(
+        std::env::var("VFS_S3_BUCKET"),
+        "VFS_S3_BUCKET environment variable is required",
+    )?;
     let prefix = std::env::var("VFS_S3_PREFIX").unwrap_or_else(|_| "vfs/".to_string());
 
     log::info!("Initializing VFS with S3 sync...");
@@ -48,7 +51,7 @@ fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState, wasm_path: &str) -> R
     let component = Component::from_file(engine, wasm_path)
         .context("Failed to load WASM component")?;
 
-    use wasmtime_wasi::bindings::sync::Command;
+    use wasmtime_wasi::p2::bindings::sync::Command;
     let command = Command::instantiate(&mut store, &component, &linker)
         .context("Failed to instantiate WASM")?;
 
@@ -104,8 +107,11 @@ async fn main() -> Result<()> {
     let vfs_host_state = tokio::task::spawn_blocking(move || {
         run_wasm(&engine_clone, vfs_host_state, &wasm_path_clone)
     })
-    .await
-    .context("WASM execution thread panicked")??;
+    .await;
+    let vfs_host_state = anyhow::Context::context(
+        vfs_host_state,
+        "WASM execution thread panicked",
+    )??;
 
     let bench_elapsed = bench_start.elapsed();
     log::info!("WASM execution time: {:.3}ms", bench_elapsed.as_secs_f64() * 1000.0);

@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -68,7 +69,7 @@ fn run_wasm_handler(
     vfs_host::add_to_linker_with_vfs(&mut linker)?;
 
     // Instantiate handler
-    use wasmtime_wasi::bindings::sync::Command;
+    use wasmtime_wasi::p2::bindings::sync::Command;
     let command = Command::instantiate(&mut store, handler_component, &linker)
         .context("Failed to instantiate handler")?;
 

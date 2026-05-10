@@ -7,10 +7,12 @@ use bytes::Bytes;
 use fs_core::Fs;
 use std::sync::Arc;
 use wasmtime::component::Resource;
-use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode;
-use wasmtime_wasi::{
-    HostInputStream, HostOutputStream, StreamError, StreamResult, Subscribe, TrappableError,
+use wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode;
+use wasmtime_wasi::p2::{
+    InputStream as HostInputStream, OutputStream as HostOutputStream, Pollable as Subscribe,
+    StreamError, StreamResult,
 };
+use wasmtime_wasi::TrappableError;
 
 #[cfg(feature = "s3-sync")]
 use super::SyncHooks;
@@ -143,23 +145,24 @@ impl FsOutputStreamWrapper {
     }
 }
 
-impl wasmtime_wasi::bindings::sync::filesystem::types::Host for VfsHostState {
+impl wasmtime_wasi::p2::bindings::sync::filesystem::types::Host for VfsHostState {
     fn filesystem_error_code(
         &mut self,
-        err: Resource<anyhow::Error>,
-    ) -> Result<Option<ErrorCode>, anyhow::Error> {
+        err: Resource<wasmtime::Error>,
+    ) -> Result<Option<ErrorCode>, wasmtime::Error> {
         let _error = self.table.get(&err)?;
         Ok(None)
     }
 
     fn convert_error_code(
         &mut self,
-        err: TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
-    ) -> Result<wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode, anyhow::Error> {
+        err: TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
+    ) -> Result<wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode, wasmtime::Error>
+    {
         let nonsync_error = err.downcast()?;
 
-        use wasmtime_wasi::bindings::filesystem::types::ErrorCode as NonSync;
-        use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode as Sync;
+        use wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode as NonSync;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode as Sync;
 
         let sync_error = match nonsync_error {
             NonSync::Access => Sync::Access,
@@ -209,14 +212,14 @@ impl VfsHostState {
     /// Helper: Get fs-core fd and path from host descriptor resource
     fn get_fs_descriptor(
         &self,
-        host_desc: &Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<(u32, Option<String>), anyhow::Error> {
+        host_desc: &Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(u32, Option<String>), wasmtime::Error> {
         let rep = host_desc.rep();
         let wrapper_resource: Resource<FsDescriptorWrapper> = Resource::new_borrow(rep);
         let wrapper = self
             .table
             .get(&wrapper_resource)
-            .map_err(|e| anyhow::anyhow!("Failed to get descriptor from table: {}", e))?;
+            .map_err(|e| wasmtime::format_err!("Failed to get descriptor from table: {}", e))?;
         Ok((wrapper.fd, wrapper.path.clone()))
     }
 
@@ -260,8 +263,12 @@ impl HostInputStream for FsInputStreamWrapper {
             .shared_vfs
             .read_at(self.fd, offset, &mut buf)
             .map_err(|e| {
-                StreamError::LastOperationFailed(anyhow::anyhow!("read_at failed: {:?}", e))
+                StreamError::LastOperationFailed(wasmtime::format_err!("read_at failed: {:?}", e))
             })?;
+
+        if n == 0 && size > 0 {
+            return Err(StreamError::Closed);
+        }
 
         buf.truncate(n);
         self.offset += n as u64;
@@ -291,7 +298,7 @@ impl HostOutputStream for FsOutputStreamWrapper {
                     .shared_vfs
                     .write_at(self.fd, offset, &bytes)
                     .map_err(|e| {
-                        StreamError::LastOperationFailed(anyhow::anyhow!(
+                        StreamError::LastOperationFailed(wasmtime::format_err!(
                             "write_at failed: {:?}",
                             e
                         ))
@@ -302,7 +309,7 @@ impl HostOutputStream for FsOutputStreamWrapper {
             None => {
                 // Append mode: use append_write
                 self.shared_vfs.append_write(self.fd, &bytes).map_err(|e| {
-                    StreamError::LastOperationFailed(anyhow::anyhow!(
+                    StreamError::LastOperationFailed(wasmtime::format_err!(
                         "append_write failed: {:?}",
                         e
                     ))
@@ -338,15 +345,15 @@ impl Drop for FsOutputStreamWrapper {
     }
 }
 
-impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHostState {
+impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for VfsHostState {
     fn read(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         len: u64,
         offset: u64,
     ) -> Result<
         (Vec<u8>, bool),
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
@@ -366,10 +373,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn write(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         buffer: Vec<u8>,
         offset: u64,
-    ) -> Result<u64, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<u64, TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>>
+    {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -385,8 +393,8 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn drop(
         &mut self,
-        rep: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<(), anyhow::Error> {
+        rep: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), wasmtime::Error> {
         let wrapper_resource: Resource<FsDescriptorWrapper> = Resource::new_own(rep.rep());
         let wrapper = self.table.delete(wrapper_resource)?;
 
@@ -397,11 +405,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn read_via_stream(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         offset: u64,
     ) -> Result<
-        Resource<Box<dyn wasmtime_wasi::HostInputStream>>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Resource<wasmtime_wasi::p2::DynInputStream>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _path) = self
             .get_fs_descriptor(&self_)
@@ -421,7 +429,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         let resource = self
             .table
-            .push(Box::new(wrapper) as Box<dyn HostInputStream>)
+            .push(Box::new(wrapper) as wasmtime_wasi::p2::DynInputStream)
             .map_err(TrappableError::trap)?;
 
         Ok(resource)
@@ -429,11 +437,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn write_via_stream(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         offset: u64,
     ) -> Result<
-        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Resource<wasmtime_wasi::p2::DynOutputStream>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, path) = self
             .get_fs_descriptor(&self_)
@@ -457,7 +465,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         let resource = self
             .table
-            .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+            .push(Box::new(wrapper) as wasmtime_wasi::p2::DynOutputStream)
             .map_err(TrappableError::trap)?;
 
         Ok(resource)
@@ -465,10 +473,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn append_via_stream(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        Resource<Box<dyn wasmtime_wasi::HostOutputStream>>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Resource<wasmtime_wasi::p2::DynOutputStream>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, path) = self
             .get_fs_descriptor(&self_)
@@ -489,7 +497,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
         let resource = self
             .table
-            .push(Box::new(wrapper) as Box<dyn HostOutputStream>)
+            .push(Box::new(wrapper) as wasmtime_wasi::p2::DynOutputStream)
             .map_err(TrappableError::trap)?;
 
         Ok(resource)
@@ -497,41 +505,41 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn advise(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         _offset: u64,
         _len: u64,
-        _advice: wasmtime_wasi::bindings::sync::filesystem::types::Advice,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        _advice: wasmtime_wasi::p2::bindings::sync::filesystem::types::Advice,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // Advisory hints: can safely ignore
         Ok(())
     }
 
     fn sync_data(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // In-memory FS: sync is no-op
         Ok(())
     }
 
     fn get_flags(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorFlags,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         // Return read+write flags as default
-        use wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorFlags;
         Ok(DescriptorFlags::READ | DescriptorFlags::WRITE)
     }
 
     fn get_type(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorType,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
@@ -542,7 +550,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             .fstat(fd)
             .map_err(convert_fs_error_to_trappable)?;
 
-        use wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorType;
         if meta.is_dir {
             Ok(DescriptorType::Directory)
         } else {
@@ -552,9 +560,9 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn set_size(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         size: u64,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -568,32 +576,32 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn set_times(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _data_access_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
-        _data_modification_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _data_access_timestamp: wasmtime_wasi::p2::bindings::sync::filesystem::types::NewTimestamp,
+        _data_modification_timestamp: wasmtime_wasi::p2::bindings::sync::filesystem::types::NewTimestamp,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // fs-core doesn't support setting timestamps
         Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
     }
 
     fn set_times_at(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _path_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::PathFlags,
         _path: String,
-        _data_access_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
-        _data_modification_timestamp: wasmtime_wasi::bindings::sync::filesystem::types::NewTimestamp,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        _data_access_timestamp: wasmtime_wasi::p2::bindings::sync::filesystem::types::NewTimestamp,
+        _data_modification_timestamp: wasmtime_wasi::p2::bindings::sync::filesystem::types::NewTimestamp,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // fs-core doesn't support setting timestamps
         Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
     }
 
     fn read_directory(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Resource<wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
@@ -618,20 +626,24 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             assert!(
                 size_of::<Resource<FsDirectoryEntryStreamWrapper>>()
                     == size_of::<
-                        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+                        Resource<
+                            wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream,
+                        >,
                     >()
             );
             assert!(
                 align_of::<Resource<FsDirectoryEntryStreamWrapper>>()
                     == align_of::<
-                        Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+                        Resource<
+                            wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream,
+                        >,
                     >()
             );
         };
         let host_stream = unsafe {
             std::mem::transmute::<
                 Resource<FsDirectoryEntryStreamWrapper>,
-                Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+                Resource<wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream>,
             >(wrapper_resource)
         };
         Ok(host_stream)
@@ -639,16 +651,16 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn sync(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         Ok(())
     }
 
     fn create_directory_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -663,10 +675,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn stat(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorStat,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
@@ -682,12 +694,12 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn stat_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _path_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::PathFlags,
         path: String,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorStat,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
@@ -704,26 +716,26 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn link_at(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _old_path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _old_path_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::PathFlags,
         _old_path: String,
-        _new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _new_descriptor: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         _new_path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // fs-core doesn't support hard links
         Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
     }
 
     fn open_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _path_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::PathFlags,
         path: String,
-        open_flags: wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags,
-        flags: wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags,
+        open_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::OpenFlags,
+        flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorFlags,
     ) -> Result<
-        Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
@@ -741,7 +753,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let mut fs_flags = 0u32;
 
         // Read/write mode
-        use wasmtime_wasi::bindings::sync::filesystem::types::DescriptorFlags;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorFlags;
         if flags.contains(DescriptorFlags::READ) && flags.contains(DescriptorFlags::WRITE) {
             fs_flags |= O_RDWR;
         } else if flags.contains(DescriptorFlags::WRITE) {
@@ -751,7 +763,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         }
 
         // Open flags
-        use wasmtime_wasi::bindings::sync::filesystem::types::OpenFlags;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::OpenFlags;
         if open_flags.contains(OpenFlags::CREATE) {
             fs_flags |= O_CREAT;
         }
@@ -777,19 +789,21 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
             use std::mem::{align_of, size_of};
             assert!(
                 size_of::<Resource<FsDescriptorWrapper>>()
-                    == size_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
-                    )
+                    == size_of::<
+                        Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+                    >()
             );
             assert!(
                 align_of::<Resource<FsDescriptorWrapper>>()
-                    == align_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
-                    )
+                    == align_of::<
+                        Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+                    >()
             );
         };
         let host_descriptor = unsafe {
             std::mem::transmute::<
                 Resource<FsDescriptorWrapper>,
-                Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+                Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
             >(wrapper_resource)
         };
         Ok(host_descriptor)
@@ -797,18 +811,19 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn readlink_at(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         _path: String,
-    ) -> Result<String, TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<String, TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>>
+    {
         // fs-core doesn't support symlinks
         Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
     }
 
     fn remove_directory_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -823,11 +838,11 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn rename_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         old_path: String,
-        _new_descriptor: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _new_descriptor: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         new_path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -843,19 +858,19 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn symlink_at(
         &mut self,
-        _self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         _old_path: String,
         _new_path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         // fs-core doesn't support symlinks
         Err(convert_sync_to_nonsync_error(ErrorCode::Unsupported))
     }
 
     fn unlink_file_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         path: String,
-    ) -> Result<(), TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>> {
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
@@ -876,9 +891,9 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn is_same_object(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        other: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-    ) -> Result<bool, anyhow::Error> {
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        other: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<bool, wasmtime::Error> {
         let (fd1, _) = self.get_fs_descriptor(&self_)?;
         let (fd2, _) = self.get_fs_descriptor(&other)?;
         Ok(fd1 == fd2)
@@ -886,10 +901,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
 
     fn metadata_hash(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::MetadataHashValue,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (fd, _) = self
             .get_fs_descriptor(&self_)
@@ -904,17 +919,22 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let lower = meta.size;
         let upper = meta.modified;
 
-        Ok(wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue { lower, upper })
+        Ok(
+            wasmtime_wasi::p2::bindings::sync::filesystem::types::MetadataHashValue {
+                lower,
+                upper,
+            },
+        )
     }
 
     fn metadata_hash_at(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
-        _path_flags: wasmtime_wasi::bindings::sync::filesystem::types::PathFlags,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        _path_flags: wasmtime_wasi::p2::bindings::sync::filesystem::types::PathFlags,
         path: String,
     ) -> Result<
-        wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        wasmtime_wasi::p2::bindings::sync::filesystem::types::MetadataHashValue,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let (_, dir_path) = self
             .get_fs_descriptor(&self_)
@@ -929,24 +949,31 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDescriptor for VfsHos
         let lower = meta.size;
         let upper = meta.modified;
 
-        Ok(wasmtime_wasi::bindings::sync::filesystem::types::MetadataHashValue { lower, upper })
+        Ok(
+            wasmtime_wasi::p2::bindings::sync::filesystem::types::MetadataHashValue {
+                lower,
+                upper,
+            },
+        )
     }
 }
 
-impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream for VfsHostState {
+impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDirectoryEntryStream
+    for VfsHostState
+{
     fn read_directory_entry(
         &mut self,
-        self_: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream>,
     ) -> Result<
-        Option<wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry>,
-        TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode>,
+        Option<wasmtime_wasi::p2::bindings::sync::filesystem::types::DirectoryEntry>,
+        TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>,
     > {
         let rep = self_.rep();
         let wrapper_resource: Resource<FsDirectoryEntryStreamWrapper> = Resource::new_borrow(rep);
 
         // Get mutable access to the stream wrapper
         let wrapper = self.table.get_mut(&wrapper_resource).map_err(|e| {
-            TrappableError::trap(anyhow::anyhow!(
+            TrappableError::trap(wasmtime::format_err!(
                 "Failed to get directory stream from table: {}",
                 e
             ))
@@ -959,7 +986,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
         let (name, is_dir) = wrapper.entries[wrapper.position].clone();
         wrapper.position += 1;
 
-        use wasmtime_wasi::bindings::sync::filesystem::types::DescriptorType;
+        use wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorType;
         let type_ = if is_dir {
             DescriptorType::Directory
         } else {
@@ -967,14 +994,14 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
         };
 
         Ok(Some(
-            wasmtime_wasi::bindings::sync::filesystem::types::DirectoryEntry { type_, name },
+            wasmtime_wasi::p2::bindings::sync::filesystem::types::DirectoryEntry { type_, name },
         ))
     }
 
     fn drop(
         &mut self,
-        rep: Resource<wasmtime_wasi::bindings::filesystem::types::DirectoryEntryStream>,
-    ) -> Result<(), anyhow::Error> {
+        rep: Resource<wasmtime_wasi::p2::bindings::filesystem::types::DirectoryEntryStream>,
+    ) -> Result<(), wasmtime::Error> {
         let wrapper_resource: Resource<FsDirectoryEntryStreamWrapper> =
             Resource::new_own(rep.rep());
         self.table.delete(wrapper_resource)?;
@@ -984,10 +1011,10 @@ impl wasmtime_wasi::bindings::sync::filesystem::types::HostDirectoryEntryStream 
 
 /// Helper to convert sync ErrorCode to non-sync ErrorCode for TrappableError
 fn convert_sync_to_nonsync_error(
-    sync_error: wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode,
-) -> TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode> {
-    use wasmtime_wasi::bindings::filesystem::types::ErrorCode as NonSync;
-    use wasmtime_wasi::bindings::sync::filesystem::types::ErrorCode as Sync;
+    sync_error: wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode,
+) -> TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode> {
+    use wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode as NonSync;
+    use wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode as Sync;
 
     let nonsync_error = match sync_error {
         Sync::Access => NonSync::Access,
@@ -1035,7 +1062,7 @@ fn convert_sync_to_nonsync_error(
 /// Helper to convert fs-core error to TrappableError
 fn convert_fs_error_to_trappable(
     error: fs_core::FsError,
-) -> TrappableError<wasmtime_wasi::bindings::filesystem::types::ErrorCode> {
+) -> TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode> {
     let sync_error = super::convert_fs_error(error);
     convert_sync_to_nonsync_error(sync_error)
 }
@@ -1043,8 +1070,8 @@ fn convert_fs_error_to_trappable(
 /// Helper to convert fs-core Metadata to WASI DescriptorStat
 fn convert_metadata_to_stat(
     meta: &fs_core::Metadata,
-) -> wasmtime_wasi::bindings::sync::filesystem::types::DescriptorStat {
-    use wasmtime_wasi::bindings::sync::filesystem::types::{
+) -> wasmtime_wasi::p2::bindings::sync::filesystem::types::DescriptorStat {
+    use wasmtime_wasi::p2::bindings::sync::filesystem::types::{
         Datetime, DescriptorStat, DescriptorType,
     };
 

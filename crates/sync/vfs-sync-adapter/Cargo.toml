@@ -14,7 +14,7 @@ fs-core = { path = "../../core/fs-core" }
 log = "0.4"
 
 # WIT bindgen for WASI types
-wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+wit-bindgen = { version = "0.57.1", default-features = false, features = ["realloc", "macros", "bitflags"] }
 
 # Async runtime (single-threaded for WASI)
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }

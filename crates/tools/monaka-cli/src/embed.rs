@@ -338,18 +338,14 @@ fn find_monaka_addresses(module_bytes: &[u8]) -> Result<(u32, u32)> {
             for global in reader {
                 let global = global?;
                 if global_count == ptr_idx {
-                    let mut expr_reader = global.init_expr.get_binary_reader();
-                    if let Ok(wasmparser::Operator::I32Const { value }) =
-                        expr_reader.read_operator()
-                    {
+                    let mut ops = global.init_expr.get_operators_reader();
+                    if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
                         ptr_addr = Some(value as u32);
                     }
                 }
                 if global_count == len_idx {
-                    let mut expr_reader = global.init_expr.get_binary_reader();
-                    if let Ok(wasmparser::Operator::I32Const { value }) =
-                        expr_reader.read_operator()
-                    {
+                    let mut ops = global.init_expr.get_operators_reader();
+                    if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
                         len_addr = Some(value as u32);
                     }
                 }
@@ -563,14 +559,13 @@ fn modify_core_module(
                             memory_index,
                             offset_expr,
                         } => {
-                            let mut expr_reader = offset_expr.get_binary_reader();
-                            let offset = if let Ok(wasmparser::Operator::I32Const { value }) =
-                                expr_reader.read_operator()
-                            {
-                                value
-                            } else {
-                                bail!("Unsupported data segment offset expression");
-                            };
+                            let mut ops = offset_expr.get_operators_reader();
+                            let offset =
+                                if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
+                                    value
+                                } else {
+                                    bail!("Unsupported data segment offset expression");
+                                };
                             data_section.segment(DataSegment {
                                 mode: DataSegmentMode::Active {
                                     memory_index,

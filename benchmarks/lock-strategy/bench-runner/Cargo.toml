@@ -12,8 +12,8 @@ path = "src/bench_fine.rs"
 
 [dependencies]
 # WASM runtime
-wasmtime = { version = "27.0", features = ["component-model"] }
-wasmtime-wasi = "27.0"
+wasmtime = { version = "44.0.1", features = ["component-model"] }
+wasmtime-wasi = "44.0.1"
 
 # VFS host implementation (fine-grained locking)
 vfs-host = { path = "../../../crates/hosts/vfs-host" }
