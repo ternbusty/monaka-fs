@@ -38,23 +38,30 @@ jobs:
         with:
           components: clippy
 
+      # Per-job cache prefix. `actions/cache` follows first-saver-wins
+      # semantics, so without a per-job prefix the fastest job (Lint)
+      # locks in a thin cache that the slower jobs (Build / E2E) can
+      # never overwrite, leaving sub-workspace deps perpetually missing.
+      # Each job now saves under its own prefix; E2E intentionally
+      # shares the `build-` prefix with Build so its `needs: build`
+      # warmup actually warms.
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-lint-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-git-lint-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-lint-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -79,13 +86,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-build-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-git-build-${{ hashFiles('**/Cargo.lock') }}
 
       # Same cache path/key the e2e job uses, including the sub-workspace
       # target dirs the host-trait runtime-linker examples maintain. The
@@ -105,7 +112,7 @@ jobs:
             usecases/host-trait/sensor-pipeline/sensor-ingest/target
             usecases/host-trait/sensor-pipeline/sensor-process/target
             examples/static-composition/s3-sync/target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-build-${{ hashFiles('**/Cargo.lock') }}
 
       # The four steps that used to live here
       #   - `cargo build --all-features` (native debug)
@@ -128,7 +135,7 @@ jobs:
       # Pre-warm the parts e2e needs: the demo apps that get composed via
       # monaka, the monaka CLI bundle itself, and the host-trait
       # runtime-linker examples that live in their own Cargo workspaces.
-      - name: Build workspace demo WASMs (release + debug)
+      - name: Pre-build workspace demo WASMs
         run: |
           cargo build --release --target wasm32-wasip2 \
             -p demo-writer -p demo-reader -p demo-fs-operations \
@@ -171,19 +178,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-git-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run tests
         run: cargo test --all-features --verbose
@@ -224,18 +231,22 @@ jobs:
         with:
           targets: wasm32-wasip2
 
-      # Share cache with format / lint / build / test jobs.
+      # Share the `build-` cache prefix with the Build job (we depend on
+      # it via `needs: build`, so its Post Cache step has already
+      # finished and saved a fully populated cache by the time this job
+      # restores). Saving under the same key here is a no-op when the
+      # restore was an exact hit.
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-build-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-git-build-${{ hashFiles('**/Cargo.lock') }}
 
       # The host-trait runtime-linker examples and usecases each live in
       # their own Cargo workspace, so they each get their own `target/`
@@ -256,7 +267,7 @@ jobs:
             usecases/host-trait/sensor-pipeline/sensor-ingest/target
             usecases/host-trait/sensor-pipeline/sensor-process/target
             examples/static-composition/s3-sync/target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-target-build-${{ hashFiles('**/Cargo.lock') }}
 
       # E2E-specific tooling. wac-cli builds from source (~1-2 min) so cache
       # the resulting binary keyed on its pinned version.
