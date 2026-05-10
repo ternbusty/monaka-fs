@@ -185,10 +185,25 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
+      # The host-trait runtime-linker examples and usecases each live in
+      # their own Cargo workspace, so they each get their own `target/`
+      # directory that the root cache doesn't cover. Caching them too makes
+      # the e2e job's pre-flight a relink instead of a full wasmtime + AWS
+      # SDK compile from scratch.
       - name: Cache cargo build target
         uses: actions/cache@v4
         with:
-          path: target
+          path: |
+            target
+            examples/host-trait/runtime-linker/target
+            examples/host-trait/runtime-linker-demo-fs/target
+            examples/host-trait/runtime-linker-s3/target
+            usecases/host-trait/sensor-pipeline/runtime-linker/target
+            usecases/host-trait/concurrent-append/host-runner/target
+            usecases/host-trait/concurrent-append/append-client/target
+            usecases/host-trait/sensor-pipeline/sensor-ingest/target
+            usecases/host-trait/sensor-pipeline/sensor-process/target
+            examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       # E2E-specific tooling. wac-cli builds from source (~1-2 min) so cache
