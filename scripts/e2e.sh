@@ -584,9 +584,12 @@ else
             --env "AWS_REGION=ap-northeast-1"
         {
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$rt_log_dir/r1-1.log" 2>&1 &
+            rp1=$!
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$rt_log_dir/r1-2.log" 2>&1 &
+            rp2=$!
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$rt_log_dir/r1-3.log" 2>&1 &
-            wait
+            rp3=$!
+            wait $rp1 $rp2 $rp3
         } || true
         sleep 4
         stop_rpc_server
@@ -603,9 +606,12 @@ else
             --env "AWS_REGION=ap-northeast-1"
         {
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=4 "$RPC_LOGGER" >"$rt_log_dir/r2-1.log" 2>&1 &
+            rp4=$!
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=5 "$RPC_LOGGER" >"$rt_log_dir/r2-2.log" 2>&1 &
+            rp5=$!
             run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=6 "$RPC_LOGGER" >"$rt_log_dir/r2-3.log" 2>&1 &
-            wait
+            rp6=$!
+            wait $rp4 $rp5 $rp6
         } || true
         sleep 4
         stop_rpc_server
