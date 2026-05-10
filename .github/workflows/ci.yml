@@ -107,22 +107,20 @@ jobs:
             examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      # Release builds only. Debug builds are exercised implicitly by the
-      # Test job's `cargo test --all-features`, so the explicit
-      # `cargo build --all-features` and `make build-wasm` runs that used
-      # to live here were duplicate work. The release artifacts are what
-      # the e2e job consumes downstream.
-      - name: Build release (native)
-        run: cargo build --release --all-features --verbose
-
-      - name: Build release (WASM)
-        run: make build-wasm-release
-
-      # Pre-warm the parts the e2e job needs but `cargo build --workspace`
-      # alone doesn't cover: the demo apps that get composed via monaka,
-      # the s3-sync feature variants, the monaka CLI itself, and the
-      # host-trait runtime-linker examples that live in their own
-      # Cargo workspaces.
+      # The release validation (`cargo build --release --all-features` +
+      # `make build-wasm-release`) that used to live here was duplicate
+      # work: `make build-cli` already does the same release WASM builds
+      # for the bundled adapters internally, the host-trait runtime-linker
+      # examples below trigger native release compiles of vfs-host /
+      # fs-core, and Test job covers debug builds via cargo test. Release
+      # validation that's actually about shipping (cargo publish, asset
+      # uploads) lives in release.yml, not here.
+      #
+      # What stays in Build is the warmup the e2e job consumes downstream:
+      # the demo apps that get composed via monaka, the monaka CLI bundle
+      # itself, and the host-trait runtime-linker examples that live in
+      # their own Cargo workspaces and otherwise force the e2e pre-flight
+      # to compile wasmtime / aws-sdk / tokio from scratch.
       - name: Build workspace demo WASMs (release + debug)
         run: |
           cargo build --release --target wasm32-wasip2 \
