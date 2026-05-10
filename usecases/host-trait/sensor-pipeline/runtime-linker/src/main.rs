@@ -6,7 +6,8 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
@@ -40,7 +41,7 @@ fn run_sensor_pipeline(engine: &Engine) -> Result<()> {
     let ingest_component =
         Component::from_file(engine, &ingest_path).context("Failed to load sensor-ingest.wasm")?;
 
-    use wasmtime_wasi::bindings::sync::Command;
+    use wasmtime_wasi::p2::bindings::sync::Command;
     let ingest_command = Command::instantiate(&mut store1, &ingest_component, &linker1)
         .context("Failed to instantiate sensor-ingest")?;
 

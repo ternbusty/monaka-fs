@@ -5,15 +5,15 @@
 use super::{FsDescriptorWrapper, VfsHostState};
 use wasmtime::component::Resource;
 
-impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState {
+impl wasmtime_wasi::p2::bindings::sync::filesystem::preopens::Host for VfsHostState {
     fn get_directories(
         &mut self,
     ) -> Result<
         Vec<(
-            Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+            Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
             String,
         )>,
-        anyhow::Error,
+        wasmtime::Error,
     > {
         log::debug!("[VFS-HOST] get_directories() called");
 
@@ -25,7 +25,7 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
         let fd = self
             .shared_vfs
             .open_path_with_flags("/", O_RDONLY | O_DIRECTORY)
-            .map_err(|e| anyhow::anyhow!("Failed to open root directory: {:?}", e))?;
+            .map_err(|e| wasmtime::format_err!("Failed to open root directory: {:?}", e))?;
 
         log::debug!("[VFS-HOST] Opened root directory with fd={}", fd);
 
@@ -45,19 +45,21 @@ impl wasmtime_wasi::bindings::sync::filesystem::preopens::Host for VfsHostState 
             use std::mem::{align_of, size_of};
             assert!(
                 size_of::<Resource<FsDescriptorWrapper>>()
-                    == size_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
-                    )
+                    == size_of::<
+                        Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+                    >()
             );
             assert!(
                 align_of::<Resource<FsDescriptorWrapper>>()
-                    == align_of::<Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>>(
-                    )
+                    == align_of::<
+                        Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+                    >()
             );
         };
         let host_descriptor = unsafe {
             std::mem::transmute::<
                 Resource<FsDescriptorWrapper>,
-                Resource<wasmtime_wasi::bindings::filesystem::types::Descriptor>,
+                Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
             >(wrapper_resource)
         };
 

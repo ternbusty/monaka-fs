@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
 
@@ -39,7 +40,7 @@ fn test_shared_vfs_across_apps(engine: &Engine) -> Result<()> {
     let writer_component =
         Component::from_file(engine, writer_path).context("Failed to load demo-writer.wasm")?;
 
-    use wasmtime_wasi::bindings::sync::Command;
+    use wasmtime_wasi::p2::bindings::sync::Command;
     let writer_command = Command::instantiate(&mut store1, &writer_component, &linker1)
         .context("Failed to instantiate demo-writer")?;
 

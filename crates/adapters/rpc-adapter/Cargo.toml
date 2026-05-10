@@ -9,9 +9,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 vfs-rpc-protocol = { path = "../../rpc/vfs-rpc-protocol" }
-wit-bindgen = { version = "0.36", default-features = false, features = ["realloc", "macros"] }
+wit-bindgen = { version = "0.57.1", default-features = false, features = ["realloc", "macros", "bitflags"] }
 prost = "0.13"
 log = "0.4"
 
 [build-dependencies]
-wit-bindgen = "0.36"
+wit-bindgen = "0.57.1"

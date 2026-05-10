@@ -15,11 +15,11 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 
 # WASM manipulation
-wasm-encoder = "0.225"
-wasmparser = "0.225"
+wasm-encoder = "0.248"
+wasmparser = "0.248"
 
 # WASM composition (wac plug API)
-wac-graph = "0.9"
+wac-graph = "0.10"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

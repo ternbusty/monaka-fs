@@ -2,7 +2,8 @@
 
 mod common;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
+use wasmtime::error::Context as _;
 use common::{
     print_csv_header, setup_test_data, verify_benchmark_results, BenchConfig, BenchResult,
     BenchTimer, VfsOps, DATA_SIZES, OPS_PER_THREAD, SCENARIOS, THREAD_COUNTS,
@@ -13,7 +14,7 @@ use std::thread;
 use vfs_host::{add_to_linker_with_vfs, Fs, VfsHostState};
 use wasmtime::component::Component;
 use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::bindings::sync::Command;
+use wasmtime_wasi::p2::bindings::sync::Command;
 
 const STRATEGY_NAME: &str = "lock-fine";
 
