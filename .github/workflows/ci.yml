@@ -107,23 +107,27 @@ jobs:
             examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build native packages
-        run: cargo build --all-features --verbose
-
-      - name: Build WASM packages
-        run: make build-wasm
-
-      - name: Build release (native)
-        run: cargo build --release --all-features --verbose
-
-      - name: Build release (WASM)
-        run: make build-wasm-release
-
-      # Pre-warm the parts the e2e job needs but `cargo build --workspace`
-      # alone doesn't cover: the demo apps that get composed via monaka,
-      # the s3-sync feature variants, the monaka CLI itself, and the
-      # host-trait runtime-linker examples that live in their own
-      # Cargo workspaces.
+      # The four steps that used to live here
+      #   - `cargo build --all-features` (native debug)
+      #   - `make build-wasm` (debug WASM)
+      #   - `cargo build --release --all-features`
+      #   - `make build-wasm-release`
+      # were duplicate work:
+      #   - `make build-cli` below already runs the release WASM builds
+      #     for vfs-adapter, rpc-adapter and vfs-rpc-server (with both the
+      #     s3-sync and plain feature variants) before linking monaka.
+      #   - The host-trait runtime-linker pre-builds further down trigger
+      #     native release compiles of vfs-host / fs-core / vfs-sync-host
+      #     transitively.
+      #   - Debug-mode validation already comes from the Test job's
+      #     `cargo test --all-features`.
+      # Release-build validation tied to shipping (cargo publish, asset
+      # uploads) lives in release.yml. This job is just here to warm the
+      # cargo cache for the e2e job.
+      #
+      # Pre-warm the parts e2e needs: the demo apps that get composed via
+      # monaka, the monaka CLI bundle itself, and the host-trait
+      # runtime-linker examples that live in their own Cargo workspaces.
       - name: Build workspace demo WASMs (release + debug)
         run: |
           cargo build --release --target wasm32-wasip2 \
