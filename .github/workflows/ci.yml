@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt
 
@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: clippy
 
@@ -68,8 +68,10 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      # Match the e2e job's pin so the warmed cargo cache is reusable
+      # across both jobs.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           targets: wasm32-wasip2
 
@@ -85,10 +87,24 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
+      # Same cache path/key the e2e job uses, including the sub-workspace
+      # target dirs the host-trait runtime-linker examples maintain. The
+      # warmup steps below populate every directory so the e2e job's
+      # pre-flight is cache-hit-only relinks.
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
-          path: target
+          path: |
+            target
+            examples/host-trait/runtime-linker/target
+            examples/host-trait/runtime-linker-demo-fs/target
+            examples/host-trait/runtime-linker-s3/target
+            usecases/host-trait/sensor-pipeline/runtime-linker/target
+            usecases/host-trait/concurrent-append/host-runner/target
+            usecases/host-trait/concurrent-append/append-client/target
+            usecases/host-trait/sensor-pipeline/sensor-ingest/target
+            usecases/host-trait/sensor-pipeline/sensor-process/target
+            examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build native packages
@@ -103,6 +119,38 @@ jobs:
       - name: Build release (WASM)
         run: make build-wasm-release
 
+      # Pre-warm the parts the e2e job needs but `cargo build --workspace`
+      # alone doesn't cover: the demo apps that get composed via monaka,
+      # the s3-sync feature variants, the monaka CLI itself, and the
+      # host-trait runtime-linker examples that live in their own
+      # Cargo workspaces.
+      - name: Build workspace demo WASMs (release + debug)
+        run: |
+          cargo build --release --target wasm32-wasip2 \
+            -p demo-writer -p demo-reader -p demo-fs-operations \
+            -p demo-embed-read -p ci-job -p logger -p image-processor
+          cargo build --target wasm32-wasip2 \
+            -p demo-writer -p demo-reader -p demo-fs-operations
+
+      - name: Build monaka CLI bundle
+        run: make build-cli
+
+      - name: Pre-build host-trait runtime-linker examples
+        run: |
+          for sub in \
+              examples/host-trait/runtime-linker \
+              examples/host-trait/runtime-linker-demo-fs \
+              examples/host-trait/runtime-linker-s3 \
+              usecases/host-trait/sensor-pipeline/runtime-linker
+          do
+              ( cd "$sub" && cargo build --release )
+          done
+          ( cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --target wasm32-wasip2 )
+          ( cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --target wasm32-wasip2 )
+          ( cd usecases/host-trait/concurrent-append/append-client && cargo build --release --target wasm32-wasip2 )
+          ( cd usecases/host-trait/concurrent-append/host-runner && cargo build --release )
+          ( cd examples/static-composition/s3-sync && cargo build --release --target wasm32-wasip2 )
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -113,7 +161,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
 
       - name: Cache cargo registry
         uses: actions/cache@v4
