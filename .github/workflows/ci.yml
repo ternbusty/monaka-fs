@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt
 
@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: clippy
 
@@ -68,8 +68,10 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      # Match the e2e job's pin so the warmed cargo cache is reusable
+      # across both jobs.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
         with:
           targets: wasm32-wasip2
 
@@ -85,10 +87,24 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
+      # Same cache path/key the e2e job uses, including the sub-workspace
+      # target dirs the host-trait runtime-linker examples maintain. The
+      # warmup steps below populate every directory so the e2e job's
+      # pre-flight is cache-hit-only relinks.
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
-          path: target
+          path: |
+            target
+            examples/host-trait/runtime-linker/target
+            examples/host-trait/runtime-linker-demo-fs/target
+            examples/host-trait/runtime-linker-s3/target
+            usecases/host-trait/sensor-pipeline/runtime-linker/target
+            usecases/host-trait/concurrent-append/host-runner/target
+            usecases/host-trait/concurrent-append/append-client/target
+            usecases/host-trait/sensor-pipeline/sensor-ingest/target
+            usecases/host-trait/sensor-pipeline/sensor-process/target
+            examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build native packages
@@ -103,6 +119,38 @@ jobs:
       - name: Build release (WASM)
         run: make build-wasm-release
 
+      # Pre-warm the parts the e2e job needs but `cargo build --workspace`
+      # alone doesn't cover: the demo apps that get composed via monaka,
+      # the s3-sync feature variants, the monaka CLI itself, and the
+      # host-trait runtime-linker examples that live in their own
+      # Cargo workspaces.
+      - name: Build workspace demo WASMs (release + debug)
+        run: |
+          cargo build --release --target wasm32-wasip2 \
+            -p demo-writer -p demo-reader -p demo-fs-operations \
+            -p demo-embed-read -p ci-job -p logger -p image-processor
+          cargo build --target wasm32-wasip2 \
+            -p demo-writer -p demo-reader -p demo-fs-operations
+
+      - name: Build monaka CLI bundle
+        run: make build-cli
+
+      - name: Pre-build host-trait runtime-linker examples
+        run: |
+          for sub in \
+              examples/host-trait/runtime-linker \
+              examples/host-trait/runtime-linker-demo-fs \
+              examples/host-trait/runtime-linker-s3 \
+              usecases/host-trait/sensor-pipeline/runtime-linker
+          do
+              ( cd "$sub" && cargo build --release )
+          done
+          ( cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --target wasm32-wasip2 )
+          ( cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --target wasm32-wasip2 )
+          ( cd usecases/host-trait/concurrent-append/append-client && cargo build --release --target wasm32-wasip2 )
+          ( cd usecases/host-trait/concurrent-append/host-runner && cargo build --release )
+          ( cd examples/static-composition/s3-sync && cargo build --release --target wasm32-wasip2 )
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -113,7 +161,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.92.0
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -143,3 +191,169 @@ jobs:
       # use in production.
       - name: Run fs-core single-threaded tests
         run: cargo test -p fs-core --no-default-features --features std --verbose
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      # Track local dev environment. Older releases (v27 in particular)
+      # had WASI socket / streaming write quirks that surfaced as
+      # spurious "os error 29" failures in the RPC tier.
+      WASMTIME_VERSION: v39.0.1
+      WAC_VERSION: 0.10.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler netcat-openbsd
+
+      # Pin to rustc 1.92.0. The 1.95.0 wasm32-wasip2 std added imports
+      # to `wasi:cli/terminal-{input,output,stdin,stdout,stderr}@0.2.6`
+      # that conflict with `wac plug`'s resource-type unification when
+      # the rpc-adapter is composed with demo apps, producing a runtime
+      # panic on close: "cannot use two types with this resource type".
+      # The same composition built with 1.92.0 (or on macOS) runs cleanly,
+      # so pin until rustc/wit-bindgen sort out the new imports upstream.
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: wasm32-wasip2
+
+      # Share cache with format / lint / build / test jobs.
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      # The host-trait runtime-linker examples and usecases each live in
+      # their own Cargo workspace, so they each get their own `target/`
+      # directory that the root cache doesn't cover. Caching them too makes
+      # the e2e job's pre-flight a relink instead of a full wasmtime + AWS
+      # SDK compile from scratch.
+      - name: Cache cargo build target
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            examples/host-trait/runtime-linker/target
+            examples/host-trait/runtime-linker-demo-fs/target
+            examples/host-trait/runtime-linker-s3/target
+            usecases/host-trait/sensor-pipeline/runtime-linker/target
+            usecases/host-trait/concurrent-append/host-runner/target
+            usecases/host-trait/concurrent-append/append-client/target
+            usecases/host-trait/sensor-pipeline/sensor-ingest/target
+            usecases/host-trait/sensor-pipeline/sensor-process/target
+            examples/static-composition/s3-sync/target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      # E2E-specific tooling. wac-cli builds from source (~1-2 min) so cache
+      # the resulting binary keyed on its pinned version.
+      - name: Cache wac-cli binary
+        id: cache-wac
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wac
+          key: ${{ runner.os }}-wac-${{ env.WAC_VERSION }}
+
+      - name: Install wac-cli
+        if: steps.cache-wac.outputs.cache-hit != 'true'
+        run: cargo install wac-cli --version ${{ env.WAC_VERSION }} --locked
+
+      - name: Cache wasmtime binary
+        id: cache-wasmtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.wasmtime
+          key: ${{ runner.os }}-wasmtime-${{ env.WASMTIME_VERSION }}
+
+      - name: Install wasmtime
+        if: steps.cache-wasmtime.outputs.cache-hit != 'true'
+        run: |
+          # The standard install script grabs the latest stable.
+          # Trying to pin via `--version` has been flaky in our CI.
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          # Sanity-check that the install matches what we expected.
+          test -x "$HOME/.wasmtime/bin/wasmtime"
+
+      - name: Add wasmtime to PATH
+        run: echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Install awscli-local
+        run: pipx install awscli-local awscli
+
+      - name: Build WASM and CLI (cache hits ⇒ relink only)
+        run: |
+          make build-wasm-release
+          make build-cli
+
+      # Bring LocalStack up via `docker run` rather than docker-compose so we
+      # can omit the host bind-mounts (`./localstack-data`, docker.sock) that
+      # the local dev compose file uses. Those mounts caused LocalStack to
+      # exit with code 55 on GitHub-hosted runners. The init script that
+      # creates `test-vfs-bucket` is still mounted in the same place.
+      - name: Start LocalStack
+        run: |
+          # The latest `localstack/localstack` image performs a Pro license
+          # check on startup and exits with code 55 ("License activation
+          # failed") even when only community services are requested.
+          # Pin to v3 which still ships the community build under the same
+          # entrypoint without an auth-token requirement.
+          docker run -d --name halycon-localstack-1 \
+            -p 4566:4566 \
+            -e SERVICES=s3 \
+            -e DEBUG=1 \
+            -e AWS_DEFAULT_REGION=ap-northeast-1 \
+            -v "${GITHUB_WORKSPACE}/localstack-init:/etc/localstack/init/ready.d" \
+            localstack/localstack:3
+          # Wait for the gateway to come up.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4566/_localstack/health >/dev/null; then
+              echo "LocalStack ready"
+              break
+            fi
+            if (( i == 60 )); then
+              echo "LocalStack didn't become ready in time" >&2
+              docker logs halycon-localstack-1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          # The init script runs once /etc/localstack/init/ready.d/init-s3.sh
+          # is invoked; poll until the bucket actually exists so the e2e
+          # script's pre-flight check doesn't race.
+          for i in $(seq 1 30); do
+            if AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=ap-northeast-1 \
+                 aws --endpoint-url=http://localhost:4566 s3 ls s3://test-vfs-bucket >/dev/null 2>&1; then
+              echo "test-vfs-bucket ready"
+              break
+            fi
+            if (( i == 30 )); then
+              echo "test-vfs-bucket was not created in time" >&2
+              docker logs halycon-localstack-1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run E2E suite
+        run: bash scripts/e2e.sh
+
+      - name: Stop LocalStack
+        if: always()
+        run: docker rm -f halycon-localstack-1 || true
+
+      - name: Upload E2E logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: /tmp/e2e-logs/
+          if-no-files-found: ignore

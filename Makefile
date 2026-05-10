@@ -1,7 +1,7 @@
 # monaka Makefile
 
 .PHONY: build build-release build-all build-native build-wasm build-wasm-release build-cli clean help
-.PHONY: check-prereqs install-prereqs info
+.PHONY: check-prereqs install-prereqs info e2e
 
 # =============================================================================
 # Library
@@ -63,6 +63,13 @@ build-cli:
 	@cargo build --release -p monaka
 	@echo "CLI built: target/release/monaka"
 
+# Run the end-to-end regression suite (host-trait + RPC + LocalStack S3).
+# Requires: wasmtime, wac, awslocal (or aws), and LocalStack running on
+# localhost:4566. Pass --no-s3 to skip the S3 tiers, --start-stack to bring
+# LocalStack up first via `docker compose up -d --wait`.
+e2e:
+	@bash scripts/e2e.sh $(E2E_ARGS)
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
@@ -119,6 +126,11 @@ help:
 	@echo "  make build-all                          - Build everything"
 	@echo "  make build-cli                          - Build monaka CLI (WASM + native)"
 	@echo "  make clean                              - Clean build artifacts"
+	@echo ""
+	@echo "Test:"
+	@echo "  make e2e                                - Run E2E regression suite"
+	@echo "  make e2e E2E_ARGS=--no-s3               - Skip LocalStack tiers"
+	@echo "  make e2e E2E_ARGS=--start-stack         - Bring LocalStack up first"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make check-prereqs                      - Check prerequisites"
