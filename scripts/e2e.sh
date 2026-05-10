@@ -413,13 +413,13 @@ start_rpc_server "$RPC_SERVER_WASM_PLAIN" "tier2-rpc-server-ci-cache.log"
 ci_log_dir="$LOG_DIR/tier2-ci-cache"
 mkdir -p "$ci_log_dir"
 {
-    wasmtime run -S inherit-network=y --env JOB_ID=1 --env DEPS="serde-1.0.0,tokio-1.0.0" \
+    run_with_timeout 180 wasmtime run -S inherit-network=y --env JOB_ID=1 --env DEPS="serde-1.0.0,tokio-1.0.0" \
         "$RPC_CI_JOB" >"$ci_log_dir/job1.log" 2>&1 &
     p1=$!
-    wasmtime run -S inherit-network=y --env JOB_ID=2 --env DEPS="serde-1.0.0,anyhow-1.0.0" \
+    run_with_timeout 180 wasmtime run -S inherit-network=y --env JOB_ID=2 --env DEPS="serde-1.0.0,anyhow-1.0.0" \
         "$RPC_CI_JOB" >"$ci_log_dir/job2.log" 2>&1 &
     p2=$!
-    wasmtime run -S inherit-network=y --env JOB_ID=3 --env DEPS="tokio-1.0.0,anyhow-1.0.0" \
+    run_with_timeout 180 wasmtime run -S inherit-network=y --env JOB_ID=3 --env DEPS="tokio-1.0.0,anyhow-1.0.0" \
         "$RPC_CI_JOB" >"$ci_log_dir/job3.log" 2>&1 &
     p3=$!
     wait $p1 $p2 $p3
@@ -518,11 +518,11 @@ else
         log_dir="$LOG_DIR/tier3-s3-logging"
         mkdir -p "$log_dir"
         {
-            wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$log_dir/r1.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$log_dir/r1.log" 2>&1 &
             r1=$!
-            wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$log_dir/r2.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$log_dir/r2.log" 2>&1 &
             r2=$!
-            wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$log_dir/r3.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$log_dir/r3.log" 2>&1 &
             r3=$!
             wait $r1 $r2 $r3
         } || true
@@ -583,9 +583,9 @@ else
             --env "AWS_SECRET_ACCESS_KEY=test" \
             --env "AWS_REGION=ap-northeast-1"
         {
-            wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$rt_log_dir/r1-1.log" 2>&1 &
-            wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$rt_log_dir/r1-2.log" 2>&1 &
-            wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$rt_log_dir/r1-3.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=1 "$RPC_LOGGER" >"$rt_log_dir/r1-1.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=2 "$RPC_LOGGER" >"$rt_log_dir/r1-2.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=3 "$RPC_LOGGER" >"$rt_log_dir/r1-3.log" 2>&1 &
             wait
         } || true
         sleep 4
@@ -602,9 +602,9 @@ else
             --env "AWS_SECRET_ACCESS_KEY=test" \
             --env "AWS_REGION=ap-northeast-1"
         {
-            wasmtime run -S inherit-network=y --env REPLICA_ID=4 "$RPC_LOGGER" >"$rt_log_dir/r2-1.log" 2>&1 &
-            wasmtime run -S inherit-network=y --env REPLICA_ID=5 "$RPC_LOGGER" >"$rt_log_dir/r2-2.log" 2>&1 &
-            wasmtime run -S inherit-network=y --env REPLICA_ID=6 "$RPC_LOGGER" >"$rt_log_dir/r2-3.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=4 "$RPC_LOGGER" >"$rt_log_dir/r2-1.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=5 "$RPC_LOGGER" >"$rt_log_dir/r2-2.log" 2>&1 &
+            run_with_timeout 180 wasmtime run -S inherit-network=y --env REPLICA_ID=6 "$RPC_LOGGER" >"$rt_log_dir/r2-3.log" 2>&1 &
             wait
         } || true
         sleep 4
