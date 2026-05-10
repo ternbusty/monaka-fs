@@ -107,12 +107,11 @@ jobs:
             examples/static-composition/s3-sync/target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build native packages
-        run: cargo build --all-features --verbose
-
-      - name: Build WASM packages
-        run: make build-wasm
-
+      # Release builds only. Debug builds are exercised implicitly by the
+      # Test job's `cargo test --all-features`, so the explicit
+      # `cargo build --all-features` and `make build-wasm` runs that used
+      # to live here were duplicate work. The release artifacts are what
+      # the e2e job consumes downstream.
       - name: Build release (native)
         run: cargo build --release --all-features --verbose
 
