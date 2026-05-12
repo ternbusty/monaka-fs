@@ -312,6 +312,46 @@ impl S3Storage {
             })?
             .to_string();
 
+        match self
+            .multipart_upload_inner(key, data, &upload_id, total_parts)
+            .await
+        {
+            Ok(etag) => Ok(etag),
+            Err(e) => {
+                log::error!(
+                    "[s3] Multipart upload failed for {}: {}. Aborting upload {}.",
+                    key,
+                    e,
+                    upload_id
+                );
+                if let Err(abort_err) = self
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .upload_id(&upload_id)
+                    .send()
+                    .await
+                {
+                    log::error!(
+                        "[s3] Failed to abort multipart upload {} for {}: {}",
+                        upload_id,
+                        key,
+                        abort_err
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn multipart_upload_inner(
+        &self,
+        key: &str,
+        data: Vec<u8>,
+        upload_id: &str,
+        total_parts: usize,
+    ) -> Result<String, S3Error> {
         let upload_futures: Vec<_> = data
             .chunks(PART_SIZE)
             .enumerate()
@@ -320,7 +360,7 @@ impl S3Storage {
                 let chunk_data = chunk.to_vec();
                 let bucket = self.bucket.clone();
                 let key = key.to_string();
-                let upload_id = upload_id.clone();
+                let upload_id = upload_id.to_string();
                 let client = self.client.clone();
 
                 async move {
@@ -352,14 +392,7 @@ impl S3Storage {
 
         let mut parts: Vec<CompletedPart> = Vec::with_capacity(total_parts);
         for result in results {
-            match result {
-                Ok(part) => parts.push(part),
-                Err(e) => {
-                    // TODO: abort_multipart_upload on error
-                    log::error!("[s3] Part upload failed: {}", e);
-                    return Err(e);
-                }
-            }
+            parts.push(result?);
         }
 
         parts.sort_by_key(|p| p.part_number().unwrap_or(0));
@@ -378,7 +411,7 @@ impl S3Storage {
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
-            .upload_id(&upload_id)
+            .upload_id(upload_id)
             .multipart_upload(completed)
             .send()
             .await
