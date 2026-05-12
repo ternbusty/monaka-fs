@@ -44,7 +44,7 @@ fn main() {
     println!("Output: /output/photo.png ({} bytes)", output.len());
 
     // Verify PNG magic bytes
-    if output.len() >= 8 && &output[0..4] == &[0x89, b'P', b'N', b'G'] {
+    if output.len() >= 8 && output[0..4] == [0x89, b'P', b'N', b'G'] {
         println!("PNG header verified!");
     }
 }

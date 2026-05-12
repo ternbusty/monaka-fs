@@ -31,14 +31,14 @@ fn main() {
 
 fn test_operation() {
     let directory_path = "/testdir";
-    fs::create_dir(directory_path);
+    let _ = fs::create_dir(directory_path);
 
     let nested_directory_path = "/testdir/sub1/sub2";
-    fs::create_dir_all(nested_directory_path);
+    let _ = fs::create_dir_all(nested_directory_path);
 
     let file_path = "/testdir/test.txt";
     let content = "Hello from Component Model!";
-    fs::write(file_path, content);
+    let _ = fs::write(file_path, content);
 
     let metadata = fs::metadata(file_path);
     println!("File metadata: {:?}", metadata);
@@ -51,7 +51,7 @@ fn test_operation() {
         println!("Entry: {}", entry.path().display());
     });
 
-    fs::remove_file(file_path);
+    let _ = fs::remove_file(file_path);
 
     fs::read_dir(directory_path).unwrap().for_each(|entry| {
         let entry = entry.unwrap();

@@ -12,9 +12,6 @@ fn main() {
 
     match fs::read_to_string(path) {
         Ok(content) => print!("{}", content),
-        Err(e) => {
-            eprintln!("Failed to read {}: {}", path, e);
-            return;
-        }
+        Err(e) => eprintln!("Failed to read {}: {}", path, e),
     }
 }
