@@ -19,6 +19,9 @@ world vfs-rpc-server {
     import wasi:clocks/wall-clock@0.2.6;
     import wasi:clocks/monotonic-clock@0.2.6;
 
+    // Import random for UUID session id generation
+    import wasi:random/random@0.2.6;
+
     // Import WASI HTTP for S3 client
     import wasi:http/types@0.2.6;
     import wasi:http/outgoing-handler@0.2.6;

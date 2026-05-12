@@ -3632,13 +3632,25 @@ dependencies = [
 name = "vfs-rpc-server"
 version = "0.2.4"
 dependencies = [
- "fs-core",
  "log",
  "prost",
  "tokio",
+ "uuid",
  "vfs-rpc-protocol",
+ "vfs-rpc-server-core",
  "vfs-sync-adapter",
  "wit-bindgen 0.57.1",
+]
+
+[[package]]
+name = "vfs-rpc-server-core"
+version = "0.2.4"
+dependencies = [
+ "fs-core",
+ "log",
+ "tokio",
+ "vfs-rpc-protocol",
+ "vfs-sync-adapter",
 ]
 
 [[package]]
