@@ -230,6 +230,70 @@ mod read_write {
     }
 
     #[test]
+    fn success_write_at_does_not_affect_other_handles_position() {
+        // write_at is positional, it should leave any other open handle's
+        // current position alone (only updating the writing fd's position
+        // is documented behaviour).
+        let mut fs = Fs::new();
+        let writer = fs.open_path("/file.txt").unwrap();
+        fs.write(writer, b"0123456789").unwrap();
+
+        let reader = fs.open_path("/file.txt").unwrap();
+
+        // Positional write at offset 4 overwrites two bytes
+        let n = fs.write_at(writer, 4, b"AB").unwrap();
+        assert_eq!(n, 2);
+
+        // reader still starts at 0 and should see the patched bytes
+        let mut buf = [0u8; 10];
+        let m = fs.read(reader, &mut buf).unwrap();
+        assert_eq!(&buf[..m], b"0123AB6789");
+
+        fs.close(writer).unwrap();
+        fs.close(reader).unwrap();
+    }
+
+    #[test]
+    fn success_read_at_returns_data_from_offset() {
+        let mut fs = Fs::new();
+        let fd = fs.open_path("/file.txt").unwrap();
+        fs.write(fd, b"abcdefghij").unwrap();
+
+        let mut buf = [0u8; 4];
+        let n = fs.read_at(fd, 5, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..n], b"fghi");
+
+        fs.close(fd).unwrap();
+    }
+
+    #[test]
+    fn failure_write_at_on_readonly_fd_returns_permission_denied() {
+        let mut fs = Fs::new();
+        // create file first
+        let writer = fs.open_path_with_flags("/p.txt", O_CREAT | O_RDWR).unwrap();
+        fs.write(writer, b"data").unwrap();
+        fs.close(writer).unwrap();
+
+        let ro = fs.open_path_with_flags("/p.txt", O_RDONLY).unwrap();
+        let err = fs.write_at(ro, 0, b"X").unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+        fs.close(ro).unwrap();
+    }
+
+    #[test]
+    fn failure_read_at_on_writeonly_fd_returns_permission_denied() {
+        let mut fs = Fs::new();
+        let wo = fs
+            .open_path_with_flags("/wo.txt", O_CREAT | O_WRONLY)
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let err = fs.read_at(wo, 0, &mut buf).unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+        fs.close(wo).unwrap();
+    }
+
+    #[test]
     fn edge_case_empty_file() {
         let mut fs = Fs::new();
         // Create an empty file
