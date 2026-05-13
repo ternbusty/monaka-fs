@@ -1,6 +1,6 @@
 [package]
 name = "vfs-sync-core"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 description = "Common S3 sync logic for Monaka VFS (host- and WASI-shared)"
 license = "MIT"

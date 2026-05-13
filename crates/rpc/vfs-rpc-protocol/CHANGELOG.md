@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/ternbusty/monaka-fs/compare/vfs-rpc-protocol-v0.2.4...vfs-rpc-protocol-v0.2.5) (2026-05-13)
+
+
+### Miscellaneous Chores
+
+* **vfs-rpc-protocol:** Synchronize monaka versions
+
 ## [0.2.4](https://github.com/ternbusty/monaka-fs/compare/vfs-rpc-protocol-v0.2.3...vfs-rpc-protocol-v0.2.4) (2026-04-18)
 
 

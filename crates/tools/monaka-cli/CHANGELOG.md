@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/ternbusty/monaka-fs/compare/monaka-v0.2.4...monaka-v0.2.5) (2026-05-13)
+
+
+### Miscellaneous Chores
+
+* **monaka:** Synchronize monaka versions
+
 ## [0.2.4](https://github.com/ternbusty/monaka-fs/compare/monaka-v0.2.3...monaka-v0.2.4) (2026-04-18)
 
 
