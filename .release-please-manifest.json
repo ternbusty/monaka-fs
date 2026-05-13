@@ -8,5 +8,6 @@
   "crates/adapters/vfs-adapter": "0.2.4",
   "crates/adapters/rpc-adapter": "0.2.4",
   "crates/rpc/vfs-rpc-protocol": "0.2.4",
-  "crates/rpc/vfs-rpc-server": "0.2.4"
+  "crates/rpc/vfs-rpc-server": "0.2.4",
+  "crates/rpc/vfs-rpc-server-core": "0.2.4"
 }

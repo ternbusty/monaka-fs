@@ -1,3 +1,17 @@
+//! In-memory filesystem implementation shared by every Monaka component.
+//!
+//! A single `Fs` type is exposed in two flavours via the `thread-safe`
+//! feature flag:
+//!
+//! - `thread-safe` (requires `std`): backed by `DashMap` plus
+//!   `Arc<RwLock<Inode>>`, used by host-side wasmtime integrations that
+//!   need `Send + Sync`.
+//! - default: backed by `RefCell<HashMap>` or `RefCell<BTreeMap>` plus
+//!   `Rc<RefCell<Inode>>`, used by the WASI components.
+//!
+//! Both flavours share one `&self` API, so consumers only need to pick
+//! the feature flag that matches their target.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;

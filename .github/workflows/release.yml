@@ -32,6 +32,7 @@ jobs:
             ["crates/adapters/rpc-adapter"]="rpc-adapter"
             ["crates/rpc/vfs-rpc-protocol"]="vfs-rpc-protocol"
             ["crates/rpc/vfs-rpc-server"]="vfs-rpc-server"
+            ["crates/rpc/vfs-rpc-server-core"]="vfs-rpc-server-core"
           )
           for path in "${!PACKAGES[@]}"; do
             component="${PACKAGES[$path]}"
