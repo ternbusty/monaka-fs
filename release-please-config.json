@@ -48,6 +48,11 @@
       "release-type": "rust",
       "component": "vfs-rpc-server",
       "skip-github-release": true
+    },
+    "crates/rpc/vfs-rpc-server-core": {
+      "release-type": "rust",
+      "component": "vfs-rpc-server-core",
+      "skip-github-release": true
     }
   },
   "plugins": [
@@ -68,7 +73,8 @@
         "vfs-adapter",
         "rpc-adapter",
         "vfs-rpc-protocol",
-        "vfs-rpc-server"
+        "vfs-rpc-server",
+        "vfs-rpc-server-core"
       ]
     }
   ]
