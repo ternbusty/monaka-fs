@@ -9,15 +9,20 @@ crate-type = ["cdylib"]
 
 [features]
 default = []
-s3-sync = ["dep:vfs-sync-adapter"]
+s3-sync = ["dep:vfs-sync-adapter", "vfs-rpc-server-core/s3-sync"]
 
 [dependencies]
-fs-core = { path = "../../core/fs-core", features = ["serde"] }
+vfs-rpc-server-core = { path = "../vfs-rpc-server-core" }
 vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
 vfs-sync-adapter = { path = "../../sync/vfs-sync-adapter", optional = true }
 prost = "0.13"
 wit-bindgen = { version = "0.57.1", default-features = false, features = ["realloc", "macros", "bitflags"] }
 log = "0.4"
+# `v4` feature is intentionally omitted: it pulls in `getrandom` →
+# `wasip2` 0.2.9, which clashes with the wasi 0.2.6 interfaces our world
+# imports at component link time. We feed 16 bytes from `wasi:random/random`
+# (or a host fallback in tests) into `Builder::from_random_bytes` instead.
+uuid = { version = "1", default-features = false, features = ["std"] }
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }

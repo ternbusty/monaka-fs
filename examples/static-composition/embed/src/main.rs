@@ -7,10 +7,8 @@ fn main() {
     println!("\nListing /data:");
     match fs::read_dir("/data") {
         Ok(entries) => {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    println!("  {}", entry.path().display());
-                }
+            for entry in entries.flatten() {
+                println!("  {}", entry.path().display());
             }
         }
         Err(e) => {

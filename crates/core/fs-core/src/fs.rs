@@ -1,21 +1,42 @@
+//! Filesystem implementation.
+//!
+//! A single source of truth used in two modes via the `thread-safe` feature:
+//!
+//! - `thread-safe` (host runtimes, requires `std`): backed by `DashMap` and
+//!   atomic counters, with `Arc<RwLock<Inode>>` references. The whole API is
+//!   `&self` so multiple wasmtime hosts can share one `Fs` across threads.
+//! - default (WASI components or no-std embedders): backed by
+//!   `RefCell<HashMap>` (or `RefCell<BTreeMap>` in no-std) with `Cell<u64>`
+//!   counters and `Rc<RefCell<Inode>>` references. The API is still `&self`
+//!   thanks to interior mutability.
+//!
+//! Storage differences are isolated to a thin set of accessor helpers
+//! (`fd_with`, `inode_get`, `allocate_*`, ...) near the top of the file.
+//! Every public method then has a single body that compiles for both
+//! flavours.
+
 #[cfg(not(feature = "std"))]
 use alloc::collections::BTreeMap;
 
-// Thread-safe inode reference type
-// Uses Arc<RwLock<>> with std feature (default) for concurrent read access
-// Falls back to Rc<RefCell<>> for no_std environments
-#[cfg(feature = "std")]
+#[cfg(feature = "thread-safe")]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-#[cfg(feature = "std")]
+#[cfg(feature = "thread-safe")]
 use std::sync::{Arc, RwLock};
 
-#[cfg(feature = "std")]
+#[cfg(feature = "thread-safe")]
 use dashmap::DashMap;
+
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+use std::cell::{Cell, RefCell};
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+use std::collections::HashMap;
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+use std::rc::Rc;
 
 #[cfg(not(feature = "std"))]
 use alloc::rc::Rc;
 #[cfg(not(feature = "std"))]
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use crate::error::FsError;
 use crate::handle::FileHandle;
@@ -23,71 +44,93 @@ use crate::inode::{FileContent, Inode, Metadata};
 use crate::time::{MonotonicCounter, TimeProvider};
 use crate::types::*;
 
-// Import logging macros
+// Import logging macros (no-ops when the `logging` feature is off).
 #[cfg(feature = "logging")]
 use crate::{debug, error, trace};
 
-/// Macro for read access to inode (uses RwLock::read for std, RefCell::borrow for no_std)
+// =============================================================================
+// Storage type aliases
+// =============================================================================
+
+/// A reference to an `Inode` shared between the table and any open handles.
+///
+/// Thread-safe builds use `Arc<RwLock<Inode>>` so multiple readers can hold
+/// a guard at once. Single-thread builds use `Rc<RefCell<Inode>>`.
+#[cfg(feature = "thread-safe")]
+pub type InodeRef = Arc<RwLock<Inode>>;
+#[cfg(not(feature = "thread-safe"))]
+pub type InodeRef = Rc<RefCell<Inode>>;
+
+/// Table from `Fd` to `FileHandle`. `DashMap` in thread-safe mode (lock-free
+/// concurrent access across shards), plain map under a `RefCell` otherwise.
+#[cfg(feature = "thread-safe")]
+type FdTable = DashMap<Fd, FileHandle>;
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+type FdTable = RefCell<HashMap<Fd, FileHandle>>;
+#[cfg(not(feature = "std"))]
+type FdTable = RefCell<BTreeMap<Fd, FileHandle>>;
+
+/// Table from `InodeId` to `InodeRef`.
+#[cfg(feature = "thread-safe")]
+type InodeTable = DashMap<InodeId, InodeRef>;
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+type InodeTable = RefCell<HashMap<InodeId, InodeRef>>;
+#[cfg(not(feature = "std"))]
+type InodeTable = RefCell<BTreeMap<InodeId, InodeRef>>;
+
+/// Counter for the next free inode ID.
+#[cfg(feature = "thread-safe")]
+type NextInodeCounter = AtomicU64;
+#[cfg(not(feature = "thread-safe"))]
+type NextInodeCounter = Cell<InodeId>;
+
+/// Counter for the next free file descriptor.
+#[cfg(feature = "thread-safe")]
+type NextFdCounter = AtomicU32;
+#[cfg(not(feature = "thread-safe"))]
+type NextFdCounter = Cell<Fd>;
+
+// =============================================================================
+// Inode access macros
+// =============================================================================
+
+/// Read-locks an inode and yields a guard that derefs to `&Inode`.
 macro_rules! inode_read {
     ($inode:expr) => {{
-        #[cfg(feature = "std")]
+        #[cfg(feature = "thread-safe")]
         {
             $inode.read().unwrap()
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "thread-safe"))]
         {
             $inode.borrow()
         }
     }};
 }
 
-/// Macro for write access to inode (uses RwLock::write for std, RefCell::borrow_mut for no_std)
+/// Write-locks an inode and yields a guard that derefs to `&mut Inode`.
 macro_rules! inode_write {
     ($inode:expr) => {{
-        #[cfg(feature = "std")]
+        #[cfg(feature = "thread-safe")]
         {
             $inode.write().unwrap()
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(not(feature = "thread-safe"))]
         {
             $inode.borrow_mut()
         }
     }};
 }
 
-/// Type alias for inode reference - thread-safe with std, single-threaded without
-#[cfg(feature = "std")]
-pub type InodeRef = Arc<RwLock<Inode>>;
-#[cfg(not(feature = "std"))]
-pub type InodeRef = Rc<RefCell<Inode>>;
+// =============================================================================
+// Fs struct
+// =============================================================================
 
-/// Type aliases for concurrent collections (std) vs single-threaded (no_std)
-#[cfg(feature = "std")]
-pub type FdTable = DashMap<Fd, FileHandle>;
-#[cfg(not(feature = "std"))]
-pub type FdTable = BTreeMap<Fd, FileHandle>;
-
-#[cfg(feature = "std")]
-pub type InodeTable = DashMap<InodeId, InodeRef>;
-#[cfg(not(feature = "std"))]
-pub type InodeTable = BTreeMap<InodeId, InodeRef>;
-
-/// Main filesystem structure
-/// With std feature: uses DashMap for lock-free concurrent access
-/// Without std: uses BTreeMap for single-threaded environments
-#[cfg(feature = "std")]
+/// Main filesystem structure. See the module-level comment for an overview
+/// of the two storage flavours.
 pub struct Fs<T: TimeProvider = MonotonicCounter> {
-    pub(crate) next_inode: AtomicU64,
-    pub(crate) next_fd: AtomicU32,
-    pub(crate) fd_table: FdTable,
-    pub(crate) inode_table: InodeTable,
-    pub(crate) root_inode: InodeId,
-    pub(crate) time_provider: T,
-}
-
-#[cfg(not(feature = "std"))]
-pub struct Fs<T: TimeProvider = MonotonicCounter> {
-    pub(crate) next_inode: InodeId,
+    pub(crate) next_inode: NextInodeCounter,
+    pub(crate) next_fd: NextFdCounter,
     pub(crate) fd_table: FdTable,
     pub(crate) inode_table: InodeTable,
     pub(crate) root_inode: InodeId,
@@ -95,89 +138,204 @@ pub struct Fs<T: TimeProvider = MonotonicCounter> {
 }
 
 impl<T: TimeProvider> Fs<T> {
-    /// Create a new InodeRef (thread-safe with std, single-threaded without)
-    #[cfg(feature = "std")]
-    fn new_inode_ref(inode: Inode) -> InodeRef {
-        Arc::new(RwLock::new(inode))
+    // -------------------------------------------------------------------------
+    // Construction / accessors
+    // -------------------------------------------------------------------------
+
+    /// Create a new inode reference suitable for insertion in `inode_table`.
+    pub(crate) fn new_inode_ref(inode: Inode) -> InodeRef {
+        #[cfg(feature = "thread-safe")]
+        {
+            Arc::new(RwLock::new(inode))
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            Rc::new(RefCell::new(inode))
+        }
     }
 
-    #[cfg(not(feature = "std"))]
-    fn new_inode_ref(inode: Inode) -> InodeRef {
-        Rc::new(RefCell::new(inode))
-    }
-
-    #[cfg(feature = "std")]
+    /// Build an empty filesystem with the supplied time provider. A root
+    /// directory is created automatically with timestamps populated by the
+    /// provider.
     pub fn with_time_provider(time_provider: T) -> Self {
-        // Create root directory inode with proper timestamps
         let timestamp = time_provider.now();
         let mut root_inode = Inode::new_dir(0);
         root_inode.metadata.created = timestamp;
         root_inode.metadata.modified = timestamp;
 
-        let inode_table = DashMap::new();
-        inode_table.insert(0, Self::new_inode_ref(root_inode));
-
-        Self {
-            next_inode: AtomicU64::new(1),
-            next_fd: AtomicU32::new(3), // Start from 3 (0,1,2 reserved for stdin/out/err)
-            fd_table: DashMap::new(),
-            inode_table,
-            root_inode: 0,
-            time_provider,
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub fn with_time_provider(time_provider: T) -> Self {
-        let mut fs = Self {
-            next_inode: 1,
-            fd_table: BTreeMap::new(),
-            inode_table: BTreeMap::new(),
-            root_inode: 0,
-            time_provider,
-        };
-
-        // Create root directory inode with proper timestamps
-        let timestamp = fs.time_provider.now();
-        let mut root_inode = Inode::new_dir(0);
-        root_inode.metadata.created = timestamp;
-        root_inode.metadata.modified = timestamp;
-
-        let root = Self::new_inode_ref(root_inode);
-        fs.inode_table.insert(0, root);
-        fs.root_inode = 0;
-
+        let fs = Self::empty_with(time_provider, 0, 1);
+        fs.inode_insert(0, Self::new_inode_ref(root_inode));
         fs
     }
 
-    #[cfg(feature = "std")]
-    fn allocate_inode(&self) -> InodeId {
-        self.next_inode.fetch_add(1, Ordering::Relaxed) as InodeId
-    }
-
-    #[cfg(not(feature = "std"))]
-    fn allocate_inode(&mut self) -> InodeId {
-        let id = self.next_inode;
-        self.next_inode += 1;
-        id
-    }
-
-    #[cfg(feature = "std")]
-    fn allocate_fd(&self) -> Fd {
-        // Use atomic counter for thread-safe fd allocation
-        self.next_fd.fetch_add(1, Ordering::Relaxed)
-    }
-
-    #[cfg(not(feature = "std"))]
-    fn allocate_fd(&mut self) -> Fd {
-        // Find the lowest available file descriptor starting from 3
-        // This implements POSIX-compliant FD reuse
-        let mut fd = 3;
-        while self.fd_table.contains_key(&fd) {
-            fd += 1;
+    /// Build an empty Fs with no inodes and no fd entries. Used by snapshot
+    /// restoration, which then populates `inode_table` from the snapshot's
+    /// inode list.
+    pub(crate) fn empty_with(
+        time_provider: T,
+        root_inode: InodeId,
+        next_inode_seed: InodeId,
+    ) -> Self {
+        Self {
+            next_inode: new_inode_counter(next_inode_seed),
+            next_fd: new_fd_counter(3), // 0/1/2 reserved for stdin/out/err
+            fd_table: new_fd_table(),
+            inode_table: new_inode_table(),
+            root_inode,
+            time_provider,
         }
-        fd
     }
+
+    fn allocate_inode(&self) -> InodeId {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.next_inode.fetch_add(1, Ordering::Relaxed) as InodeId
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            let id = self.next_inode.get();
+            self.next_inode.set(id + 1);
+            id
+        }
+    }
+
+    fn allocate_fd(&self) -> Fd {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.next_fd.fetch_add(1, Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            let fd = self.next_fd.get();
+            self.next_fd.set(fd + 1);
+            fd
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // fd_table helpers
+    // -------------------------------------------------------------------------
+
+    /// Run `f` with access to the `FileHandle` for `fd`. Returns
+    /// `BadFileDescriptor` if the fd is unknown.
+    ///
+    /// The closure holds the underlying borrow / shard lock for its full
+    /// duration, so it should not call back into `Fs` methods that mutate
+    /// the same table (this would `panic!` under `RefCell` and could
+    /// deadlock under `DashMap`).
+    fn fd_with<R>(&self, fd: Fd, f: impl FnOnce(&FileHandle) -> R) -> Result<R, FsError> {
+        #[cfg(feature = "thread-safe")]
+        {
+            let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
+            Ok(f(&handle))
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            let map = self.fd_table.borrow();
+            let handle = map.get(&fd).ok_or(FsError::BadFileDescriptor)?;
+            Ok(f(handle))
+        }
+    }
+
+    /// Like `fd_with` but returns `None` (not an error) when the fd is
+    /// missing. Useful for "best effort" position updates.
+    fn fd_try_with<R>(&self, fd: Fd, f: impl FnOnce(&FileHandle) -> R) -> Option<R> {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.fd_table.get(&fd).map(|h| f(&h))
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.fd_table.borrow().get(&fd).map(f)
+        }
+    }
+
+    fn fd_insert(&self, fd: Fd, handle: FileHandle) {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.fd_table.insert(fd, handle);
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.fd_table.borrow_mut().insert(fd, handle);
+        }
+    }
+
+    fn fd_remove(&self, fd: Fd) -> Option<FileHandle> {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.fd_table.remove(&fd).map(|(_, v)| v)
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.fd_table.borrow_mut().remove(&fd)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // inode_table helpers
+    // -------------------------------------------------------------------------
+
+    /// Look up an inode by id. Returns a clone of the (cheap) `Arc`/`Rc`
+    /// reference rather than borrowing the table, so callers don't need to
+    /// worry about borrow lifetimes.
+    pub(crate) fn inode_get(&self, id: InodeId) -> Option<InodeRef> {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.inode_table.get(&id).map(|r| r.clone())
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.inode_table.borrow().get(&id).cloned()
+        }
+    }
+
+    pub(crate) fn inode_insert(&self, id: InodeId, inode: InodeRef) {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.inode_table.insert(id, inode);
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.inode_table.borrow_mut().insert(id, inode);
+        }
+    }
+
+    /// Visit every inode in the table. Used by snapshot serialization.
+    /// Holds the inode table lock for the duration of iteration.
+    pub(crate) fn inode_for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(InodeId, &InodeRef),
+    {
+        #[cfg(feature = "thread-safe")]
+        {
+            for entry in self.inode_table.iter() {
+                f(*entry.key(), entry.value());
+            }
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            for (&id, inode_rc) in self.inode_table.borrow().iter() {
+                f(id, inode_rc);
+            }
+        }
+    }
+
+    /// Current value of the next-inode counter (for snapshot serialization).
+    pub(crate) fn next_inode_value(&self) -> InodeId {
+        #[cfg(feature = "thread-safe")]
+        {
+            self.next_inode.load(Ordering::Relaxed)
+        }
+        #[cfg(not(feature = "thread-safe"))]
+        {
+            self.next_inode.get()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Internal path / inode helpers
+    // -------------------------------------------------------------------------
 
     fn find_inode(&self, parent_inode: &InodeRef, name: &str) -> Result<InodeRef, FsError> {
         let parent = inode_read!(parent_inode);
@@ -185,11 +343,7 @@ impl<T: TimeProvider> Fs<T> {
         match &parent.content {
             FileContent::Dir(entries) => {
                 if let Some(&inode_id) = entries.get(name) {
-                    if let Some(inode) = self.inode_table.get(&inode_id) {
-                        Ok(inode.clone())
-                    } else {
-                        Err(FsError::NotFound)
-                    }
+                    self.inode_get(inode_id).ok_or(FsError::NotFound)
                 } else {
                     Err(FsError::NotFound)
                 }
@@ -198,7 +352,6 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    #[cfg(feature = "std")]
     fn create_inode(
         &self,
         parent_inode: &InodeRef,
@@ -226,7 +379,7 @@ impl<T: TimeProvider> Fs<T> {
 
                 let new_inode_ref = Self::new_inode_ref(new_inode);
                 entries.insert(name.into(), new_inode_id);
-                self.inode_table.insert(new_inode_id, new_inode_ref.clone());
+                self.inode_insert(new_inode_id, new_inode_ref.clone());
                 parent.metadata.modified = timestamp;
 
                 Ok(new_inode_ref)
@@ -235,82 +388,31 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    #[cfg(not(feature = "std"))]
-    fn create_inode(
-        &mut self,
-        parent_inode: &InodeRef,
-        name: &str,
-        is_dir: bool,
-    ) -> Result<InodeRef, FsError> {
-        let mut parent = inode_write!(parent_inode);
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
 
-        match &mut parent.content {
-            FileContent::Dir(entries) => {
-                if entries.contains_key(name) {
-                    return Err(FsError::AlreadyExists);
-                }
-
-                let new_inode_id = self.allocate_inode();
-                let timestamp = self.time_provider.now();
-                let mut new_inode = if is_dir {
-                    Inode::new_dir(new_inode_id)
-                } else {
-                    Inode::new_file(new_inode_id)
-                };
-
-                new_inode.metadata.created = timestamp;
-                new_inode.metadata.modified = timestamp;
-
-                let new_inode_ref = Self::new_inode_ref(new_inode);
-                entries.insert(name.into(), new_inode_id);
-                self.inode_table.insert(new_inode_id, new_inode_ref.clone());
-                parent.metadata.modified = timestamp;
-
-                Ok(new_inode_ref)
-            }
-            FileContent::File(_) => Err(FsError::NotADirectory),
-        }
-    }
-
-    #[cfg(feature = "std")]
     pub fn open_path(&self, path: &str) -> Result<Fd, FsError> {
         self.open_path_with_flags(path, O_RDWR | O_CREAT)
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn open_path(&mut self, path: &str) -> Result<Fd, FsError> {
-        self.open_path_with_flags(path, O_RDWR | O_CREAT)
-    }
-
-    #[cfg(feature = "std")]
     pub fn open_at(&self, dir_fd: Fd, path: &str, flags: u32) -> Result<Fd, FsError> {
         debug!(
             "open_at: dir_fd={}, path={}, flags={:#x}",
             dir_fd, path, flags
         );
 
-        // Reject absolute paths. open_at only accepts relative paths
         if path.starts_with('/') {
             error!("open_at: absolute path not allowed");
             return Err(FsError::InvalidArgument);
         }
 
-        // Get the directory inode_id from fd_table (extract and drop guard early)
-        let dir_inode_id = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let dir_handle = self.fd_table.get(&dir_fd).ok_or_else(|| {
-                error!("open_at: bad directory file descriptor {}", dir_fd);
-                FsError::BadFileDescriptor
-            })?;
-            dir_handle.inode_id
-        }; // dir_handle guard dropped here
+        let dir_inode_id = self.fd_with(dir_fd, |h| h.inode_id).map_err(|_| {
+            error!("open_at: bad directory file descriptor {}", dir_fd);
+            FsError::BadFileDescriptor
+        })?;
 
-        // Get the directory inode
-        let dir_inode = self
-            .inode_table
-            .get(&dir_inode_id)
-            .ok_or(FsError::NotFound)?
-            .clone();
+        let dir_inode = self.inode_get(dir_inode_id).ok_or(FsError::NotFound)?;
 
         // Verify it's a directory
         {
@@ -321,7 +423,6 @@ impl<T: TimeProvider> Fs<T> {
             }
         }
 
-        // Handle empty path: refers to the directory itself
         if path.is_empty() {
             error!("open_at: empty path not supported yet");
             return Err(FsError::InvalidArgument);
@@ -333,48 +434,40 @@ impl<T: TimeProvider> Fs<T> {
             return Err(FsError::InvalidArgument);
         }
 
-        // Start from the directory fd, not root
         let mut current_inode = dir_inode;
 
-        // Navigate to parent directory (all components except last)
         for comp in comps.iter().take(comps.len() - 1) {
             current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
             let inode = inode_read!(current_inode);
             if matches!(inode.content, FileContent::File(_)) {
                 return Err(FsError::NotADirectory);
             }
         }
 
-        // Handle final component (file name)
         let filename = comps[comps.len() - 1];
         let file_inode = match self.find_inode(&current_inode, filename) {
             Ok(inode) => inode,
             Err(FsError::NotFound) if flags & O_CREAT != 0 => {
-                // Create new file if O_CREAT is set
                 self.create_inode(&current_inode, filename, false)?
             }
             Err(e) => return Err(e),
         };
 
-        // Check if target is a directory
+        // POSIX: opening a directory with write access or O_TRUNC is not allowed.
         {
             let inode = inode_read!(file_inode);
             if matches!(inode.content, FileContent::Dir(_)) {
                 let access_mode = flags & 0x3;
-                // POSIX: opening directory with write access is not allowed
                 if access_mode == O_WRONLY || access_mode == O_RDWR {
                     return Err(FsError::IsADirectory);
                 }
-                // O_TRUNC on directory is also not allowed
                 if flags & O_TRUNC != 0 {
                     return Err(FsError::IsADirectory);
                 }
             }
         }
 
-        // Handle O_TRUNC: truncate file to 0 bytes if flag is set
+        // O_TRUNC: truncate file to 0 bytes (POSIX requires write permission)
         if flags & O_TRUNC != 0 {
             let access_mode = flags & 0x3;
             if access_mode == O_RDONLY {
@@ -392,127 +485,11 @@ impl<T: TimeProvider> Fs<T> {
         let handle = FileHandle::new(inode_id, 0, flags);
 
         let fd = self.allocate_fd();
-        self.fd_table.insert(fd, handle);
+        self.fd_insert(fd, handle);
         debug!("open_at: allocated fd={} for inode={}", fd, inode_id);
         Ok(fd)
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn open_at(&mut self, dir_fd: Fd, path: &str, flags: u32) -> Result<Fd, FsError> {
-        debug!(
-            "open_at: dir_fd={}, path={}, flags={:#x}",
-            dir_fd, path, flags
-        );
-
-        // Reject absolute paths. open_at only accepts relative paths
-        if path.starts_with('/') {
-            error!("open_at: absolute path not allowed");
-            return Err(FsError::InvalidArgument);
-        }
-
-        // Get the directory inode_id from fd_table (extract and drop guard early)
-        let dir_inode_id = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let dir_handle = self.fd_table.get(&dir_fd).ok_or_else(|| {
-                error!("open_at: bad directory file descriptor {}", dir_fd);
-                FsError::BadFileDescriptor
-            })?;
-            dir_handle.inode_id
-        }; // dir_handle guard dropped here
-
-        // Get the directory inode
-        let dir_inode = self
-            .inode_table
-            .get(&dir_inode_id)
-            .ok_or(FsError::NotFound)?
-            .clone();
-
-        // Verify it's a directory
-        {
-            let inode = inode_read!(dir_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                error!("open_at: dir_fd {} is not a directory", dir_fd);
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Handle empty path: refers to the directory itself
-        if path.is_empty() {
-            error!("open_at: empty path not supported yet");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-        if comps.is_empty() {
-            return Err(FsError::InvalidArgument);
-        }
-
-        // Start from the directory fd, not root
-        let mut current_inode = dir_inode;
-
-        // Navigate to parent directory (all components except last)
-        for comp in comps.iter().take(comps.len() - 1) {
-            current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
-            let inode = inode_read!(current_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Handle final component (file name)
-        let filename = comps[comps.len() - 1];
-        let file_inode = match self.find_inode(&current_inode, filename) {
-            Ok(inode) => inode,
-            Err(FsError::NotFound) if flags & O_CREAT != 0 => {
-                // Create new file if O_CREAT is set
-                self.create_inode(&current_inode, filename, false)?
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Check if target is a directory
-        {
-            let inode = inode_read!(file_inode);
-            if matches!(inode.content, FileContent::Dir(_)) {
-                let access_mode = flags & 0x3;
-                // POSIX: opening directory with write access is not allowed
-                if access_mode == O_WRONLY || access_mode == O_RDWR {
-                    return Err(FsError::IsADirectory);
-                }
-                // O_TRUNC on directory is also not allowed
-                if flags & O_TRUNC != 0 {
-                    return Err(FsError::IsADirectory);
-                }
-            }
-        }
-
-        // Handle O_TRUNC: truncate file to 0 bytes if flag is set
-        if flags & O_TRUNC != 0 {
-            let access_mode = flags & 0x3;
-            if access_mode == O_RDONLY {
-                return Err(FsError::InvalidArgument);
-            }
-            let mut inode = inode_write!(file_inode);
-            if let FileContent::File(storage) = &mut inode.content {
-                storage.truncate(0);
-                inode.metadata.size = 0;
-                inode.metadata.modified = self.time_provider.now();
-            }
-        }
-
-        let inode_id = inode_read!(file_inode).id;
-        let handle = FileHandle::new(inode_id, 0, flags);
-
-        let fd = self.allocate_fd();
-        self.fd_table.insert(fd, handle);
-        debug!("open_at: allocated fd={} for inode={}", fd, inode_id);
-        Ok(fd)
-    }
-
-    #[cfg(feature = "std")]
     pub fn open_path_with_flags(&self, path: &str, flags: u32) -> Result<Fd, FsError> {
         debug!("open_path_with_flags: path={}, flags={:#x}", path, flags);
 
@@ -532,58 +509,44 @@ impl<T: TimeProvider> Fs<T> {
             debug!("open_path_with_flags: opening root directory");
             let handle = FileHandle::new(self.root_inode, 0, flags);
             let fd = self.allocate_fd();
-            self.fd_table.insert(fd, handle);
+            self.fd_insert(fd, handle);
             debug!("open_path_with_flags: allocated fd={} for root", fd);
             return Ok(fd);
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
+        let root_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
         let mut current_inode = root_inode;
 
-        // Navigate to parent directory (all components except last)
         for comp in comps.iter().take(comps.len() - 1) {
             current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
             let inode = inode_read!(current_inode);
             if matches!(inode.content, FileContent::File(_)) {
                 return Err(FsError::NotADirectory);
             }
         }
 
-        // Handle final component (file name)
         let filename = comps[comps.len() - 1];
         let file_inode = match self.find_inode(&current_inode, filename) {
             Ok(inode) => inode,
             Err(FsError::NotFound) if flags & O_CREAT != 0 => {
-                // Create new file if O_CREAT is set
                 self.create_inode(&current_inode, filename, false)?
             }
             Err(e) => return Err(e),
         };
 
-        // Check if target is a directory
         {
             let inode = inode_read!(file_inode);
             if matches!(inode.content, FileContent::Dir(_)) {
                 let access_mode = flags & 0x3;
-                // POSIX: opening directory with write access is not allowed
                 if access_mode == O_WRONLY || access_mode == O_RDWR {
                     return Err(FsError::IsADirectory);
                 }
-                // O_TRUNC on directory is also not allowed
                 if flags & O_TRUNC != 0 {
                     return Err(FsError::IsADirectory);
                 }
             }
         }
 
-        // Handle O_TRUNC: truncate file to 0 bytes if flag is set
-        // POSIX requires write permission for O_TRUNC
         if flags & O_TRUNC != 0 {
             let access_mode = flags & 0x3;
             if access_mode == O_RDONLY {
@@ -601,7 +564,7 @@ impl<T: TimeProvider> Fs<T> {
         let handle = FileHandle::new(inode_id, 0, flags);
 
         let fd = self.allocate_fd();
-        self.fd_table.insert(fd, handle);
+        self.fd_insert(fd, handle);
         debug!(
             "open_path_with_flags: allocated fd={} for inode={}",
             fd, inode_id
@@ -609,129 +572,27 @@ impl<T: TimeProvider> Fs<T> {
         Ok(fd)
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn open_path_with_flags(&mut self, path: &str, flags: u32) -> Result<Fd, FsError> {
-        debug!("open_path_with_flags: path={}, flags={:#x}", path, flags);
-
-        if path.is_empty() {
-            error!("open_path_with_flags: empty path");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        // Special case: opening root directory "/"
-        if comps.is_empty() {
-            debug!("open_path_with_flags: opening root directory");
-            let handle = FileHandle::new(self.root_inode, 0, flags);
-            let fd = self.allocate_fd();
-            self.fd_table.insert(fd, handle);
-            debug!("open_path_with_flags: allocated fd={} for root", fd);
-            return Ok(fd);
-        }
-
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
-
-        // Navigate to parent directory (all components except last)
-        for comp in comps.iter().take(comps.len() - 1) {
-            current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
-            let inode = inode_read!(current_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Handle final component (file name)
-        let filename = comps[comps.len() - 1];
-        let file_inode = match self.find_inode(&current_inode, filename) {
-            Ok(inode) => inode,
-            Err(FsError::NotFound) if flags & O_CREAT != 0 => {
-                // Create new file if O_CREAT is set
-                self.create_inode(&current_inode, filename, false)?
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Check if target is a directory
-        {
-            let inode = inode_read!(file_inode);
-            if matches!(inode.content, FileContent::Dir(_)) {
-                let access_mode = flags & 0x3;
-                // POSIX: opening directory with write access is not allowed
-                if access_mode == O_WRONLY || access_mode == O_RDWR {
-                    return Err(FsError::IsADirectory);
-                }
-                // O_TRUNC on directory is also not allowed
-                if flags & O_TRUNC != 0 {
-                    return Err(FsError::IsADirectory);
-                }
-            }
-        }
-
-        // Handle O_TRUNC: truncate file to 0 bytes if flag is set
-        // POSIX requires write permission for O_TRUNC
-        if flags & O_TRUNC != 0 {
-            let access_mode = flags & 0x3;
-            if access_mode == O_RDONLY {
-                return Err(FsError::InvalidArgument);
-            }
-            let mut inode = inode_write!(file_inode);
-            if let FileContent::File(storage) = &mut inode.content {
-                storage.truncate(0);
-                inode.metadata.size = 0;
-                inode.metadata.modified = self.time_provider.now();
-            }
-        }
-
-        let inode_id = inode_read!(file_inode).id;
-        let handle = FileHandle::new(inode_id, 0, flags);
-
-        let fd = self.allocate_fd();
-        self.fd_table.insert(fd, handle);
-        debug!(
-            "open_path_with_flags: allocated fd={} for inode={}",
-            fd, inode_id
-        );
-        Ok(fd)
-    }
-
-    #[cfg(feature = "std")]
     pub fn write(&self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
         trace!("write: fd={}, len={}", fd, buf.len());
 
-        // Extract handle data early and drop guard
-        let (inode_id, flags, position) = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let handle = self.fd_table.get(&fd).ok_or_else(|| {
+        let (inode_id, flags, position) = self
+            .fd_with(fd, |h| (h.inode_id, h.flags, h.get_position()))
+            .map_err(|_| {
                 error!("write: bad file descriptor {}", fd);
                 FsError::BadFileDescriptor
             })?;
-            (handle.inode_id, handle.flags, handle.get_position())
-        };
 
-        // Check write permission
         let access_mode = flags & 0x3;
         if access_mode == O_RDONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let mut inode_ref = inode_write!(inode);
 
         match &mut inode_ref.content {
             FileContent::File(storage) => {
-                // Handle O_APPEND: move position to end of file before writing
+                // O_APPEND: write at end of file
                 let pos = if flags & O_APPEND != 0 {
                     storage.size()
                 } else {
@@ -742,11 +603,9 @@ impl<T: TimeProvider> Fs<T> {
                 inode_ref.metadata.size = storage.size() as u64;
                 inode_ref.metadata.modified = self.time_provider.now();
 
-                // Update position after write (re-acquire handle)
+                // Release inode lock before re-acquiring the fd entry.
                 drop(inode_ref);
-                if let Some(handle) = self.fd_table.get(&fd) {
-                    handle.set_position((pos + n) as u64);
-                }
+                self.fd_try_with(fd, |h| h.set_position((pos + n) as u64));
 
                 debug!("write: fd={}, wrote {} bytes at pos {}", fd, n, pos);
                 Ok(n)
@@ -758,26 +617,22 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    /// Write data at a specific offset atomically (seek + write in one lock acquisition)
-    #[cfg(feature = "std")]
+    /// Write data at a specific offset atomically (seek + write in one
+    /// lock acquisition). Does not touch O_APPEND.
     pub fn write_at(&self, fd: Fd, offset: u64, buf: &[u8]) -> Result<usize, FsError> {
         trace!("write_at: fd={}, offset={}, len={}", fd, offset, buf.len());
 
-        let (inode_id, flags) = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let handle = self.fd_table.get(&fd).ok_or_else(|| {
-                error!("write_at: bad file descriptor {}", fd);
-                FsError::BadFileDescriptor
-            })?;
-            (handle.inode_id, handle.flags)
-        };
+        let (inode_id, flags) = self.fd_with(fd, |h| (h.inode_id, h.flags)).map_err(|_| {
+            error!("write_at: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
 
         let access_mode = flags & 0x3;
         if access_mode == O_RDONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let mut inode_ref = inode_write!(inode);
 
         match &mut inode_ref.content {
@@ -787,9 +642,7 @@ impl<T: TimeProvider> Fs<T> {
                 inode_ref.metadata.modified = self.time_provider.now();
 
                 drop(inode_ref);
-                if let Some(handle) = self.fd_table.get(&fd) {
-                    handle.set_position(offset + n as u64);
-                }
+                self.fd_try_with(fd, |h| h.set_position(offset + n as u64));
 
                 debug!(
                     "write_at: fd={}, wrote {} bytes at offset {}",
@@ -804,90 +657,32 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
-        trace!("write: fd={}, len={}", fd, buf.len());
-
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
-            error!("write: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
-
-        // Check write permission
-        let access_mode = handle.flags & 0x3;
-        if access_mode == O_RDONLY {
-            return Err(FsError::PermissionDenied);
-        }
-
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
-        let mut inode_ref = inode_write!(inode);
-
-        match &mut inode_ref.content {
-            FileContent::File(storage) => {
-                // Handle O_APPEND: move position to end of file before writing
-                let pos = if handle.flags & O_APPEND != 0 {
-                    let file_size = storage.size();
-                    handle.set_position(file_size as u64);
-                    file_size
-                } else {
-                    handle.get_position() as usize
-                };
-
-                let n = storage.write(pos, buf);
-                handle.set_position(handle.get_position() + n as u64);
-                inode_ref.metadata.size = storage.size() as u64;
-                inode_ref.metadata.modified = self.time_provider.now();
-                debug!("write: fd={}, wrote {} bytes at pos {}", fd, n, pos);
-                Ok(n)
-            }
-            FileContent::Dir(_) => {
-                error!("write: fd={} is a directory", fd);
-                Err(FsError::BadFileDescriptor)
-            }
-        }
-    }
-
-    /// Append data to file atomically (always writes at end of file)
-    #[cfg(feature = "std")]
+    /// Append data to file atomically (always writes at end of file).
     pub fn append_write(&self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
         trace!("append_write: fd={}, len={}", fd, buf.len());
 
-        // Extract handle data early and drop guard
-        let (inode_id, flags) = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let handle = self.fd_table.get(&fd).ok_or_else(|| {
-                error!("append_write: bad file descriptor {}", fd);
-                FsError::BadFileDescriptor
-            })?;
-            (handle.inode_id, handle.flags)
-        };
+        let (inode_id, flags) = self.fd_with(fd, |h| (h.inode_id, h.flags)).map_err(|_| {
+            error!("append_write: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
 
-        // Check write permission
         let access_mode = flags & 0x3;
         if access_mode == O_RDONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let mut inode_ref = inode_write!(inode);
 
         match &mut inode_ref.content {
             FileContent::File(storage) => {
-                // Always write at the end of file (atomic append)
                 let pos = storage.size();
                 let n = storage.write(pos, buf);
                 inode_ref.metadata.size = storage.size() as u64;
                 inode_ref.metadata.modified = self.time_provider.now();
 
-                // Update position after write (re-acquire handle)
                 drop(inode_ref);
-                if let Some(handle) = self.fd_table.get(&fd) {
-                    handle.set_position((pos + n) as u64);
-                }
+                self.fd_try_with(fd, |h| h.set_position((pos + n) as u64));
 
                 debug!(
                     "append_write: fd={}, appended {} bytes at pos {}",
@@ -902,77 +697,30 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    /// Append data to file atomically (always writes at end of file)
-    #[cfg(not(feature = "std"))]
-    pub fn append_write(&mut self, fd: Fd, buf: &[u8]) -> Result<usize, FsError> {
-        trace!("append_write: fd={}, len={}", fd, buf.len());
-
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        let handle = self.fd_table.get_mut(&fd).ok_or_else(|| {
-            error!("append_write: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
-
-        // Check write permission
-        let access_mode = handle.flags & 0x3;
-        if access_mode == O_RDONLY {
-            return Err(FsError::PermissionDenied);
-        }
-
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
-        let mut inode_ref = inode_write!(inode);
-
-        match &mut inode_ref.content {
-            FileContent::File(storage) => {
-                // Always write at the end of file (atomic append)
-                let pos = storage.size();
-                let n = storage.write(pos, buf);
-                handle.set_position((pos + n) as u64);
-                inode_ref.metadata.size = storage.size() as u64;
-                inode_ref.metadata.modified = self.time_provider.now();
-                debug!(
-                    "append_write: fd={}, appended {} bytes at pos {}",
-                    fd, n, pos
-                );
-                Ok(n)
-            }
-            FileContent::Dir(_) => {
-                error!("append_write: fd={} is a directory", fd);
-                Err(FsError::BadFileDescriptor)
-            }
-        }
-    }
-
-    /// Read data from file - now takes &self since position uses Cell for interior mutability
     pub fn read(&self, fd: Fd, out: &mut [u8]) -> Result<usize, FsError> {
         trace!("read: fd={}, buf_len={}", fd, out.len());
 
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        let handle = self.fd_table.get(&fd).ok_or_else(|| {
-            error!("read: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
+        let (inode_id, flags, position) = self
+            .fd_with(fd, |h| (h.inode_id, h.flags, h.get_position()))
+            .map_err(|_| {
+                error!("read: bad file descriptor {}", fd);
+                FsError::BadFileDescriptor
+            })?;
 
-        // Check read permission
-        let access_mode = handle.flags & 0x3;
+        let access_mode = flags & 0x3;
         if access_mode == O_WRONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let inode_ref = inode_read!(inode);
 
         match &inode_ref.content {
             FileContent::File(storage) => {
-                let pos = handle.get_position() as usize;
+                let pos = position as usize;
                 let n = storage.read(pos, out);
-                handle.set_position(handle.get_position() + n as u64);
+                drop(inode_ref);
+                self.fd_try_with(fd, |h| h.set_position(position + n as u64));
                 debug!("read: fd={}, read {} bytes at pos {}", fd, n, pos);
                 Ok(n)
             }
@@ -983,8 +731,8 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    /// Read data at a specific offset atomically (seek + read in one lock acquisition)
-    #[cfg(feature = "std")]
+    /// Read data at a specific offset atomically (seek + read in one
+    /// lock acquisition).
     pub fn read_at(&self, fd: Fd, offset: u64, out: &mut [u8]) -> Result<usize, FsError> {
         trace!(
             "read_at: fd={}, offset={}, buf_len={}",
@@ -993,30 +741,24 @@ impl<T: TimeProvider> Fs<T> {
             out.len()
         );
 
-        let (inode_id, flags) = {
-            #[allow(clippy::unnecessary_lazy_evaluations)]
-            let handle = self.fd_table.get(&fd).ok_or_else(|| {
-                error!("read_at: bad file descriptor {}", fd);
-                FsError::BadFileDescriptor
-            })?;
-            (handle.inode_id, handle.flags)
-        };
+        let (inode_id, flags) = self.fd_with(fd, |h| (h.inode_id, h.flags)).map_err(|_| {
+            error!("read_at: bad file descriptor {}", fd);
+            FsError::BadFileDescriptor
+        })?;
 
         let access_mode = flags & 0x3;
         if access_mode == O_WRONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let inode_ref = inode_read!(inode);
 
         match &inode_ref.content {
             FileContent::File(storage) => {
                 let n = storage.read(offset as usize, out);
                 drop(inode_ref);
-                if let Some(handle) = self.fd_table.get(&fd) {
-                    handle.set_position(offset + n as u64);
-                }
+                self.fd_try_with(fd, |h| h.set_position(offset + n as u64));
                 debug!("read_at: fd={}, read {} bytes at offset {}", fd, n, offset);
                 Ok(n)
             }
@@ -1027,21 +769,15 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    #[cfg(feature = "std")]
     pub fn ftruncate(&self, fd: Fd, size: u64) -> Result<(), FsError> {
-        // Extract handle data early and drop guard
-        let (inode_id, flags) = {
-            let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
-            (handle.inode_id, handle.flags)
-        };
+        let (inode_id, flags) = self.fd_with(fd, |h| (h.inode_id, h.flags))?;
 
-        // Check write permission (truncate requires write access)
         let access_mode = flags & 0x3;
         if access_mode == O_RDONLY {
             return Err(FsError::PermissionDenied);
         }
 
-        let inode = self.inode_table.get(&inode_id).ok_or(FsError::NotFound)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let mut inode_ref = inode_write!(inode);
 
         match &mut inode_ref.content {
@@ -1055,53 +791,10 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn ftruncate(&mut self, fd: Fd, size: u64) -> Result<(), FsError> {
-        let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
-
-        // Check write permission (truncate requires write access)
-        let access_mode = handle.flags & 0x3;
-        if access_mode == O_RDONLY {
-            return Err(FsError::PermissionDenied);
-        }
-
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
-        let mut inode_ref = inode_write!(inode);
-
-        match &mut inode_ref.content {
-            FileContent::File(storage) => {
-                storage.truncate(size as usize);
-                inode_ref.metadata.size = size;
-                inode_ref.metadata.modified = self.time_provider.now();
-                Ok(())
-            }
-            FileContent::Dir(_) => Err(FsError::BadFileDescriptor),
-        }
-    }
-
-    #[cfg(feature = "std")]
     pub fn close(&self, fd: Fd) -> Result<(), FsError> {
         trace!("close: fd={}", fd);
 
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        self.fd_table.remove(&fd).ok_or_else(|| {
-            error!("close: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
-
-        debug!("close: fd={} closed successfully", fd);
-        Ok(())
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub fn close(&mut self, fd: Fd) -> Result<(), FsError> {
-        trace!("close: fd={}", fd);
-
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        self.fd_table.remove(&fd).ok_or_else(|| {
+        self.fd_remove(fd).ok_or_else(|| {
             error!("close: bad file descriptor {}", fd);
             FsError::BadFileDescriptor
         })?;
@@ -1122,22 +815,12 @@ impl<T: TimeProvider> Fs<T> {
             .collect();
 
         if comps.is_empty() {
-            // Root directory
-            let root = self
-                .inode_table
-                .get(&self.root_inode)
-                .ok_or(FsError::NotFound)?;
+            let root = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
             return Ok(inode_read!(root).metadata);
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Navigate through all components
         for comp in comps.iter() {
             current_inode = self.find_inode(&current_inode, comp)?;
         }
@@ -1146,15 +829,11 @@ impl<T: TimeProvider> Fs<T> {
     }
 
     pub fn fstat(&self, fd: Fd) -> Result<Metadata, FsError> {
-        let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
+        let inode_id = self.fd_with(fd, |h| h.inode_id)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         Ok(inode_read!(inode).metadata)
     }
 
-    /// Seek to a position in file - now takes &self since position uses Cell for interior mutability
     pub fn seek(&self, fd: Fd, offset: i64, whence: i32) -> Result<u64, FsError> {
         trace!("seek: fd={}, offset={}, whence={}", fd, offset, whence);
 
@@ -1162,15 +841,13 @@ impl<T: TimeProvider> Fs<T> {
         const SEEK_CUR: i32 = 1;
         const SEEK_END: i32 = 2;
 
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        let handle = self.fd_table.get(&fd).ok_or_else(|| {
-            error!("seek: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
+        let (inode_id, current) = self
+            .fd_with(fd, |h| (h.inode_id, h.get_position()))
+            .map_err(|_| {
+                error!("seek: bad file descriptor {}", fd);
+                FsError::BadFileDescriptor
+            })?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
         let inode_ref = inode_read!(inode);
 
         match &inode_ref.content {
@@ -1183,37 +860,32 @@ impl<T: TimeProvider> Fs<T> {
                         offset as u64
                     }
                     SEEK_CUR => {
-                        let new_pos_signed = handle.get_position() as i64 + offset;
-                        if new_pos_signed < 0 {
+                        let new = current as i64 + offset;
+                        if new < 0 {
                             return Err(FsError::InvalidArgument);
                         }
-                        new_pos_signed as u64
+                        new as u64
                     }
                     SEEK_END => {
-                        let new_pos_signed = storage.size() as i64 + offset;
-                        if new_pos_signed < 0 {
+                        let size = storage.size() as i64;
+                        let new = size + offset;
+                        if new < 0 {
                             return Err(FsError::InvalidArgument);
                         }
-                        new_pos_signed as u64
+                        new as u64
                     }
-                    _ => {
-                        error!("seek: invalid whence {}", whence);
-                        return Err(FsError::InvalidArgument);
-                    }
+                    _ => return Err(FsError::InvalidArgument),
                 };
 
-                handle.set_position(new_pos);
+                drop(inode_ref);
+                self.fd_try_with(fd, |h| h.set_position(new_pos));
                 debug!("seek: fd={}, new_pos={}", fd, new_pos);
                 Ok(new_pos)
             }
-            FileContent::Dir(_) => {
-                error!("seek: fd={} is a directory", fd);
-                Err(FsError::BadFileDescriptor)
-            }
+            FileContent::Dir(_) => Err(FsError::BadFileDescriptor),
         }
     }
 
-    #[cfg(feature = "std")]
     pub fn mkdir(&self, path: &str) -> Result<(), FsError> {
         debug!("mkdir: path={}", path);
 
@@ -1232,76 +904,22 @@ impl<T: TimeProvider> Fs<T> {
             return Err(FsError::InvalidArgument);
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Navigate to parent directory (all components except last)
         for comp in comps.iter().take(comps.len() - 1) {
             current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
             let inode = inode_read!(current_inode);
             if matches!(inode.content, FileContent::File(_)) {
                 return Err(FsError::NotADirectory);
             }
         }
 
-        // Create the final directory component
         let dirname = comps[comps.len() - 1];
         self.create_inode(&current_inode, dirname, true)?;
         debug!("mkdir: created directory {}", path);
         Ok(())
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
-        debug!("mkdir: path={}", path);
-
-        if path.is_empty() {
-            error!("mkdir: empty path");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if comps.is_empty() {
-            return Err(FsError::InvalidArgument);
-        }
-
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
-
-        // Navigate to parent directory (all components except last)
-        for comp in comps.iter().take(comps.len() - 1) {
-            current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
-            let inode = inode_read!(current_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Create the final directory component
-        let dirname = comps[comps.len() - 1];
-        self.create_inode(&current_inode, dirname, true)?;
-        debug!("mkdir: created directory {}", path);
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     pub fn mkdir_p(&self, path: &str) -> Result<(), FsError> {
         if path.is_empty() {
             return Err(FsError::InvalidArgument);
@@ -1317,18 +935,11 @@ impl<T: TimeProvider> Fs<T> {
             return Ok(()); // Root already exists
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Create all components as needed
         for comp in comps.iter() {
             current_inode = match self.find_inode(&current_inode, comp) {
                 Ok(inode) => {
-                    // Verify it's a directory
                     {
                         let borrowed = inode_read!(inode);
                         if matches!(borrowed.content, FileContent::File(_)) {
@@ -1337,10 +948,7 @@ impl<T: TimeProvider> Fs<T> {
                     }
                     inode
                 }
-                Err(FsError::NotFound) => {
-                    // Create directory
-                    self.create_inode(&current_inode, comp, true)?
-                }
+                Err(FsError::NotFound) => self.create_inode(&current_inode, comp, true)?,
                 Err(e) => return Err(e),
             };
         }
@@ -1348,54 +956,6 @@ impl<T: TimeProvider> Fs<T> {
         Ok(())
     }
 
-    #[cfg(not(feature = "std"))]
-    pub fn mkdir_p(&mut self, path: &str) -> Result<(), FsError> {
-        if path.is_empty() {
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if comps.is_empty() {
-            return Ok(()); // Root already exists
-        }
-
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
-
-        // Create all components as needed
-        for comp in comps.iter() {
-            current_inode = match self.find_inode(&current_inode, comp) {
-                Ok(inode) => {
-                    // Verify it's a directory
-                    {
-                        let borrowed = inode_read!(inode);
-                        if matches!(borrowed.content, FileContent::File(_)) {
-                            return Err(FsError::NotADirectory);
-                        }
-                    }
-                    inode
-                }
-                Err(FsError::NotFound) => {
-                    // Create directory
-                    self.create_inode(&current_inode, comp, true)?
-                }
-                Err(e) => return Err(e),
-            };
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "std")]
     pub fn unlink(&self, path: &str) -> Result<(), FsError> {
         debug!("unlink: path={}", path);
 
@@ -1411,35 +971,23 @@ impl<T: TimeProvider> Fs<T> {
             .collect();
 
         if comps.is_empty() {
-            // Cannot unlink root directory
             return Err(FsError::InvalidArgument);
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Navigate to parent directory (all components except last)
         for comp in comps.iter().take(comps.len() - 1) {
             current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
             let inode = inode_read!(current_inode);
             if matches!(inode.content, FileContent::File(_)) {
                 return Err(FsError::NotADirectory);
             }
         }
 
-        // Get the filename to delete
         let filename = comps[comps.len() - 1];
 
-        // Check if the file exists and get its inode
+        // Verify the target exists and is not a directory.
         let target_inode = self.find_inode(&current_inode, filename)?;
-
-        // Check if it's a directory: use IsADirectory error
         {
             let target = inode_read!(target_inode);
             if matches!(target.content, FileContent::Dir(_)) {
@@ -1447,92 +995,19 @@ impl<T: TimeProvider> Fs<T> {
             }
         }
 
-        // Remove from parent directory
+        // Remove the entry from the parent directory.
         let mut parent = inode_write!(current_inode);
         match &mut parent.content {
             FileContent::Dir(entries) => {
                 entries.remove(filename);
-
-                // Update parent directory's modification time
                 let timestamp = self.time_provider.now();
                 parent.metadata.modified = timestamp;
-
                 debug!("unlink: removed {}", path);
                 Ok(())
             }
             FileContent::File(_) => Err(FsError::NotADirectory),
         }
-        // Note: The inode will be automatically cleaned up when the Arc/Rc ref count reaches 0
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub fn unlink(&mut self, path: &str) -> Result<(), FsError> {
-        debug!("unlink: path={}", path);
-
-        if path.is_empty() {
-            error!("unlink: empty path");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if comps.is_empty() {
-            // Cannot unlink root directory
-            return Err(FsError::InvalidArgument);
-        }
-
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
-
-        // Navigate to parent directory (all components except last)
-        for comp in comps.iter().take(comps.len() - 1) {
-            current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
-            let inode = inode_read!(current_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Get the filename to delete
-        let filename = comps[comps.len() - 1];
-
-        // Check if the file exists and get its inode
-        let target_inode = self.find_inode(&current_inode, filename)?;
-
-        // Check if it's a directory: use IsADirectory error
-        {
-            let target = inode_read!(target_inode);
-            if matches!(target.content, FileContent::Dir(_)) {
-                return Err(FsError::IsADirectory);
-            }
-        }
-
-        // Remove from parent directory
-        let mut parent = inode_write!(current_inode);
-        match &mut parent.content {
-            FileContent::Dir(entries) => {
-                entries.remove(filename);
-
-                // Update parent directory's modification time
-                let timestamp = self.time_provider.now();
-                parent.metadata.modified = timestamp;
-
-                debug!("unlink: removed {}", path);
-                Ok(())
-            }
-            FileContent::File(_) => Err(FsError::NotADirectory),
-        }
-        // Note: The inode will be automatically cleaned up when the Arc/Rc ref count reaches 0
+        // The inode is cleaned up when the last `Arc`/`Rc` ref drops.
     }
 
     pub fn readdir(&self, path: &str) -> Result<alloc::vec::Vec<alloc::string::String>, FsError> {
@@ -1546,19 +1021,12 @@ impl<T: TimeProvider> Fs<T> {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Navigate through all components
         for comp in comps.iter() {
             current_inode = self.find_inode(&current_inode, comp)?;
         }
 
-        // Check if it's a directory
         let inode = inode_read!(current_inode);
         match &inode.content {
             FileContent::Dir(entries) => {
@@ -1572,41 +1040,37 @@ impl<T: TimeProvider> Fs<T> {
         }
     }
 
-    /// Read directory entries from an open file descriptor
-    /// Returns a list of (name, is_dir) tuples
+    /// Read directory entries from an open file descriptor.
+    /// Returns a list of `(name, is_dir)` tuples.
     pub fn readdir_fd(
         &self,
         fd: Fd,
     ) -> Result<alloc::vec::Vec<(alloc::string::String, bool)>, FsError> {
-        // Get the file handle
-        let handle = self.fd_table.get(&fd).ok_or(FsError::BadFileDescriptor)?;
+        let inode_id = self.fd_with(fd, |h| h.inode_id)?;
+        let inode = self.inode_get(inode_id).ok_or(FsError::NotFound)?;
 
-        // Get the inode
-        let inode = self
-            .inode_table
-            .get(&handle.inode_id)
-            .ok_or(FsError::NotFound)?;
-
-        // Check if it's a directory
-        let inode_ref = inode_read!(inode);
-        match &inode_ref.content {
-            FileContent::Dir(entries) => {
-                let mut result = alloc::vec::Vec::new();
-                for (name, child_inode_id) in entries.iter() {
-                    // Get the child inode to check if it's a directory
-                    if let Some(child_inode) = self.inode_table.get(child_inode_id) {
-                        let is_dir = inode_read!(child_inode).metadata.is_dir;
-                        result.push((name.clone(), is_dir));
-                    }
-                }
-                Ok(result)
+        // Snapshot the (name, child_id) pairs so we don't hold the inode
+        // lock while looking up child inodes (which would conflict with a
+        // hypothetical concurrent writer holding both).
+        let entries: alloc::vec::Vec<(alloc::string::String, InodeId)> = {
+            let inode_ref = inode_read!(inode);
+            match &inode_ref.content {
+                FileContent::Dir(map) => map.iter().map(|(n, &id)| (n.clone(), id)).collect(),
+                FileContent::File(_) => return Err(FsError::NotADirectory),
             }
-            FileContent::File(_) => Err(FsError::NotADirectory),
+        };
+
+        let mut result = alloc::vec::Vec::with_capacity(entries.len());
+        for (name, child_id) in entries {
+            if let Some(child_inode) = self.inode_get(child_id) {
+                let is_dir = inode_read!(child_inode).metadata.is_dir;
+                result.push((name, is_dir));
+            }
         }
+        Ok(result)
     }
 
-    /// Remove an empty directory
-    #[cfg(feature = "std")]
+    /// Remove an empty directory.
     pub fn rmdir(&self, path: &str) -> Result<(), FsError> {
         debug!("rmdir: path={}", path);
 
@@ -1622,43 +1086,27 @@ impl<T: TimeProvider> Fs<T> {
             .collect();
 
         if comps.is_empty() {
-            // Cannot remove root directory
             return Err(FsError::InvalidArgument);
         }
 
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
+        let mut current_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
 
-        // Navigate to parent directory (all components except last)
         for comp in comps.iter().take(comps.len() - 1) {
             current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
             let inode = inode_read!(current_inode);
             if matches!(inode.content, FileContent::File(_)) {
                 return Err(FsError::NotADirectory);
             }
         }
 
-        // Get the directory name to delete
         let dirname = comps[comps.len() - 1];
-
-        // Check if the directory exists and get its inode
         let target_inode = self.find_inode(&current_inode, dirname)?;
 
-        // Check if it's a directory
         {
             let target = inode_read!(target_inode);
             match &target.content {
-                FileContent::File(_) => {
-                    return Err(FsError::NotADirectory);
-                }
+                FileContent::File(_) => return Err(FsError::NotADirectory),
                 FileContent::Dir(entries) => {
-                    // Check if directory is empty
                     if !entries.is_empty() {
                         error!("rmdir: directory not empty");
                         return Err(FsError::NotEmpty);
@@ -1667,106 +1115,20 @@ impl<T: TimeProvider> Fs<T> {
             }
         }
 
-        // Remove from parent directory
         let mut parent = inode_write!(current_inode);
         match &mut parent.content {
             FileContent::Dir(entries) => {
                 entries.remove(dirname);
-
-                // Update parent directory's modification time
                 let timestamp = self.time_provider.now();
                 parent.metadata.modified = timestamp;
-
                 debug!("rmdir: removed {}", path);
                 Ok(())
             }
             FileContent::File(_) => Err(FsError::NotADirectory),
         }
-        // Note: The inode will be automatically cleaned up when the Arc/Rc ref count reaches 0
     }
 
-    /// Remove an empty directory
-    #[cfg(not(feature = "std"))]
-    pub fn rmdir(&mut self, path: &str) -> Result<(), FsError> {
-        debug!("rmdir: path={}", path);
-
-        if path.is_empty() {
-            error!("rmdir: empty path");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let comps: alloc::vec::Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if comps.is_empty() {
-            // Cannot remove root directory
-            return Err(FsError::InvalidArgument);
-        }
-
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut current_inode = root_inode;
-
-        // Navigate to parent directory (all components except last)
-        for comp in comps.iter().take(comps.len() - 1) {
-            current_inode = self.find_inode(&current_inode, comp)?;
-
-            // Verify it's a directory
-            let inode = inode_read!(current_inode);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        // Get the directory name to delete
-        let dirname = comps[comps.len() - 1];
-
-        // Check if the directory exists and get its inode
-        let target_inode = self.find_inode(&current_inode, dirname)?;
-
-        // Check if it's a directory
-        {
-            let target = inode_read!(target_inode);
-            match &target.content {
-                FileContent::File(_) => {
-                    return Err(FsError::NotADirectory);
-                }
-                FileContent::Dir(entries) => {
-                    // Check if directory is empty
-                    if !entries.is_empty() {
-                        error!("rmdir: directory not empty");
-                        return Err(FsError::NotEmpty);
-                    }
-                }
-            }
-        }
-
-        // Remove from parent directory
-        let mut parent = inode_write!(current_inode);
-        match &mut parent.content {
-            FileContent::Dir(entries) => {
-                entries.remove(dirname);
-
-                // Update parent directory's modification time
-                let timestamp = self.time_provider.now();
-                parent.metadata.modified = timestamp;
-
-                debug!("rmdir: removed {}", path);
-                Ok(())
-            }
-            FileContent::File(_) => Err(FsError::NotADirectory),
-        }
-        // Note: The inode will be automatically cleaned up when the Arc/Rc ref count reaches 0
-    }
-
-    /// Rename or move a file or directory
-    #[cfg(feature = "std")]
+    /// Rename or move a file or directory.
     pub fn rename(&self, old_path: &str, new_path: &str) -> Result<(), FsError> {
         debug!("rename: old_path={}, new_path={}", old_path, new_path);
 
@@ -1788,21 +1150,15 @@ impl<T: TimeProvider> Fs<T> {
             .collect();
 
         if old_comps.is_empty() || new_comps.is_empty() {
-            // Cannot rename root directory
             return Err(FsError::InvalidArgument);
         }
 
-        // Same path is a no-op
         if old_comps == new_comps {
             return Ok(());
         }
 
-        // Navigate to old parent directory
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
+        // Navigate to old parent directory.
+        let root_inode = self.inode_get(self.root_inode).ok_or(FsError::NotFound)?;
         let mut old_parent = root_inode.clone();
 
         for comp in old_comps.iter().take(old_comps.len() - 1) {
@@ -1815,14 +1171,11 @@ impl<T: TimeProvider> Fs<T> {
 
         let old_name = old_comps[old_comps.len() - 1];
 
-        // Verify the source exists and get its type
+        // Verify source exists and get its type.
         let source_inode = self.find_inode(&old_parent, old_name)?;
-        let source_is_dir = {
-            let inode = inode_read!(source_inode);
-            inode.metadata.is_dir
-        };
+        let source_is_dir = inode_read!(source_inode).metadata.is_dir;
 
-        // Navigate to new parent directory
+        // Navigate to new parent directory.
         let mut new_parent = root_inode;
 
         for comp in new_comps.iter().take(new_comps.len() - 1) {
@@ -1835,7 +1188,7 @@ impl<T: TimeProvider> Fs<T> {
 
         let new_name = new_comps[new_comps.len() - 1];
 
-        // Check if destination exists and validate type compatibility
+        // If destination exists, validate type compatibility.
         if let Ok(dest_inode) = self.find_inode(&new_parent, new_name) {
             let dest = inode_read!(dest_inode);
             let dest_is_dir = dest.metadata.is_dir;
@@ -1853,20 +1206,13 @@ impl<T: TimeProvider> Fs<T> {
             }
         }
 
-        // Determine if same directory by comparing inode IDs
-        let old_parent_id = {
-            let inode = inode_read!(old_parent);
-            inode.id
-        };
-        let new_parent_id = {
-            let inode = inode_read!(new_parent);
-            inode.id
-        };
+        let old_parent_id = inode_read!(old_parent).id;
+        let new_parent_id = inode_read!(new_parent).id;
 
         let timestamp = self.time_provider.now();
 
         if old_parent_id == new_parent_id {
-            // Same directory: single lock, remove + insert
+            // Same directory: single lock, remove + insert.
             let mut parent = inode_write!(old_parent);
             if let FileContent::Dir(entries) = &mut parent.content {
                 if let Some(inode_id) = entries.remove(old_name) {
@@ -1879,8 +1225,8 @@ impl<T: TimeProvider> Fs<T> {
                 return Err(FsError::NotADirectory);
             }
         } else {
-            // Cross-directory: lock both parents atomically.
-            // Lock in inode ID order to prevent deadlock.
+            // Cross-directory: lock both parents in inode id order to avoid
+            // deadlock under thread-safe builds.
             if old_parent_id < new_parent_id {
                 let mut old_p = inode_write!(old_parent);
                 let mut new_p = inode_write!(new_parent);
@@ -1917,145 +1263,6 @@ impl<T: TimeProvider> Fs<T> {
         debug!("rename: {} -> {}", old_path, new_path);
         Ok(())
     }
-
-    /// Rename or move a file or directory
-    #[cfg(not(feature = "std"))]
-    pub fn rename(&mut self, old_path: &str, new_path: &str) -> Result<(), FsError> {
-        debug!("rename: old_path={}, new_path={}", old_path, new_path);
-
-        if old_path.is_empty() || new_path.is_empty() {
-            error!("rename: empty path");
-            return Err(FsError::InvalidArgument);
-        }
-
-        let old_comps: alloc::vec::Vec<&str> = old_path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        let new_comps: alloc::vec::Vec<&str> = new_path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if old_comps.is_empty() || new_comps.is_empty() {
-            // Cannot rename root directory
-            return Err(FsError::InvalidArgument);
-        }
-
-        // Same path is a no-op
-        if old_comps == new_comps {
-            return Ok(());
-        }
-
-        // Navigate to old parent directory
-        let root_inode = self
-            .inode_table
-            .get(&self.root_inode)
-            .ok_or(FsError::NotFound)?
-            .clone();
-        let mut old_parent = root_inode.clone();
-
-        for comp in old_comps.iter().take(old_comps.len() - 1) {
-            old_parent = self.find_inode(&old_parent, comp)?;
-            let inode = inode_read!(old_parent);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        let old_name = old_comps[old_comps.len() - 1];
-
-        // Verify the source exists and get its type
-        let source_inode = self.find_inode(&old_parent, old_name)?;
-        let source_is_dir = {
-            let inode = inode_read!(source_inode);
-            inode.metadata.is_dir
-        };
-
-        // Navigate to new parent directory
-        let mut new_parent = root_inode;
-
-        for comp in new_comps.iter().take(new_comps.len() - 1) {
-            new_parent = self.find_inode(&new_parent, comp)?;
-            let inode = inode_read!(new_parent);
-            if matches!(inode.content, FileContent::File(_)) {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        let new_name = new_comps[new_comps.len() - 1];
-
-        // Check if destination exists and validate type compatibility
-        if let Ok(dest_inode) = self.find_inode(&new_parent, new_name) {
-            let dest = inode_read!(dest_inode);
-            let dest_is_dir = dest.metadata.is_dir;
-
-            if source_is_dir && !dest_is_dir {
-                return Err(FsError::NotADirectory);
-            }
-            if !source_is_dir && dest_is_dir {
-                return Err(FsError::IsADirectory);
-            }
-            if dest_is_dir
-                && matches!(&dest.content, FileContent::Dir(entries) if !entries.is_empty())
-            {
-                return Err(FsError::NotEmpty);
-            }
-        }
-
-        // Determine if same directory by comparing inode IDs
-        let old_parent_id = {
-            let inode = inode_read!(old_parent);
-            inode.id
-        };
-        let new_parent_id = {
-            let inode = inode_read!(new_parent);
-            inode.id
-        };
-
-        let timestamp = self.time_provider.now();
-
-        if old_parent_id == new_parent_id {
-            // Same directory: single lock, remove + insert
-            let mut parent = inode_write!(old_parent);
-            if let FileContent::Dir(entries) = &mut parent.content {
-                if let Some(inode_id) = entries.remove(old_name) {
-                    entries.insert(alloc::string::String::from(new_name), inode_id);
-                    parent.metadata.modified = timestamp;
-                } else {
-                    return Err(FsError::NotFound);
-                }
-            } else {
-                return Err(FsError::NotADirectory);
-            }
-        } else {
-            // Cross-directory: remove from old, then insert into new
-            let inode_id = {
-                let mut parent = inode_write!(old_parent);
-                if let FileContent::Dir(entries) = &mut parent.content {
-                    let id = entries.remove(old_name).ok_or(FsError::NotFound)?;
-                    parent.metadata.modified = timestamp;
-                    id
-                } else {
-                    return Err(FsError::NotADirectory);
-                }
-            };
-
-            let mut parent = inode_write!(new_parent);
-            if let FileContent::Dir(entries) = &mut parent.content {
-                entries.insert(alloc::string::String::from(new_name), inode_id);
-                parent.metadata.modified = timestamp;
-            } else {
-                return Err(FsError::NotADirectory);
-            }
-        }
-
-        debug!("rename: {} -> {}", old_path, new_path);
-        Ok(())
-    }
 }
 
 impl Default for Fs<MonotonicCounter> {
@@ -2068,4 +1275,52 @@ impl Fs<MonotonicCounter> {
     pub fn new() -> Self {
         Self::with_time_provider(MonotonicCounter::new())
     }
+}
+
+// =============================================================================
+// Constructor helpers (cfg-gated for the four storage primitives)
+// =============================================================================
+
+#[cfg(feature = "thread-safe")]
+fn new_fd_table() -> FdTable {
+    DashMap::new()
+}
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+fn new_fd_table() -> FdTable {
+    RefCell::new(HashMap::new())
+}
+#[cfg(not(feature = "std"))]
+fn new_fd_table() -> FdTable {
+    RefCell::new(BTreeMap::new())
+}
+
+#[cfg(feature = "thread-safe")]
+fn new_inode_table() -> InodeTable {
+    DashMap::new()
+}
+#[cfg(all(feature = "std", not(feature = "thread-safe")))]
+fn new_inode_table() -> InodeTable {
+    RefCell::new(HashMap::new())
+}
+#[cfg(not(feature = "std"))]
+fn new_inode_table() -> InodeTable {
+    RefCell::new(BTreeMap::new())
+}
+
+#[cfg(feature = "thread-safe")]
+fn new_inode_counter(initial: InodeId) -> NextInodeCounter {
+    AtomicU64::new(initial)
+}
+#[cfg(not(feature = "thread-safe"))]
+fn new_inode_counter(initial: InodeId) -> NextInodeCounter {
+    Cell::new(initial)
+}
+
+#[cfg(feature = "thread-safe")]
+fn new_fd_counter(initial: Fd) -> NextFdCounter {
+    AtomicU32::new(initial)
+}
+#[cfg(not(feature = "thread-safe"))]
+fn new_fd_counter(initial: Fd) -> NextFdCounter {
+    Cell::new(initial)
 }

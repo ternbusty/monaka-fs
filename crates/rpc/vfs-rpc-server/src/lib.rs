@@ -1,30 +1,27 @@
-//! VFS RPC Server with S3 Persistence
+//! VFS RPC Server with S3 Persistence.
 //!
-//! A WebAssembly component that exposes fs-core filesystem over TCP sockets.
-//! Multiple clients can connect and share the same in-memory filesystem.
-//! Filesystem state is persisted to S3 asynchronously.
+//! A WebAssembly component that exposes the `fs-core` filesystem over TCP
+//! sockets. Multiple clients can connect and share the same in-memory
+//! filesystem. Optional S3 persistence is implemented in `vfs-sync-adapter`.
+//!
+//! This crate is intentionally a thin shell:
+//! - it owns the WASI imports (sockets / I/O / random / clocks);
+//! - it runs the TCP accept + per-client read loop;
+//! - it generates per-connection UUID v4 session ids from
+//!   `wasi:random/random`.
+//!
+//! The request-handling logic lives in [`vfs_rpc_server_core`], a plain
+//! Rust library that builds (and is unit-tested) outside the cdylib.
 
-#![no_main]
-#![allow(warnings)]
+#![cfg_attr(not(test), no_main)]
 
-use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use fs_core::{Fs, FsError, MonotonicCounter};
 use prost::Message;
 use vfs_rpc_protocol::{
-    from_proto_request, to_proto_response, DirEntry, ErrorCode, FileMetadata, Request, Response,
-    RpcRequest as ProtoRpcRequest, RpcRequestMessage, PROTOCOL_VERSION,
+    from_proto_request, to_proto_response, ErrorCode, Response, RpcRequest as ProtoRpcRequest,
 };
-
-#[cfg(feature = "s3-sync")]
-use std::sync::Arc;
-#[cfg(feature = "s3-sync")]
-use vfs_sync_adapter::{init_from_s3, new_s3_storage, MetadataCache, SyncConfig, SyncManager};
+use vfs_rpc_server_core::{init_server, ServerContext};
 
 // WIT bindgen generates the bindings
 wit_bindgen::generate!({
@@ -72,366 +69,67 @@ fn init_logger() {
     }
 }
 
-/// Result of trying to read a message with timeout
+/// Result of trying to read a message from the socket.
 enum ReadResult {
-    /// Successfully read a message
+    /// Successfully read a message.
     Message(Vec<u8>),
-    /// Timeout occurred, no data available
-    Timeout,
-    /// Client disconnected
+    /// Client disconnected.
     Disconnected,
 }
 
-/// Timeout for polling (100ms in nanoseconds)
-/// Short timeout allows other tasks to run (accept loop, other client handlers)
+/// Timeout for polling (100ms in nanoseconds). Short timeout allows other
+/// tasks to run (accept loop, other client handlers).
 const POLL_TIMEOUT_NS: u64 = 100_000_000;
 
-// Session counter (used as part of hash input for uniqueness)
-static mut SESSION_COUNTER: u64 = 0;
-
-/// Generate a unique 6-character alphanumeric session ID
+/// Generate a unique session ID formatted as a UUID v4.
+///
+/// 16 random bytes come from `wasi:random/random` in WASI builds and from
+/// a non-cryptographic host fallback when this file is compiled for unit
+/// tests. We avoid the `uuid` crate's built-in `v4` feature because its
+/// transitive `getrandom` dependency pulls in `wasi:http/types@0.2.9`,
+/// which the component linker cannot merge with the 0.2.6 interfaces our
+/// world imports.
 fn generate_session_id() -> String {
-    const CHARSET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-
-    unsafe {
-        SESSION_COUNTER = SESSION_COUNTER.wrapping_add(1);
-
-        let mut hasher = DefaultHasher::new();
-        SESSION_COUNTER.hash(&mut hasher);
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-            .hash(&mut hasher);
-
-        let hash = hasher.finish();
-
-        // Convert hash to 6-character alphanumeric string
-        let mut result = String::with_capacity(6);
-        let mut h = hash;
-        for _ in 0..6 {
-            result.push(CHARSET[(h % 36) as usize] as char);
-            h /= 36;
-        }
-        result
-    }
+    uuid::Builder::from_random_bytes(random_uuid_bytes())
+        .into_uuid()
+        .simple()
+        .to_string()
 }
 
-/// Server context holding shared state
-struct ServerContext {
-    fs: Rc<RefCell<Fs<MonotonicCounter>>>,
-    #[cfg(feature = "s3-sync")]
-    sync_manager: Option<SyncManager<MonotonicCounter>>,
-    /// Map from file descriptor to path for sync tracking
-    fd_path_map: RefCell<HashMap<u32, String>>,
-    /// Track which fds have been refreshed from S3 (to avoid repeated refreshes)
-    s3_refreshed_fds: RefCell<HashSet<u32>>,
-    /// Whether to refresh files from S3 on read (VFS_READ_MODE=s3)
-    read_from_s3: bool,
-    /// Whether to check S3 metadata on open (VFS_METADATA_MODE=s3)
-    metadata_sync: bool,
+#[cfg(target_family = "wasm")]
+fn random_uuid_bytes() -> [u8; 16] {
+    let bytes = wasi::random::random::get_random_bytes(16);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
+    out
 }
 
-impl ServerContext {
-    /// Handle a single RPC request
-    async fn handle_request(&self, request: Request, session_id: Option<String>) -> Response {
-        // Log the session ID for tracking (debug only to avoid performance impact)
-        if let Some(ref sid) = session_id {
-            log::debug!("[session {}] Processing request", sid);
-        }
-
-        match request {
-            Request::Connect { version } => {
-                if version != PROTOCOL_VERSION {
-                    Response::Error {
-                        code: ErrorCode::ProtocolError,
-                        message: format!(
-                            "Protocol version mismatch: client={}, server={}",
-                            version, PROTOCOL_VERSION
-                        ),
-                    }
-                } else {
-                    let new_session_id = generate_session_id();
-                    log::info!("[session {}] New client connected", new_session_id);
-                    Response::Connected {
-                        session_id: new_session_id,
-                        version: PROTOCOL_VERSION,
-                    }
-                }
-            }
-
-            Request::OpenPath { path, flags } => {
-                // Check S3 metadata and refresh if changed (if metadata sync mode)
-                #[cfg(feature = "s3-sync")]
-                if self.metadata_sync {
-                    if let Some(ref sync) = self.sync_manager {
-                        match sync.check_and_refresh_from_s3(&path).await {
-                            Ok(refreshed) => {
-                                if refreshed {
-                                    log::debug!("[sync] Refreshed on open: {}", path);
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("[sync] Metadata check failed for {}: {}", path, e);
-                            }
-                        }
-                    }
-                }
-
-                match self.fs.borrow_mut().open_path_with_flags(&path, flags) {
-                    Ok(fd) => {
-                        // Track fd -> path mapping for sync
-                        self.fd_path_map.borrow_mut().insert(fd, path);
-                        Response::Fd { fd }
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Read { fd, length } => {
-                // Refresh from S3 before read (if read-through mode, once per fd)
-                #[cfg(feature = "s3-sync")]
-                if self.read_from_s3 && !self.s3_refreshed_fds.borrow().contains(&fd) {
-                    if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
-                        if let Some(ref sync) = self.sync_manager {
-                            if let Err(e) = sync.refresh_file_from_s3(&path).await {
-                                log::error!("[sync] Refresh failed for {}: {}", path, e);
-                            }
-                        }
-                    }
-                    self.s3_refreshed_fds.borrow_mut().insert(fd);
-                }
-
-                let mut buf = vec![0u8; length];
-                match self.fs.borrow_mut().read(fd, &mut buf) {
-                    Ok(n) => {
-                        buf.truncate(n);
-                        Response::Data { bytes: buf }
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Write { fd, data } => {
-                let result = self.fs.borrow_mut().write(fd, &data);
-                match result {
-                    Ok(n) => {
-                        #[cfg(feature = "s3-sync")]
-                        if let Some(ref sync) = self.sync_manager {
-                            if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
-                                if sync.is_realtime() {
-                                    if let Err(e) = sync.sync_file_now(&path).await {
-                                        log::error!("[sync] RealTime sync failed: {}", e);
-                                    }
-                                } else {
-                                    sync.enqueue_upload(path);
-                                }
-                            }
-                        }
-                        Response::Written { count: n }
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Close { fd } => {
-                // Remove fd -> path mapping
-                self.fd_path_map.borrow_mut().remove(&fd);
-                // Remove from s3_refreshed tracking
-                self.s3_refreshed_fds.borrow_mut().remove(&fd);
-                match self.fs.borrow_mut().close(fd) {
-                    Ok(()) => Response::Ok,
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Seek { fd, offset, whence } => {
-                match self.fs.borrow_mut().seek(fd, offset, whence) {
-                    Ok(pos) => Response::Position { pos },
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Ftruncate { fd, size } => match self.fs.borrow_mut().ftruncate(fd, size) {
-                Ok(()) => {
-                    #[cfg(feature = "s3-sync")]
-                    if let Some(ref sync) = self.sync_manager {
-                        if let Some(path) = self.fd_path_map.borrow().get(&fd) {
-                            sync.enqueue_upload(path.clone());
-                        }
-                    }
-                    Response::Ok
-                }
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Fstat { fd } => match self.fs.borrow().fstat(fd) {
-                Ok(meta) => Response::Metadata {
-                    metadata: FileMetadata {
-                        size: meta.size,
-                        created: meta.created,
-                        modified: meta.modified,
-                        is_dir: meta.is_dir,
-                    },
-                },
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Stat { path } => match self.fs.borrow().stat(&path) {
-                Ok(meta) => Response::Metadata {
-                    metadata: FileMetadata {
-                        size: meta.size,
-                        created: meta.created,
-                        modified: meta.modified,
-                        is_dir: meta.is_dir,
-                    },
-                },
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Mkdir { path } => match self.fs.borrow_mut().mkdir(&path) {
-                Ok(()) => Response::Ok,
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::MkdirP { path } => match self.fs.borrow_mut().mkdir_p(&path) {
-                Ok(()) => Response::Ok,
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Unlink { path } => {
-                let result = self.fs.borrow_mut().unlink(&path);
-                match result {
-                    Ok(()) => {
-                        #[cfg(feature = "s3-sync")]
-                        if let Some(ref sync) = self.sync_manager {
-                            sync.enqueue_delete(path.clone());
-                        }
-                        Response::Ok
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::Readdir { path } => match self.fs.borrow().readdir(&path) {
-                Ok(names) => {
-                    let fs = self.fs.borrow();
-                    let mut entries = Vec::new();
-                    for name in names {
-                        let full_path = if path == "/" {
-                            format!("/{}", name)
-                        } else {
-                            format!("{}/{}", path, name)
-                        };
-                        let is_dir = fs.stat(&full_path).map(|meta| meta.is_dir).unwrap_or(false);
-                        entries.push(DirEntry { name, is_dir });
-                    }
-                    Response::DirEntries { entries }
-                }
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::ReaddirFd { fd } => match self.fs.borrow().readdir_fd(fd) {
-                Ok(entries) => {
-                    let dir_entries = entries
-                        .into_iter()
-                        .map(|(name, is_dir)| DirEntry { name, is_dir })
-                        .collect();
-                    Response::DirEntries {
-                        entries: dir_entries,
-                    }
-                }
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Rmdir { path } => match self.fs.borrow_mut().rmdir(&path) {
-                Ok(()) => Response::Ok,
-                Err(e) => map_fs_error(e),
-            },
-
-            Request::Rename { old_path, new_path } => {
-                match self.fs.borrow_mut().rename(&old_path, &new_path) {
-                    Ok(()) => Response::Ok,
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::AppendWrite { fd, data } => {
-                let result = self.fs.borrow_mut().append_write(fd, &data);
-                match result {
-                    Ok(n) => {
-                        #[cfg(feature = "s3-sync")]
-                        if let Some(ref sync) = self.sync_manager {
-                            if let Some(path) = self.fd_path_map.borrow().get(&fd).cloned() {
-                                if sync.is_realtime() {
-                                    if let Err(e) = sync.sync_file_now(&path).await {
-                                        log::error!("[sync] RealTime sync failed: {}", e);
-                                    }
-                                } else {
-                                    sync.enqueue_upload(path);
-                                }
-                            }
-                        }
-                        Response::Written { count: n }
-                    }
-                    Err(e) => map_fs_error(e),
-                }
-            }
-
-            Request::OpenAt {
-                dir_fd,
-                path,
-                flags,
-            } => match self.fs.borrow_mut().open_at(dir_fd, &path, flags) {
-                Ok(fd) => {
-                    // Compute absolute path for sync tracking
-                    if let Some(dir_path) = self.fd_path_map.borrow().get(&dir_fd) {
-                        let abs_path = if dir_path == "/" {
-                            format!("/{}", path.trim_start_matches('/'))
-                        } else {
-                            format!(
-                                "{}/{}",
-                                dir_path.trim_end_matches('/'),
-                                path.trim_start_matches('/')
-                            )
-                        };
-                        self.fd_path_map.borrow_mut().insert(fd, abs_path);
-                    }
-                    Response::Fd { fd }
-                }
-                Err(e) => map_fs_error(e),
-            },
-        }
-    }
+#[cfg(not(target_family = "wasm"))]
+fn random_uuid_bytes() -> [u8; 16] {
+    // Host fallback for `cargo test`. The session ID is only used to label
+    // log lines, so deterministic-but-distinct bytes derived from the wall
+    // clock are good enough — we are not relying on cryptographic strength
+    // here. Production builds (wasm32-wasip2) always take the path above.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&(nanos as u64).to_le_bytes());
+    out[8..].copy_from_slice(&seq.to_le_bytes());
+    out
 }
 
-/// Map fs-core error to RPC error response
-fn map_fs_error(error: FsError) -> Response {
-    let (code, message) = match error {
-        FsError::NotFound => (ErrorCode::NotFound, "Not found"),
-        FsError::NotADirectory => (ErrorCode::NotADirectory, "Not a directory"),
-        FsError::IsADirectory => (ErrorCode::IsADirectory, "Is a directory"),
-        FsError::InvalidArgument => (ErrorCode::InvalidArgument, "Invalid argument"),
-        FsError::BadFileDescriptor => (ErrorCode::BadFileDescriptor, "Bad file descriptor"),
-        FsError::PermissionDenied => (ErrorCode::PermissionDenied, "Permission denied"),
-        FsError::AlreadyExists => (ErrorCode::AlreadyExists, "Already exists"),
-        FsError::NotEmpty => (ErrorCode::NotEmpty, "Directory not empty"),
-    };
-
-    Response::Error {
-        code,
-        message: message.to_string(),
-    }
-}
-
-/// Try to read a message with timeout
-/// Returns Timeout if no data arrives within POLL_TIMEOUT_NS
-/// Read a complete length-prefixed message from stream (blocking, no timeout).
-/// Used after initial data is detected.
+/// Read a complete length-prefixed message from `stream` (blocking, no
+/// timeout). Used after initial data has already been detected.
 fn read_message_blocking(stream: &InputStream, first_bytes: Vec<u8>) -> ReadResult {
     let mut len_buf = first_bytes;
 
-    // Read remaining bytes of 4-byte length prefix
+    // Read remaining bytes of the 4-byte length prefix
     while len_buf.len() < 4 {
         match stream.blocking_read(4 - len_buf.len() as u64) {
             Ok(bytes) => {
@@ -481,17 +179,15 @@ fn read_message_blocking(stream: &InputStream, first_bytes: Vec<u8>) -> ReadResu
     ReadResult::Message(data)
 }
 
-/// Write a length-prefixed message to stream
+/// Write a length-prefixed message to `stream`.
 fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     let len = data.len() as u32;
     let len_bytes = len.to_be_bytes();
 
-    // Combine length prefix and data into single payload to minimize flush overhead
     let mut payload = Vec::with_capacity(4 + data.len());
     payload.extend_from_slice(&len_bytes);
     payload.extend_from_slice(data);
 
-    // Write using check_write to get optimal buffer sizes (avoids 4KB chunk limitation)
     let mut offset = 0;
     while offset < payload.len() {
         let available = match stream.check_write() {
@@ -508,13 +204,12 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
             continue;
         }
         let end = std::cmp::min(offset + available, payload.len());
-        if let Err(_) = stream.write(&payload[offset..end]) {
+        if stream.write(&payload[offset..end]).is_err() {
             return false;
         }
         offset = end;
     }
 
-    // Flush once at the end
     loop {
         match stream.blocking_flush() {
             Ok(()) => break,
@@ -528,97 +223,22 @@ fn write_message(stream: &OutputStream, data: &[u8]) -> bool {
     true
 }
 
-/// Initialize server with optional S3 persistence
-async fn init_server() -> ServerContext {
-    // Check for S3 configuration via environment variables
-    let s3_bucket = std::env::var("VFS_S3_BUCKET").ok();
-    let s3_prefix = std::env::var("VFS_S3_PREFIX").unwrap_or_else(|_| "vfs/".to_string());
-
-    // Check for read-through and metadata sync modes
-    let read_from_s3 = std::env::var("VFS_READ_MODE")
-        .map(|v| v.to_lowercase() == "s3")
-        .unwrap_or(false);
-    let metadata_sync = std::env::var("VFS_METADATA_MODE")
-        .map(|v| v.to_lowercase() == "s3")
-        .unwrap_or(false);
-
-    if read_from_s3 {
-        log::info!("Read-through mode enabled (VFS_READ_MODE=s3)");
-    }
-    if metadata_sync {
-        log::info!("Metadata sync mode enabled (VFS_METADATA_MODE=s3)");
-    }
-
-    #[cfg(feature = "s3-sync")]
-    let (fs, sync_manager) = if let Some(bucket) = s3_bucket {
-        log::info!(
-            "S3 persistence enabled: bucket={}, prefix={}",
-            bucket,
-            s3_prefix
-        );
-
-        let s3 = Arc::new(new_s3_storage(bucket, s3_prefix).await);
-
-        let (fs, metadata_cache) = match init_from_s3::<MonotonicCounter>(&s3).await {
-            Ok((fs, cache)) => (fs, cache),
-            Err(e) => {
-                log::error!(
-                    "Failed to load from S3: {}, starting with empty filesystem",
-                    e
-                );
-                (Rc::new(RefCell::new(Fs::new())), MetadataCache::new())
-            }
-        };
-
-        let config = SyncConfig::default();
-        log::info!(
-            "Sync mode: {:?} (set VFS_SYNC_MODE=realtime for immediate sync)",
-            config.mode
-        );
-        let sync_manager = SyncManager::new(
-            s3,
-            vfs_sync_adapter::AdapterFs(fs.clone()),
-            metadata_cache,
-            config,
-        );
-
-        (fs, Some(sync_manager))
-    } else {
-        log::info!("S3 persistence disabled (VFS_S3_BUCKET not set)");
-        (Rc::new(RefCell::new(Fs::new())), None)
-    };
-
-    #[cfg(not(feature = "s3-sync"))]
-    let fs = Rc::new(RefCell::new(Fs::new()));
-
-    ServerContext {
-        fs,
-        #[cfg(feature = "s3-sync")]
-        sync_manager,
-        fd_path_map: RefCell::new(HashMap::new()),
-        s3_refreshed_fds: RefCell::new(HashSet::new()),
-        read_from_s3,
-        metadata_sync,
-    }
-}
-
-/// Client resources with explicit drop order
-/// Fields are dropped in declaration order: streams first, then socket
+/// Client resources with an explicit drop order: streams first, socket
+/// last (so the socket outlives its child streams).
 struct ClientResources {
     input: InputStream,
     output: OutputStream,
-    /// Socket must be dropped last (after streams which are its children)
     #[allow(dead_code)]
     socket: wasi::sockets::tcp::TcpSocket,
 }
 
-/// Client state for the unified poll loop
+/// Per-client state for the unified poll loop.
 struct Client {
     resources: ClientResources,
     session_id: Option<String>,
 }
 
-/// Accept a new client connection and add to clients list
+/// Accept a new client connection and add it to the `clients` list.
 fn accept_new_client(socket: &wasi::sockets::tcp::TcpSocket, clients: &mut Vec<Client>) {
     match socket.accept() {
         Ok((client_socket, input, output)) => {
@@ -641,11 +261,10 @@ fn accept_new_client(socket: &wasi::sockets::tcp::TcpSocket, clients: &mut Vec<C
     }
 }
 
-/// Result of handling one request
 enum HandleResult {
-    /// Request processed successfully, client still connected
+    /// Request processed successfully, client still connected.
     Ok,
-    /// Client disconnected
+    /// Client disconnected.
     Disconnected,
 }
 
@@ -663,7 +282,6 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     let request_bytes = match read_message_blocking(&client.resources.input, first_byte.to_vec()) {
         ReadResult::Message(bytes) => bytes,
         ReadResult::Disconnected => return HandleResult::Disconnected,
-        ReadResult::Timeout => return HandleResult::Ok, // shouldn't happen
     };
 
     // Parse request protobuf
@@ -696,12 +314,19 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
         }
     };
 
-    // Handle request
+    // Pre-generate a session id in case this request is `Connect`. The
+    // core handler ignores it otherwise.
+    let new_session_id = generate_session_id();
+
     let response = ctx
-        .handle_request(rpc_request.request, client.session_id.clone())
+        .handle_request(
+            rpc_request.request,
+            client.session_id.clone(),
+            new_session_id,
+        )
         .await;
 
-    // Track session ID from connect response
+    // Track session ID from Connect response.
     if let Response::Connected {
         session_id: ref new_session_id,
         ..
@@ -731,10 +356,9 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     HandleResult::Ok
 }
 
-/// Main entry point
+/// Main entry point.
 #[no_mangle]
 pub extern "C" fn _start() {
-    // Use single-threaded tokio runtime for WASI (needed for S3 async operations)
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -746,14 +370,11 @@ async fn async_main() {
     init_logger();
     log::info!("VFS RPC Server starting...");
 
-    // Initialize server with optional S3 persistence
     let ctx = Rc::new(init_server().await);
 
-    // Create TCP socket
     let network = instance_network();
     let socket = create_tcp_socket(IpAddressFamily::Ipv4).expect("Failed to create TCP socket");
 
-    // Bind to localhost:9000
     let bind_addr = IpSocketAddress::Ipv4(Ipv4SocketAddress {
         port: 9000,
         address: (127, 0, 0, 1),
@@ -766,12 +387,11 @@ async fn async_main() {
 
     log::info!("Socket bound to 127.0.0.1:9000");
 
-    // Start listening
     socket.start_listen().expect("Failed to start listen");
     socket.finish_listen().expect("Failed to finish listen");
 
     log::info!("VFS RPC Server listening on 127.0.0.1:9000");
-    log::info!("Protocol version: {}", PROTOCOL_VERSION);
+    log::info!("Protocol version: {}", vfs_rpc_protocol::PROTOCOL_VERSION);
     log::info!("Waiting for connections...");
 
     // Unified poll loop: accept socket + all client input streams + timeout
@@ -801,7 +421,6 @@ async fn async_main() {
             let accept_idx = 0u32;
             let timeout_idx = (1 + clients.len()) as u32;
             (ready, accept_idx, timeout_idx)
-            // accept_pollable, client_pollables, timeout_pollable dropped here
         };
 
         let mut to_remove: Vec<usize> = Vec::new();
@@ -816,7 +435,6 @@ async fn async_main() {
                     sync.maybe_sync().await;
                 }
             } else {
-                // Client has data ready
                 let client_idx = (idx - 1) as usize;
                 if client_idx < clients.len() {
                     match handle_one_request(&mut clients[client_idx], &ctx).await {
@@ -845,6 +463,32 @@ async fn async_main() {
         to_remove.sort_unstable();
         for idx in to_remove.into_iter().rev() {
             clients.swap_remove(idx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn session_id_is_uuid_simple_form() {
+        let id = generate_session_id();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Best-effort collision check. UUID v4 has 122 bits of entropy, so
+    /// even ~10^9 generations should never collide; a hit here almost
+    /// certainly means the RNG path or formatting has regressed.
+    #[test]
+    fn session_ids_are_unique_across_many_generations() {
+        let n = 5_000;
+        let mut seen = HashSet::with_capacity(n);
+        for _ in 0..n {
+            let id = generate_session_id();
+            assert!(seen.insert(id), "collision within {} generations", n);
         }
     }
 }

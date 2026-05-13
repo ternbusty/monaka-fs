@@ -18,6 +18,7 @@ members = [
   # RPC
   "crates/rpc/vfs-rpc-protocol",
   "crates/rpc/vfs-rpc-server",
+  "crates/rpc/vfs-rpc-server-core",
 
   # Tools
   "crates/tools/monaka-cli",

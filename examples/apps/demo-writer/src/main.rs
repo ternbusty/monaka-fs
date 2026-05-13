@@ -13,9 +13,6 @@ fn main() {
 
     match fs::write(path, content) {
         Ok(()) => println!("Wrote {} bytes to {}", content.len(), path),
-        Err(e) => {
-            eprintln!("Failed to write to {}: {}", path, e);
-            return;
-        }
+        Err(e) => eprintln!("Failed to write to {}: {}", path, e),
     }
 }

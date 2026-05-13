@@ -7,13 +7,10 @@
 // Socket is kept in PersistentConnection to prevent premature drop.
 // subscribe() creates child Pollables, but they are dropped within each loop iteration.
 
-#![no_main]
-#![allow(warnings)]
+#![cfg_attr(not(test), no_main)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::rc::Rc;
-use std::sync::Once;
 
 use vfs_rpc_protocol::{
     from_proto_response_bytes, to_proto_request_bytes, ErrorCode as RpcErrorCode, Request,
@@ -30,7 +27,7 @@ wit_bindgen::generate!({
 // Re-export for convenience
 use exports::wasi::filesystem::types::{
     Descriptor, DescriptorBorrow, DescriptorFlags, DescriptorStat, DescriptorType, DirectoryEntry,
-    DirectoryEntryStream, ErrorCode, Filesize, NewTimestamp, OpenFlags, PathFlags,
+    ErrorCode, Filesize, NewTimestamp, OpenFlags, PathFlags,
 };
 
 use wasi::io::poll::poll;
@@ -44,8 +41,9 @@ use wasi::sockets::tcp_create_socket::create_tcp_socket;
 // Socket must be kept alive to prevent "resource has children" error when it would be dropped.
 // subscribe() creates child Pollables, but they are dropped within each loop iteration.
 
-static CONN_INIT: Once = Once::new();
-static mut RPC_CONNECTION: Option<PersistentConnection> = None;
+thread_local! {
+    static RPC_CONNECTION: RefCell<Option<PersistentConnection>> = const { RefCell::new(None) };
+}
 
 struct PersistentConnection {
     // Socket is kept alive to prevent premature drop (streams are children of socket)
@@ -210,18 +208,18 @@ fn with_connection<F, R>(f: F) -> Result<R, ErrorCode>
 where
     F: FnOnce(&mut PersistentConnection) -> Result<R, ErrorCode>,
 {
-    unsafe {
-        CONN_INIT.call_once(|| {
+    RPC_CONNECTION.with(|cell| {
+        if cell.borrow().is_none() {
             if let Ok(conn) = PersistentConnection::connect() {
-                RPC_CONNECTION = Some(conn);
+                *cell.borrow_mut() = Some(conn);
             }
-        });
-
-        match RPC_CONNECTION.as_mut() {
+        }
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
             Some(conn) => f(conn),
             None => Err(ErrorCode::Io),
         }
-    }
+    })
 }
 
 // Helper to make RPC call using persistent connection
@@ -230,8 +228,9 @@ fn rpc_call(request: &Request) -> Result<Response, ErrorCode> {
 }
 
 // Main RPC adapter state: only stores descriptor mappings, no connection
-static INIT: Once = Once::new();
-static mut RPC_STATE: Option<RpcState> = None;
+thread_local! {
+    static RPC_STATE: RefCell<Option<RpcState>> = const { RefCell::new(None) };
+}
 
 struct RpcState {
     // Map descriptor handle to server FD
@@ -271,12 +270,6 @@ impl RpcState {
             .copied()
             .ok_or(ErrorCode::BadDescriptor)
     }
-
-    fn release_descriptor(&self, descriptor: u32) {
-        if let Some(fd) = self.descriptor_to_fd.borrow_mut().remove(&descriptor) {
-            self.fd_to_descriptor.borrow_mut().remove(&fd);
-        }
-    }
 }
 
 // Helper to get or initialize RPC state
@@ -284,12 +277,13 @@ fn with_rpc_state<F, R>(f: F) -> R
 where
     F: FnOnce(&RpcState) -> R,
 {
-    unsafe {
-        INIT.call_once(|| {
-            RPC_STATE = Some(RpcState::new());
-        });
-        f(RPC_STATE.as_ref().unwrap())
-    }
+    RPC_STATE.with(|cell| {
+        if cell.borrow().is_none() {
+            *cell.borrow_mut() = Some(RpcState::new());
+        }
+        let borrow = cell.borrow();
+        f(borrow.as_ref().unwrap())
+    })
 }
 
 // Convert RPC error to WASI error code
@@ -1275,121 +1269,6 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
     }
 }
 
-// Passthrough stream implementations (kept for reference, but no longer used directly)
-struct PassthroughInputStream {
-    inner: wasi::io::streams::InputStream,
-}
-
-impl exports::wasi::io::streams::GuestInputStream for PassthroughInputStream {
-    fn read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
-        self.inner
-            .read(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_read(&self, len: u64) -> Result<Vec<u8>, exports::wasi::io::streams::StreamError> {
-        self.inner
-            .blocking_read(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner
-            .skip(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_skip(&self, len: u64) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner
-            .blocking_skip(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
-        exports::wasi::io::poll::Pollable::new(PassthroughPollable {
-            inner: self.inner.subscribe(),
-        })
-    }
-}
-
-struct PassthroughOutputStream {
-    inner: wasi::io::streams::OutputStream,
-}
-
-impl exports::wasi::io::streams::GuestOutputStream for PassthroughOutputStream {
-    fn check_write(&self) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        self.inner
-            .check_write()
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn write(&self, contents: Vec<u8>) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .write(&contents)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_write_and_flush(
-        &self,
-        contents: Vec<u8>,
-    ) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .blocking_write_and_flush(&contents)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .flush()
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_flush(&self) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .blocking_flush()
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
-        exports::wasi::io::poll::Pollable::new(PassthroughPollable {
-            inner: self.inner.subscribe(),
-        })
-    }
-
-    fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .write_zeroes(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_write_zeroes_and_flush(
-        &self,
-        len: u64,
-    ) -> Result<(), exports::wasi::io::streams::StreamError> {
-        self.inner
-            .blocking_write_zeroes_and_flush(len)
-            .map_err(|_| exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn splice(
-        &self,
-        src: exports::wasi::io::streams::InputStreamBorrow<'_>,
-        len: u64,
-    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        // Not yet implemented
-        Err(exports::wasi::io::streams::StreamError::Closed)
-    }
-
-    fn blocking_splice(
-        &self,
-        src: exports::wasi::io::streams::InputStreamBorrow<'_>,
-        len: u64,
-    ) -> Result<u64, exports::wasi::io::streams::StreamError> {
-        // Not yet implemented
-        Err(exports::wasi::io::streams::StreamError::Closed)
-    }
-}
-
 struct PassthroughPollable {
     inner: wasi::io::poll::Pollable,
 }
@@ -1415,5 +1294,109 @@ impl exports::wasi::io::error::GuestError for PassthroughError {
             .as_ref()
             .map(|e| e.to_debug_string())
             .unwrap_or_else(|| "Unknown error".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_path_adds_leading_slash() {
+        assert_eq!(normalize_path("foo/bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn normalize_path_keeps_single_leading_slash() {
+        assert_eq!(normalize_path("/foo/bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn normalize_path_collapses_repeated_leading_slashes() {
+        assert_eq!(normalize_path("///foo"), "/foo");
+    }
+
+    #[test]
+    fn normalize_path_handles_empty() {
+        assert_eq!(normalize_path(""), "/");
+    }
+
+    #[test]
+    fn rpc_error_maps_known_codes() {
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::NotFound),
+            ErrorCode::NoEntry
+        ));
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::NotADirectory),
+            ErrorCode::NotDirectory
+        ));
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::IsADirectory),
+            ErrorCode::IsDirectory
+        ));
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::PermissionDenied),
+            ErrorCode::Access
+        ));
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::AlreadyExists),
+            ErrorCode::Exist
+        ));
+        assert!(matches!(
+            rpc_error_to_wasi(RpcErrorCode::NotEmpty),
+            ErrorCode::NotEmpty
+        ));
+    }
+
+    #[test]
+    fn make_descriptor_stat_sets_directory_type() {
+        let stat = make_descriptor_stat(true, 4096);
+        assert!(matches!(stat.type_, DescriptorType::Directory));
+        assert_eq!(stat.size, 4096);
+        assert_eq!(stat.link_count, 1);
+        assert!(stat.data_access_timestamp.is_none());
+        assert!(stat.data_modification_timestamp.is_none());
+        assert!(stat.status_change_timestamp.is_none());
+    }
+
+    #[test]
+    fn make_descriptor_stat_sets_regular_file_type() {
+        let stat = make_descriptor_stat(false, 123);
+        assert!(matches!(stat.type_, DescriptorType::RegularFile));
+        assert_eq!(stat.size, 123);
+    }
+
+    #[test]
+    fn convert_flags_default_is_rdonly() {
+        let f = convert_flags(OpenFlags::empty(), DescriptorFlags::READ);
+        assert_eq!(f & 0x03, 0x00); // O_RDONLY
+        assert_eq!(f & 0x40, 0); // no O_CREAT
+        assert_eq!(f & 0x200, 0); // no O_TRUNC
+    }
+
+    #[test]
+    fn convert_flags_write_only() {
+        let f = convert_flags(OpenFlags::empty(), DescriptorFlags::WRITE);
+        assert_eq!(f & 0x03, 0x01); // O_WRONLY
+    }
+
+    #[test]
+    fn convert_flags_read_write() {
+        let f = convert_flags(
+            OpenFlags::empty(),
+            DescriptorFlags::READ | DescriptorFlags::WRITE,
+        );
+        assert_eq!(f & 0x03, 0x02); // O_RDWR
+    }
+
+    #[test]
+    fn convert_flags_create_and_trunc() {
+        let f = convert_flags(
+            OpenFlags::CREATE | OpenFlags::TRUNCATE,
+            DescriptorFlags::WRITE,
+        );
+        assert_eq!(f & 0x40, 0x40); // O_CREAT
+        assert_eq!(f & 0x200, 0x200); // O_TRUNC
     }
 }

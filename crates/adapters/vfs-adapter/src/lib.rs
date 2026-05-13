@@ -7,11 +7,13 @@
 //
 // Optional S3 sync feature enables automatic synchronization with S3.
 
-#![no_main]
-#![allow(warnings)]
+#![cfg_attr(not(test), no_main)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "s3-sync")]
+use std::collections::BTreeSet;
+use std::ptr::addr_of;
 use std::rc::Rc;
 
 use fs_core::snapshot::FsSnapshot;
@@ -54,17 +56,19 @@ impl fs_core::TimeProvider for SystemTimeProvider {
     }
 }
 
-// Main VFS adapter state
-// Using lazy_static for initialization
-use std::sync::Once;
+// Main VFS adapter state held in thread-local cells. WASI components run in
+// a single-threaded environment, so RefCell access is safe and we avoid the
+// `static mut` lint trap.
+thread_local! {
+    static VFS_STATE: RefCell<Option<VfsState>> = const { RefCell::new(None) };
+    // Separate cell for the FS itself to avoid re-entrancy issues
+    static VFS_FS: RefCell<Option<Rc<RefCell<Fs<SystemTimeProvider>>>>> = const { RefCell::new(None) };
+}
 
-static INIT: Once = Once::new();
-static mut VFS_STATE: Option<VfsState> = None;
-// Separate static for the FS itself to avoid re-entrancy issues
-static mut VFS_FS: Option<Rc<RefCell<Fs<SystemTimeProvider>>>> = None;
-
-// Runtime-injected snapshot data (set by monaka-pack CLI)
-// These are mutable globals that the CLI modifies in the WASM binary
+// Runtime-injected snapshot data (set by monaka-pack CLI).
+// These remain `static mut` because the CLI patches the binary at the named
+// symbol addresses. They are read via `addr_of!` to avoid creating a
+// reference to a mutable static.
 #[no_mangle]
 #[used]
 static mut MONAKA_FS_FS_DATA_PTR: u32 = 0;
@@ -75,7 +79,8 @@ static mut MONAKA_FS_FS_DATA_LEN: u32 = 0;
 
 /// Try to load the runtime-injected snapshot from memory
 fn load_runtime_snapshot() -> Option<FsSnapshot> {
-    let (ptr, len) = unsafe { (MONAKA_FS_FS_DATA_PTR, MONAKA_FS_FS_DATA_LEN) };
+    let ptr = unsafe { addr_of!(MONAKA_FS_FS_DATA_PTR).read() };
+    let len = unsafe { addr_of!(MONAKA_FS_FS_DATA_LEN).read() };
 
     if ptr == 0 || len == 0 {
         return None;
@@ -85,10 +90,7 @@ fn load_runtime_snapshot() -> Option<FsSnapshot> {
     let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
 
     // Parse JSON snapshot
-    match serde_json::from_slice::<FsSnapshot>(data) {
-        Ok(snapshot) => Some(snapshot),
-        Err(_) => None,
-    }
+    serde_json::from_slice::<FsSnapshot>(data).ok()
 }
 
 /// Load snapshot from runtime injection (set by monaka-pack)
@@ -190,10 +192,6 @@ impl VfsState {
             .ok_or(ErrorCode::BadDescriptor)
     }
 
-    fn get_descriptor(&self, fd: Fd) -> Option<u32> {
-        self.fd_to_descriptor.get(&fd).copied()
-    }
-
     fn release_descriptor(&mut self, descriptor: u32) {
         if let Some(fd) = self.descriptor_to_fd.remove(&descriptor) {
             self.fd_to_descriptor.remove(&fd);
@@ -203,31 +201,37 @@ impl VfsState {
     }
 }
 
+// Ensure VFS state is initialized once.
+fn ensure_init() {
+    VFS_STATE.with(|state_cell| {
+        if state_cell.borrow().is_none() {
+            let state = VfsState::new();
+            VFS_FS.with(|fs_cell| {
+                *fs_cell.borrow_mut() = Some(state.fs.clone());
+            });
+            *state_cell.borrow_mut() = Some(state);
+        }
+    });
+}
+
 // Helper to get or initialize VFS state
 fn with_vfs_state<F, R>(f: F) -> R
 where
     F: FnOnce(&mut VfsState) -> R,
 {
-    unsafe {
-        INIT.call_once(|| {
-            let state = VfsState::new();
-            VFS_FS = Some(state.fs.clone());
-            VFS_STATE = Some(state);
-        });
-        f(VFS_STATE.as_mut().unwrap())
-    }
+    ensure_init();
+    VFS_STATE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        f(borrow.as_mut().unwrap())
+    })
 }
 
-// Helper to get VFS FS (for use in stream implementations to avoid re-entrancy)
-fn get_vfs_fs() -> &'static Rc<RefCell<Fs<SystemTimeProvider>>> {
-    unsafe {
-        INIT.call_once(|| {
-            let state = VfsState::new();
-            VFS_FS = Some(state.fs.clone());
-            VFS_STATE = Some(state);
-        });
-        VFS_FS.as_ref().unwrap()
-    }
+// Helper to get VFS FS (for use in stream implementations to avoid re-entrancy).
+// Returns a clone of the `Rc` so callers do not have to keep the thread-local
+// borrow alive while operating on the filesystem.
+fn get_vfs_fs() -> Rc<RefCell<Fs<SystemTimeProvider>>> {
+    ensure_init();
+    VFS_FS.with(|cell| cell.borrow().as_ref().unwrap().clone())
 }
 
 // Convert fs-core error to WASI error code
@@ -717,7 +721,9 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
             let core_flags = convert_flags(open_flags, flags);
 
-            // Use open_at if available, otherwise fall back to absolute path for root
+            // Use open_at if available, otherwise fall back to absolute path for root.
+            // `full_path` is only consumed when s3-sync is enabled.
+            #[cfg_attr(not(feature = "s3-sync"), allow(unused_variables))]
             let (fd, full_path) = if self.handle == 0 {
                 // Root directory: use absolute path
                 let full_path = normalize_path(&path);
@@ -1014,7 +1020,7 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 // Return immediately ready pollable for in-memory FS
                 exports::wasi::io::poll::Pollable::new(PollableImpl)
             }
-            Self::Host(stream) => {
+            Self::Host(_stream) => {
                 // Wrap host pollable. For now just return ready pollable
                 // TODO: properly wrap host pollable
                 exports::wasi::io::poll::Pollable::new(PollableImpl)
@@ -1280,5 +1286,115 @@ impl exports::wasi::cli::stderr::Guest for VfsAdapter {
         // Wrap host's stderr using enum design
         let host_stderr = wasi::cli::stderr::get_stderr();
         exports::wasi::io::streams::OutputStream::new(VfsOutputStream::Host(host_stderr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_path_adds_leading_slash() {
+        assert_eq!(normalize_path("foo/bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn normalize_path_keeps_single_leading_slash() {
+        assert_eq!(normalize_path("/foo/bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn normalize_path_collapses_repeated_leading_slashes() {
+        assert_eq!(normalize_path("///foo"), "/foo");
+    }
+
+    #[test]
+    fn normalize_path_handles_empty() {
+        assert_eq!(normalize_path(""), "/");
+    }
+
+    #[test]
+    fn to_error_code_maps_all_variants() {
+        assert!(matches!(
+            to_error_code(FsError::NotFound),
+            ErrorCode::NoEntry
+        ));
+        assert!(matches!(
+            to_error_code(FsError::NotADirectory),
+            ErrorCode::NotDirectory
+        ));
+        assert!(matches!(
+            to_error_code(FsError::IsADirectory),
+            ErrorCode::IsDirectory
+        ));
+        assert!(matches!(
+            to_error_code(FsError::InvalidArgument),
+            ErrorCode::Invalid
+        ));
+        assert!(matches!(
+            to_error_code(FsError::BadFileDescriptor),
+            ErrorCode::BadDescriptor
+        ));
+        assert!(matches!(
+            to_error_code(FsError::PermissionDenied),
+            ErrorCode::Access
+        ));
+        assert!(matches!(
+            to_error_code(FsError::AlreadyExists),
+            ErrorCode::Exist
+        ));
+        assert!(matches!(
+            to_error_code(FsError::NotEmpty),
+            ErrorCode::NotEmpty
+        ));
+    }
+
+    #[test]
+    fn make_descriptor_stat_carries_metadata_timestamps() {
+        let metadata = fs_core::Metadata {
+            size: 4096,
+            created: 100,
+            modified: 200,
+            permissions: 0o644,
+            is_dir: true,
+        };
+        let stat = make_descriptor_stat(DescriptorType::Directory, &metadata);
+        assert!(matches!(stat.type_, DescriptorType::Directory));
+        assert_eq!(stat.size, 4096);
+        assert_eq!(stat.link_count, 1);
+        assert_eq!(stat.data_access_timestamp.unwrap().seconds, 100);
+        assert_eq!(stat.data_modification_timestamp.unwrap().seconds, 200);
+        assert_eq!(stat.status_change_timestamp.unwrap().seconds, 200);
+    }
+
+    #[test]
+    fn convert_flags_rdonly_when_only_read_requested() {
+        let f = convert_flags(OpenFlags::empty(), DescriptorFlags::READ);
+        assert_eq!(f & 0x03, fs_core::O_RDONLY);
+    }
+
+    #[test]
+    fn convert_flags_wronly_when_only_write_requested() {
+        let f = convert_flags(OpenFlags::empty(), DescriptorFlags::WRITE);
+        assert_eq!(f & 0x03, fs_core::O_WRONLY);
+    }
+
+    #[test]
+    fn convert_flags_rdwr_when_both_requested() {
+        let f = convert_flags(
+            OpenFlags::empty(),
+            DescriptorFlags::READ | DescriptorFlags::WRITE,
+        );
+        assert_eq!(f & 0x03, fs_core::O_RDWR);
+    }
+
+    #[test]
+    fn convert_flags_passes_create_and_truncate() {
+        let f = convert_flags(
+            OpenFlags::CREATE | OpenFlags::TRUNCATE,
+            DescriptorFlags::WRITE,
+        );
+        assert!(f & fs_core::O_CREAT != 0);
+        assert!(f & fs_core::O_TRUNC != 0);
     }
 }

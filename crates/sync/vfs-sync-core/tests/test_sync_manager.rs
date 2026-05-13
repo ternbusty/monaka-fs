@@ -106,11 +106,13 @@ fn dummy_s3() -> Arc<S3Storage> {
 }
 
 fn make_manager(mode: SyncMode) -> SyncManager<ErrorFs> {
-    let mut config = SyncConfig::default();
-    config.mode = mode;
-    // Force a tiny batch so flush logic is easy to reason about.
-    config.outbound_batch_size = 4;
-    config.flush_interval = Duration::from_secs(1);
+    let config = SyncConfig {
+        mode,
+        // Force a tiny batch so flush logic is easy to reason about.
+        outbound_batch_size: 4,
+        flush_interval: Duration::from_secs(1),
+        ..SyncConfig::default()
+    };
     SyncManager::new(dummy_s3(), ErrorFs, MetadataCache::new(), config)
 }
 

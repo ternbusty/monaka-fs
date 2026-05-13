@@ -1,0 +1,24 @@
+[package]
+name = "vfs-rpc-server-core"
+version = "0.2.4"
+edition = "2021"
+publish = false
+description = "Pure RPC request-handling logic extracted from vfs-rpc-server for unit testing"
+
+# Pure Rust library — no cdylib, no WIT-bindgen. The cdylib (`vfs-rpc-server`)
+# depends on this crate and provides the WASI socket loop that drives it.
+[lib]
+crate-type = ["lib"]
+
+[features]
+default = []
+s3-sync = ["dep:vfs-sync-adapter"]
+
+[dependencies]
+fs-core = { path = "../../core/fs-core", features = ["serde"] }
+vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
+vfs-sync-adapter = { path = "../../sync/vfs-sync-adapter", optional = true }
+log = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }

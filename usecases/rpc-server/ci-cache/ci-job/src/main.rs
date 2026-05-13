@@ -70,7 +70,7 @@ fn process_dependency(job_id: &str, dep: &str) {
             let content = format!(
                 "library:{}\nversion:{}\ncached_at:{}\ncached_by:Job{}",
                 dep.split('-').next().unwrap_or(dep),
-                dep.split('-').last().unwrap_or("unknown"),
+                dep.split('-').next_back().unwrap_or("unknown"),
                 current_timestamp(),
                 job_id
             );
