@@ -1,6 +1,6 @@
 [package]
 name = "vfs-rpc-server-core"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 publish = false
 description = "Pure RPC request-handling logic extracted from vfs-rpc-server for unit testing"

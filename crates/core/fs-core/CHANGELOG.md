@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/ternbusty/monaka-fs/compare/fs-core-v0.2.4...fs-core-v0.2.5) (2026-05-13)
+
+
+### Bug Fixes
+
+* **release:** track vfs-rpc-server-core and document fs-core flavours ([#63](https://github.com/ternbusty/monaka-fs/issues/63)) ([24417f3](https://github.com/ternbusty/monaka-fs/commit/24417f314109dfd86ab908d7f4fe7cee02a1423a))
+
 ## [0.2.4](https://github.com/ternbusty/monaka-fs/compare/fs-core-v0.2.3...fs-core-v0.2.4) (2026-04-18)
 
 
