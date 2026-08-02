@@ -11,6 +11,14 @@ vfs-sync-core = { version = "0.2.5", path = "../vfs-sync-core" }
 fs-core = { version = "0.2.5", path = "../../core/fs-core", features = ["thread-safe"] }
 log = "0.4"
 
-# AWS SDK with default features (hyper-based HTTP client) for native use.
-aws-sdk-s3 = "1"
+# AWS SDK for native use. Keep the default features of aws-sdk-s3 except
+# "rustls", which only compiles in the deprecated rustls 0.21 legacy
+# connector; the SDK already uses the rustls 0.23 based default-https-client
+# at runtime.
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
 aws-config = "1"
