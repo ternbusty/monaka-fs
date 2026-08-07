@@ -69,27 +69,16 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    env:
-      WASM_CARGO: cargo +1.92.0
     steps:
       - uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      # Match the e2e job's toolchain split so the warmed cargo cache is
-      # reusable across both jobs (see the e2e job for the rationale).
-      # The ref stays @stable (Dependabot proposes bumps to unreleased
-      # Rust versions for this action's version refs); the actual pin
-      # lives in the `toolchain` input.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.0
           targets: wasm32-wasip2
-
-      - name: Install guest Rust toolchain
-        run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-wasip2 --no-self-update
 
       - name: Cache cargo registry
         uses: actions/cache@v6
@@ -146,10 +135,10 @@ jobs:
       # runtime-linker examples that live in their own Cargo workspaces.
       - name: Pre-build workspace demo WASMs
         run: |
-          $WASM_CARGO build --release --target wasm32-wasip2 \
+          cargo build --release --target wasm32-wasip2 \
             -p demo-writer -p demo-reader -p demo-fs-operations \
             -p demo-embed-read -p ci-job -p logger -p image-processor
-          $WASM_CARGO build --target wasm32-wasip2 \
+          cargo build --target wasm32-wasip2 \
             -p demo-writer -p demo-reader -p demo-fs-operations
 
       - name: Build monaka CLI bundle
@@ -222,37 +211,23 @@ jobs:
       # spurious "os error 29" failures in the RPC tier.
       WASMTIME_VERSION: v39.0.1
       WAC_VERSION: 0.10.0
-      # Build all wasm32-wasip2 (guest) artifacts with rustc 1.92.0.
-      # Apps built with the 1.94.0-1.96.0 wasip2 std panic at runtime on
-      # Linux when composed with the rpc-adapter and closing a file:
-      # "cannot use two types with this resource type". Verified
-      # empirically per app toolchain (1.92 OK, 1.94/1.95/1.96 panic,
-      # 1.97 OK; macOS hosts unaffected); the adapter's own toolchain
-      # does not matter. Guests cannot move to 1.97+ yet because that
-      # std pulls `wasi:http@0.2.9` imports which fail to merge with the
-      # vendored 0.2.6 WIT at component-link time, so everything stays
-      # on 1.92.0. Native (host) builds use the default toolchain below,
-      # which must be >=1.94.0 because the wasmtime 46 crates require
-      # it. Makefile and scripts/e2e.sh pick WASM_CARGO up from the
-      # environment.
-      WASM_CARGO: cargo +1.92.0
     steps:
       - uses: actions/checkout@v7
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler netcat-openbsd
 
-      # Native (host) toolchain. The ref stays @stable (Dependabot
-      # proposes bumps to unreleased Rust versions for this action's
-      # version refs); the actual pin lives in the `toolchain` input.
+      # Hosts and guests build with the same stable toolchain. This used
+      # to require a guest-side pin: with the vendored WIT at 0.2.6, the
+      # 1.97+ wasip2 std could not even link the S3 guests, and apps
+      # built with the 1.94-1.96 std hit a pollable resource-type panic
+      # when composed with the rpc-adapter. The WIT update to 0.2.9 and
+      # the unified pollable representation in both adapters removed
+      # both failure modes.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.94.0
           targets: wasm32-wasip2
-
-      - name: Install guest Rust toolchain
-        run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-wasip2 --no-self-update
 
       # Share the `build-` cache prefix with the Build job (we depend on
       # it via `needs: build`, so its Post Cache step has already

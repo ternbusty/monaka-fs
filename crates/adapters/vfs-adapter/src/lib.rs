@@ -313,7 +313,10 @@ struct VfsAdapter;
 impl exports::wasi::filesystem::preopens::Guest for VfsAdapter {
     fn get_directories() -> Vec<(Descriptor, String)> {
         // Create a proper Descriptor resource for the root directory
-        let desc = Descriptor::new(DescriptorImpl { handle: 0 });
+        let desc = Descriptor::new(DescriptorImpl {
+            handle: 0,
+            path: "/".to_string(),
+        });
         vec![(desc, "/".to_string())]
     }
 }
@@ -332,6 +335,23 @@ impl exports::wasi::filesystem::types::Guest for VfsAdapter {
 // Descriptor resource implementation
 struct DescriptorImpl {
     handle: u32,
+    // Absolute VFS path of this descriptor ("/" for the preopen root).
+    // The `*-at` methods resolve their relative paths against it, since
+    // fs-core's directory-level operations are path-based.
+    path: String,
+}
+
+// Resolve a WASI `*-at` relative path against a descriptor's absolute path.
+fn join_at_path(base: &str, rel: &str) -> String {
+    let rel = rel.trim_start_matches("./").trim_start_matches('/');
+    if rel.is_empty() || rel == "." {
+        return base.to_string();
+    }
+    if base == "/" {
+        format!("/{rel}")
+    } else {
+        format!("{base}/{rel}")
+    }
 }
 
 // Implement Drop to properly close file descriptors when the resource is dropped
@@ -596,17 +616,13 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 state.fs.borrow().readdir_fd(fd).map_err(to_error_code)?
             };
 
-            // Add "." and ".." entries for Unix compatibility
-            // These are standard directory entries that should always be present
-            let mut full_entries = vec![
-                (".".to_string(), true),  // "." is always a directory
-                ("..".to_string(), true), // ".." is always a directory
-            ];
-            full_entries.append(&mut entries);
+            // Note: per the wasi:filesystem spec, read-directory must not
+            // include "." and ".." entries. Newer Rust std versions stat
+            // each entry, and a synthetic ".." would fail that lookup.
 
             // Create directory entry stream
             let stream_impl = DirectoryEntryStreamImpl {
-                entries: full_entries,
+                entries,
                 index: Cell::new(0),
             };
 
@@ -621,20 +637,13 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn create_directory_at(&self, path: String) -> Result<(), ErrorCode> {
         with_vfs_state(|state| {
-            // For now, we don't have directory FDs properly implemented
-            // This is a limitation we'll address later
-            // Just create using absolute path for root
-            if self.handle == 0 {
-                // Use mkdir (not mkdir_p) to properly return errors for existing directories
-                // fs::create_dir_all() will call this multiple times for nested paths
-                state
-                    .fs
-                    .borrow_mut()
-                    .mkdir(&normalize_path(&path))
-                    .map_err(to_error_code)
-            } else {
-                Err(ErrorCode::Unsupported)
-            }
+            // Use mkdir (not mkdir_p) to properly return errors for existing directories
+            // fs::create_dir_all() will call this multiple times for nested paths
+            state
+                .fs
+                .borrow_mut()
+                .mkdir(&join_at_path(&self.path, &path))
+                .map_err(to_error_code)
         })
     }
 
@@ -660,11 +669,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn stat_at(&self, _path_flags: PathFlags, path: String) -> Result<DescriptorStat, ErrorCode> {
         with_vfs_state(|state| {
-            let full_path = if self.handle == 0 {
-                normalize_path(&path)
-            } else {
-                return Err(ErrorCode::Unsupported);
-            };
+            let full_path = join_at_path(&self.path, &path);
 
             let metadata = state
                 .fs
@@ -709,46 +714,32 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         open_flags: OpenFlags,
         flags: DescriptorFlags,
     ) -> Result<Descriptor, ErrorCode> {
-        // Special case: opening ".", "", or "/" from root means opening the root directory
+        // Special case: opening ".", "", or "/" from the root means reopening
+        // the descriptor's own directory
         if path.is_empty() || path == "." || (self.handle == 0 && path == "/") {
-            // Actually open the root directory to get a real fd
             return with_vfs_state(|state| {
                 let fd = state
                     .fs
                     .borrow_mut()
-                    .open_path_with_flags("/", fs_core::O_RDONLY)
+                    .open_path_with_flags(&self.path, fs_core::O_RDONLY)
                     .map_err(to_error_code)?;
                 let handle = state.allocate_descriptor(fd);
-                Ok(Descriptor::new(DescriptorImpl { handle }))
+                Ok(Descriptor::new(DescriptorImpl {
+                    handle,
+                    path: self.path.clone(),
+                }))
             });
         }
 
         with_vfs_state(|state| {
-            let dir_fd = state.get_fd(self.handle)?;
-
             let core_flags = convert_flags(open_flags, flags);
+            let full_path = join_at_path(&self.path, &path);
 
-            // Use open_at if available, otherwise fall back to absolute path for root.
-            // `full_path` is only consumed when s3-sync is enabled.
-            #[cfg_attr(not(feature = "s3-sync"), allow(unused_variables))]
-            let (fd, full_path) = if self.handle == 0 {
-                // Root directory: use absolute path
-                let full_path = normalize_path(&path);
-                let fd = state
-                    .fs
-                    .borrow_mut()
-                    .open_path_with_flags(&full_path, core_flags)
-                    .map_err(to_error_code)?;
-                (fd, full_path)
-            } else {
-                // Use open_at
-                let fd = state
-                    .fs
-                    .borrow_mut()
-                    .open_at(dir_fd, &path, core_flags)
-                    .map_err(to_error_code)?;
-                (fd, path.clone())
-            };
+            let fd = state
+                .fs
+                .borrow_mut()
+                .open_path_with_flags(&full_path, core_flags)
+                .map_err(to_error_code)?;
 
             #[cfg(feature = "s3-sync")]
             let handle = state.allocate_descriptor_with_path(fd, full_path.clone());
@@ -759,7 +750,10 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             #[cfg(feature = "s3-sync")]
             s3_sync::on_open(&full_path);
 
-            Ok(Descriptor::new(DescriptorImpl { handle }))
+            Ok(Descriptor::new(DescriptorImpl {
+                handle,
+                path: full_path,
+            }))
         })
     }
 
@@ -769,12 +763,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn remove_directory_at(&self, path: String) -> Result<(), ErrorCode> {
         with_vfs_state(|state| {
-            // For root descriptor, use absolute path
-            let full_path = if self.handle == 0 {
-                normalize_path(&path)
-            } else {
-                return Err(ErrorCode::Unsupported);
-            };
+            let full_path = join_at_path(&self.path, &path);
 
             // Use rmdir for removing directories
             state
@@ -788,16 +777,15 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     fn rename_at(
         &self,
         old_path: String,
-        _new_descriptor: DescriptorBorrow<'_>,
+        new_descriptor: DescriptorBorrow<'_>,
         new_path: String,
     ) -> Result<(), ErrorCode> {
         with_vfs_state(|state| {
-            let old_full = if self.handle == 0 {
-                normalize_path(&old_path)
-            } else {
-                return Err(ErrorCode::Unsupported);
-            };
-            let new_full = normalize_path(&new_path);
+            let old_full = join_at_path(&self.path, &old_path);
+            let new_full = join_at_path(
+                new_descriptor.get::<DescriptorImpl>().path.as_str(),
+                &new_path,
+            );
             state
                 .fs
                 .borrow_mut()
@@ -812,12 +800,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
 
     fn unlink_file_at(&self, path: String) -> Result<(), ErrorCode> {
         with_vfs_state(|state| {
-            // For root descriptor, use absolute path
-            let full_path = if self.handle == 0 {
-                normalize_path(&path)
-            } else {
-                return Err(ErrorCode::Unsupported);
-            };
+            let full_path = join_at_path(&self.path, &path);
 
             state
                 .fs
@@ -859,11 +842,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
         path: String,
     ) -> Result<exports::wasi::filesystem::types::MetadataHashValue, ErrorCode> {
         with_vfs_state(|state| {
-            let full_path = if self.handle == 0 {
-                normalize_path(&path)
-            } else {
-                return Err(ErrorCode::Unsupported);
-            };
+            let full_path = join_at_path(&self.path, &path);
 
             let metadata = state
                 .fs
@@ -946,18 +925,25 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 fs.borrow_mut()
                     .seek(*fd, current_offset as i64, 0) // SEEK_SET
                     .map_err(|_| {
-                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                            exports::wasi::io::error::Error::from_handle(0)
-                        })
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(
+                            exports::wasi::io::error::Error::new(ErrorImpl),
+                        )
                     })?;
 
                 // Read from fs-core
                 let mut buf = vec![0u8; len as usize];
                 let n = fs.borrow_mut().read(*fd, &mut buf).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(
+                        exports::wasi::io::error::Error::new(ErrorImpl),
+                    )
                 })?;
+
+                // An empty result for a non-empty request is end-of-file.
+                // Returning Ok([]) would mean "no data available yet" and
+                // make stream-based readers poll forever.
+                if n == 0 && len > 0 {
+                    return Err(exports::wasi::io::streams::StreamError::Closed);
+                }
 
                 buf.truncate(n);
                 offset.set(current_offset + n as u64);
@@ -973,18 +959,25 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 fs.borrow_mut()
                     .seek(*fd, current_offset as i64, 0) // SEEK_SET
                     .map_err(|_| {
-                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                            exports::wasi::io::error::Error::from_handle(0)
-                        })
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(
+                            exports::wasi::io::error::Error::new(ErrorImpl),
+                        )
                     })?;
 
                 // Read from fs-core
                 let mut buf = vec![0u8; len as usize];
                 let n = fs.borrow_mut().read(*fd, &mut buf).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(
+                        exports::wasi::io::error::Error::new(ErrorImpl),
+                    )
                 })?;
+
+                // An empty result for a non-empty request is end-of-file.
+                // Returning Ok([]) would mean "no data available yet" and
+                // make stream-based readers poll forever.
+                if n == 0 && len > 0 {
+                    return Err(exports::wasi::io::streams::StreamError::Closed);
+                }
 
                 buf.truncate(n);
                 offset.set(current_offset + n as u64);
@@ -992,9 +985,9 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 Ok(buf)
             }
             Self::Host(stream) => stream.read(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1010,9 +1003,9 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
                 Ok(len)
             }
             Self::Host(stream) => stream.skip(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1025,12 +1018,10 @@ impl exports::wasi::io::streams::GuestInputStream for VfsInputStream {
         match self {
             Self::File { .. } => {
                 // Return immediately ready pollable for in-memory FS
-                exports::wasi::io::poll::Pollable::new(PollableImpl)
+                exports::wasi::io::poll::Pollable::new(VfsPollable::AlwaysReady)
             }
-            Self::Host(_stream) => {
-                // Wrap host pollable. For now just return ready pollable
-                // TODO: properly wrap host pollable
-                exports::wasi::io::poll::Pollable::new(PollableImpl)
+            Self::Host(stream) => {
+                exports::wasi::io::poll::Pollable::new(VfsPollable::Host(stream.subscribe()))
             }
         }
     }
@@ -1073,9 +1064,9 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 Ok(4096)
             }
             Self::Host(stream) => stream.check_write().map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1096,16 +1087,16 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 fs.borrow_mut()
                     .seek(*fd, current_offset as i64, 0) // SEEK_SET
                     .map_err(|_| {
-                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                            exports::wasi::io::error::Error::from_handle(0)
-                        })
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(
+                            exports::wasi::io::error::Error::new(ErrorImpl),
+                        )
                     })?;
 
                 // Write to fs-core
                 let n = fs.borrow_mut().write(*fd, &contents).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(
+                        exports::wasi::io::error::Error::new(ErrorImpl),
+                    )
                 })?;
 
                 offset.set(current_offset + n as u64);
@@ -1124,16 +1115,16 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 fs.borrow_mut()
                     .seek(*fd, current_offset as i64, 0) // SEEK_SET
                     .map_err(|_| {
-                        exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                            exports::wasi::io::error::Error::from_handle(0)
-                        })
+                        exports::wasi::io::streams::StreamError::LastOperationFailed(
+                            exports::wasi::io::error::Error::new(ErrorImpl),
+                        )
                     })?;
 
                 // Write to fs-core
                 let n = fs.borrow_mut().write(*fd, &contents).map_err(|_| {
-                    exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                        exports::wasi::io::error::Error::from_handle(0)
-                    })
+                    exports::wasi::io::streams::StreamError::LastOperationFailed(
+                        exports::wasi::io::error::Error::new(ErrorImpl),
+                    )
                 })?;
 
                 offset.set(current_offset + n as u64);
@@ -1141,9 +1132,9 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 Ok(())
             }
             Self::Host(stream) => stream.write(&contents).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1164,9 +1155,9 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 Ok(())
             }
             Self::Host(stream) => stream.flush().map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1177,10 +1168,9 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
 
     fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
         match self {
-            Self::File { .. } => exports::wasi::io::poll::Pollable::new(PollableImpl),
-            Self::Host(_stream) => {
-                // TODO: properly wrap host pollable
-                exports::wasi::io::poll::Pollable::new(PollableImpl)
+            Self::File { .. } => exports::wasi::io::poll::Pollable::new(VfsPollable::AlwaysReady),
+            Self::Host(stream) => {
+                exports::wasi::io::poll::Pollable::new(VfsPollable::Host(stream.subscribe()))
             }
         }
     }
@@ -1192,9 +1182,9 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
                 self.write(zeroes)
             }
             Self::Host(stream) => stream.write_zeroes(len).map_err(|_| {
-                exports::wasi::io::streams::StreamError::LastOperationFailed(unsafe {
-                    exports::wasi::io::error::Error::from_handle(0)
-                })
+                exports::wasi::io::streams::StreamError::LastOperationFailed(
+                    exports::wasi::io::error::Error::new(ErrorImpl),
+                )
             }),
         }
     }
@@ -1226,16 +1216,30 @@ impl exports::wasi::io::streams::GuestOutputStream for VfsOutputStream {
     }
 }
 
-// Pollable stub implementation
-struct PollableImpl;
+// Single representation type for the exported pollable resource. wit-bindgen
+// tags the resource with the first Rust type passed to `Pollable::new` and
+// panics ("cannot use two types with this resource type") if another type
+// shows up later, so every pollable must go through this enum.
+enum VfsPollable {
+    // In-memory FS operations complete synchronously, always ready
+    AlwaysReady,
+    // Wraps a host pollable (passthrough streams, monotonic-clock timers)
+    Host(wasi::io::poll::Pollable),
+}
 
-impl exports::wasi::io::poll::GuestPollable for PollableImpl {
+impl exports::wasi::io::poll::GuestPollable for VfsPollable {
     fn ready(&self) -> bool {
-        true
+        match self {
+            VfsPollable::AlwaysReady => true,
+            VfsPollable::Host(inner) => inner.ready(),
+        }
     }
 
     fn block(&self) {
-        // No-op for in-memory FS
+        match self {
+            VfsPollable::AlwaysReady => {}
+            VfsPollable::Host(inner) => inner.block(),
+        }
     }
 }
 
@@ -1261,11 +1265,56 @@ impl exports::wasi::io::streams::Guest for VfsAdapter {
 
 // Implement Guest trait for wasi:io/poll
 impl exports::wasi::io::poll::Guest for VfsAdapter {
-    type Pollable = PollableImpl;
+    type Pollable = VfsPollable;
 
     fn poll(pollables: Vec<exports::wasi::io::poll::PollableBorrow<'_>>) -> Vec<u32> {
-        // For in-memory FS, all operations are ready immediately
-        (0..pollables.len() as u32).collect()
+        // Always-ready entries resolve immediately. If the list is entirely
+        // host-backed pollables, delegate the blocking wait to the host so
+        // timers and stream readiness behave correctly.
+        let mut ready: Vec<u32> = Vec::new();
+        let mut host: Vec<(u32, &wasi::io::poll::Pollable)> = Vec::new();
+        for (i, p) in pollables.iter().enumerate() {
+            match p.get::<VfsPollable>() {
+                VfsPollable::AlwaysReady => ready.push(i as u32),
+                VfsPollable::Host(inner) => host.push((i as u32, inner)),
+            }
+        }
+        if ready.is_empty() && !host.is_empty() {
+            let inners: Vec<&wasi::io::poll::Pollable> = host.iter().map(|(_, p)| *p).collect();
+            return wasi::io::poll::poll(&inners)
+                .into_iter()
+                .map(|j| host[j as usize].0)
+                .collect();
+        }
+        ready.extend(host.iter().filter(|(_, p)| p.ready()).map(|(i, _)| *i));
+        ready
+    }
+}
+
+// Passthrough implementation for monotonic-clock. Re-exported so that the
+// pollables its subscribe functions hand out live in the same resource world
+// as the ones this adapter exports via wasi:io/poll.
+impl exports::wasi::clocks::monotonic_clock::Guest for VfsAdapter {
+    fn now() -> exports::wasi::clocks::monotonic_clock::Instant {
+        wasi::clocks::monotonic_clock::now()
+    }
+
+    fn resolution() -> exports::wasi::clocks::monotonic_clock::Duration {
+        wasi::clocks::monotonic_clock::resolution()
+    }
+
+    fn subscribe_instant(
+        when: exports::wasi::clocks::monotonic_clock::Instant,
+    ) -> exports::wasi::clocks::monotonic_clock::Pollable {
+        let inner = wasi::clocks::monotonic_clock::subscribe_instant(when);
+        exports::wasi::io::poll::Pollable::new(VfsPollable::Host(inner))
+    }
+
+    fn subscribe_duration(
+        when: exports::wasi::clocks::monotonic_clock::Duration,
+    ) -> exports::wasi::clocks::monotonic_clock::Pollable {
+        let inner = wasi::clocks::monotonic_clock::subscribe_duration(when);
+        exports::wasi::io::poll::Pollable::new(VfsPollable::Host(inner))
     }
 }
 

@@ -869,7 +869,7 @@ impl exports::wasi::io::streams::GuestInputStream for FileInputStream {
 
     fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
         // Return an always-ready pollable since RPC is blocking
-        exports::wasi::io::poll::Pollable::new(AlwaysReadyPollable)
+        exports::wasi::io::poll::Pollable::new(UnifiedPollable::AlwaysReady)
     }
 }
 
@@ -979,7 +979,7 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
 
     fn subscribe(&self) -> exports::wasi::io::poll::Pollable {
         // Return an always-ready pollable since RPC is blocking
-        exports::wasi::io::poll::Pollable::new(AlwaysReadyPollable)
+        exports::wasi::io::poll::Pollable::new(UnifiedPollable::AlwaysReady)
     }
 
     fn write_zeroes(&self, len: u64) -> Result<(), exports::wasi::io::streams::StreamError> {
@@ -1012,15 +1012,30 @@ impl exports::wasi::io::streams::GuestOutputStream for FileOutputStream {
 }
 
 // Dummy pollable that's always ready (avoids nested runtime issue with WASI imports)
-struct AlwaysReadyPollable;
+// Single representation type for the exported pollable resource. wit-bindgen
+// tags the resource with the first Rust type passed to `Pollable::new` and
+// panics ("cannot use two types with this resource type") if another type
+// shows up later, so every pollable must go through this enum.
+enum UnifiedPollable {
+    // File-backed streams: RPC operations block at I/O level, always ready
+    AlwaysReady,
+    // Wraps a host pollable (passthrough streams, monotonic-clock timers)
+    Passthrough(wasi::io::poll::Pollable),
+}
 
-impl exports::wasi::io::poll::GuestPollable for AlwaysReadyPollable {
+impl exports::wasi::io::poll::GuestPollable for UnifiedPollable {
     fn ready(&self) -> bool {
-        true // Always ready
+        match self {
+            UnifiedPollable::AlwaysReady => true,
+            UnifiedPollable::Passthrough(inner) => inner.ready(),
+        }
     }
 
     fn block(&self) {
-        // No-op: already ready
+        match self {
+            UnifiedPollable::AlwaysReady => {}
+            UnifiedPollable::Passthrough(inner) => inner.block(),
+        }
     }
 }
 
@@ -1056,11 +1071,29 @@ impl exports::wasi::io::streams::Guest for RpcAdapter {
 
 // Implement Guest trait for wasi:io/poll
 impl exports::wasi::io::poll::Guest for RpcAdapter {
-    type Pollable = PassthroughPollable;
+    type Pollable = UnifiedPollable;
 
     fn poll(pollables: Vec<exports::wasi::io::poll::PollableBorrow<'_>>) -> Vec<u32> {
-        // All pollables are ready (RPC operations block at I/O level)
-        (0..pollables.len() as u32).collect()
+        // Always-ready entries resolve immediately. If the list is entirely
+        // host-backed pollables, delegate the blocking wait to the host so
+        // timers and stream readiness behave correctly.
+        let mut ready: Vec<u32> = Vec::new();
+        let mut host: Vec<(u32, &wasi::io::poll::Pollable)> = Vec::new();
+        for (i, p) in pollables.iter().enumerate() {
+            match p.get::<UnifiedPollable>() {
+                UnifiedPollable::AlwaysReady => ready.push(i as u32),
+                UnifiedPollable::Passthrough(inner) => host.push((i as u32, inner)),
+            }
+        }
+        if ready.is_empty() && !host.is_empty() {
+            let inners: Vec<&wasi::io::poll::Pollable> = host.iter().map(|(_, p)| *p).collect();
+            return wasi::io::poll::poll(&inners)
+                .into_iter()
+                .map(|j| host[j as usize].0)
+                .collect();
+        }
+        ready.extend(host.iter().filter(|(_, p)| p.ready()).map(|(i, _)| *i));
+        ready
     }
 }
 
@@ -1100,14 +1133,14 @@ impl exports::wasi::clocks::monotonic_clock::Guest for RpcAdapter {
         when: exports::wasi::clocks::monotonic_clock::Instant,
     ) -> exports::wasi::clocks::monotonic_clock::Pollable {
         let inner = wasi::clocks::monotonic_clock::subscribe_instant(when);
-        exports::wasi::io::poll::Pollable::new(PassthroughPollable { inner })
+        exports::wasi::io::poll::Pollable::new(UnifiedPollable::Passthrough(inner))
     }
 
     fn subscribe_duration(
         when: exports::wasi::clocks::monotonic_clock::Duration,
     ) -> exports::wasi::clocks::monotonic_clock::Pollable {
         let inner = wasi::clocks::monotonic_clock::subscribe_duration(when);
-        exports::wasi::io::poll::Pollable::new(PassthroughPollable { inner })
+        exports::wasi::io::poll::Pollable::new(UnifiedPollable::Passthrough(inner))
     }
 }
 
@@ -1158,9 +1191,7 @@ impl exports::wasi::io::streams::GuestInputStream for UnifiedInputStream {
         match self {
             UnifiedInputStream::File(f) => f.subscribe(),
             UnifiedInputStream::Passthrough(p) => {
-                exports::wasi::io::poll::Pollable::new(PassthroughPollable {
-                    inner: p.subscribe(),
-                })
+                exports::wasi::io::poll::Pollable::new(UnifiedPollable::Passthrough(p.subscribe()))
             }
         }
     }
@@ -1224,9 +1255,7 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
         match self {
             UnifiedOutputStream::File(f) => f.subscribe(),
             UnifiedOutputStream::Passthrough(p) => {
-                exports::wasi::io::poll::Pollable::new(PassthroughPollable {
-                    inner: p.subscribe(),
-                })
+                exports::wasi::io::poll::Pollable::new(UnifiedPollable::Passthrough(p.subscribe()))
             }
         }
     }
@@ -1266,20 +1295,6 @@ impl exports::wasi::io::streams::GuestOutputStream for UnifiedOutputStream {
         _len: u64,
     ) -> Result<u64, exports::wasi::io::streams::StreamError> {
         Err(exports::wasi::io::streams::StreamError::Closed)
-    }
-}
-
-struct PassthroughPollable {
-    inner: wasi::io::poll::Pollable,
-}
-
-impl exports::wasi::io::poll::GuestPollable for PassthroughPollable {
-    fn ready(&self) -> bool {
-        self.inner.ready()
-    }
-
-    fn block(&self) {
-        self.inner.block()
     }
 }
 

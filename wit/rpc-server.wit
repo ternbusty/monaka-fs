@@ -2,27 +2,27 @@ package monaka:vfs@0.1.0;
 
 world vfs-rpc-server {
     // Import WASI sockets for TCP server
-    import wasi:sockets/tcp@0.2.6;
-    import wasi:sockets/tcp-create-socket@0.2.6;
-    import wasi:sockets/network@0.2.6;
-    import wasi:sockets/instance-network@0.2.6;
+    import wasi:sockets/tcp@0.2.9;
+    import wasi:sockets/tcp-create-socket@0.2.9;
+    import wasi:sockets/network@0.2.9;
+    import wasi:sockets/instance-network@0.2.9;
 
     // Import WASI I/O for streams
-    import wasi:io/streams@0.2.6;
-    import wasi:io/poll@0.2.6;
+    import wasi:io/streams@0.2.9;
+    import wasi:io/poll@0.2.9;
 
     // Import WASI CLI for stdio
-    import wasi:cli/stdout@0.2.6;
-    import wasi:cli/stderr@0.2.6;
+    import wasi:cli/stdout@0.2.9;
+    import wasi:cli/stderr@0.2.9;
 
     // Import clocks for timestamps
-    import wasi:clocks/wall-clock@0.2.6;
-    import wasi:clocks/monotonic-clock@0.2.6;
+    import wasi:clocks/wall-clock@0.2.9;
+    import wasi:clocks/monotonic-clock@0.2.9;
 
     // Import random for UUID session id generation
-    import wasi:random/random@0.2.6;
+    import wasi:random/random@0.2.9;
 
     // Import WASI HTTP for S3 client
-    import wasi:http/types@0.2.6;
-    import wasi:http/outgoing-handler@0.2.6;
+    import wasi:http/types@0.2.9;
+    import wasi:http/outgoing-handler@0.2.9;
 }

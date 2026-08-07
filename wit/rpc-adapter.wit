@@ -5,34 +5,34 @@ package monaka:vfs@0.1.0;
 
 world rpc-adapter {
     // Import and re-export clocks for timestamps and sleep
-    import wasi:clocks/wall-clock@0.2.6;
-    import wasi:clocks/monotonic-clock@0.2.6;
-    export wasi:clocks/monotonic-clock@0.2.6;
+    import wasi:clocks/wall-clock@0.2.9;
+    import wasi:clocks/monotonic-clock@0.2.9;
+    export wasi:clocks/monotonic-clock@0.2.9;
 
     // Import sockets for TCP connection to RPC server
-    import wasi:sockets/tcp@0.2.6;
-    import wasi:sockets/tcp-create-socket@0.2.6;
-    import wasi:sockets/network@0.2.6;
-    import wasi:sockets/instance-network@0.2.6;
-    import wasi:sockets/ip-name-lookup@0.2.6;
+    import wasi:sockets/tcp@0.2.9;
+    import wasi:sockets/tcp-create-socket@0.2.9;
+    import wasi:sockets/network@0.2.9;
+    import wasi:sockets/instance-network@0.2.9;
+    import wasi:sockets/ip-name-lookup@0.2.9;
 
     // Import and re-export wasi:io interfaces for Resource ID consistency
-    import wasi:io/error@0.2.6;
-    export wasi:io/error@0.2.6;
-    import wasi:io/streams@0.2.6;
-    export wasi:io/streams@0.2.6;
-    import wasi:io/poll@0.2.6;
-    export wasi:io/poll@0.2.6;
+    import wasi:io/error@0.2.9;
+    export wasi:io/error@0.2.9;
+    import wasi:io/streams@0.2.9;
+    export wasi:io/streams@0.2.9;
+    import wasi:io/poll@0.2.9;
+    export wasi:io/poll@0.2.9;
 
     // Import and re-export wasi:cli interfaces (passthrough)
-    import wasi:cli/stdin@0.2.6;
-    export wasi:cli/stdin@0.2.6;
-    import wasi:cli/stdout@0.2.6;
-    export wasi:cli/stdout@0.2.6;
-    import wasi:cli/stderr@0.2.6;
-    export wasi:cli/stderr@0.2.6;
+    import wasi:cli/stdin@0.2.9;
+    export wasi:cli/stdin@0.2.9;
+    import wasi:cli/stdout@0.2.9;
+    export wasi:cli/stdout@0.2.9;
+    import wasi:cli/stderr@0.2.9;
+    export wasi:cli/stderr@0.2.9;
 
     // Export filesystem implementation that uses RPC
-    export wasi:filesystem/types@0.2.6;
-    export wasi:filesystem/preopens@0.2.6;
+    export wasi:filesystem/types@0.2.9;
+    export wasi:filesystem/preopens@0.2.9;
 }

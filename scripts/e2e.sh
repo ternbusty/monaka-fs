@@ -252,13 +252,7 @@ fi
 
 log "Pre-flight: building WASM components and CLI"
 
-# Cargo invocation for wasm32-wasip2 (guest) builds. CI sets WASM_CARGO to
-# pin an older toolchain for guests (see .github/workflows/ci.yml); local
-# runs default to plain cargo. `make build-cli` below picks the same value
-# up from the environment.
-WASM_CARGO="${WASM_CARGO:-cargo}"
-
-$WASM_CARGO build --release --target wasm32-wasip2 \
+cargo build --release --target wasm32-wasip2 \
     -p demo-writer \
     -p demo-reader \
     -p demo-fs-operations \
@@ -272,7 +266,7 @@ info "workspace WASM packages (release) built"
 # The host-trait runtime-linker examples hard-code
 # `target/wasm32-wasip2/debug/<name>.wasm` paths, so build the demo apps
 # they consume in debug mode too. Pure relink pass once release is cached.
-$WASM_CARGO build --target wasm32-wasip2 \
+cargo build --target wasm32-wasip2 \
     -p demo-writer \
     -p demo-reader \
     -p demo-fs-operations \
@@ -348,9 +342,9 @@ run_demo "tier1-runtime-linker-demo-fs" \
 # `runtime-linker` package looks them up via
 # `<usecase>/sensor-{ingest,process}/target/wasm32-wasip2/debug/...`, so
 # match that with debug builds.
-( cd usecases/host-trait/sensor-pipeline/sensor-ingest && $WASM_CARGO build --target wasm32-wasip2 ) \
+( cd usecases/host-trait/sensor-pipeline/sensor-ingest && cargo build --target wasm32-wasip2 ) \
     >"$LOG_DIR/build-sensor-ingest.log" 2>&1
-( cd usecases/host-trait/sensor-pipeline/sensor-process && $WASM_CARGO build --target wasm32-wasip2 ) \
+( cd usecases/host-trait/sensor-pipeline/sensor-process && cargo build --target wasm32-wasip2 ) \
     >"$LOG_DIR/build-sensor-process.log" 2>&1
 run_demo "tier1-sensor-pipeline" \
     "cd usecases/host-trait/sensor-pipeline/runtime-linker && cargo run --release --quiet" \
@@ -358,7 +352,7 @@ run_demo "tier1-sensor-pipeline" \
     "Average:"
 
 # 1.4 usecases/host-trait/concurrent-append
-( cd usecases/host-trait/concurrent-append/append-client && $WASM_CARGO build --release --target wasm32-wasip2 ) \
+( cd usecases/host-trait/concurrent-append/append-client && cargo build --release --target wasm32-wasip2 ) \
     >"$LOG_DIR/build-append-client.log" 2>&1
 ( cd usecases/host-trait/concurrent-append/host-runner && cargo build --release ) \
     >"$LOG_DIR/build-host-runner.log" 2>&1
@@ -465,7 +459,7 @@ else
 
     # 3.1 examples/static-composition/s3-sync (realtime)
     s3_reset_bucket
-    ( cd examples/static-composition/s3-sync && $WASM_CARGO build --release --target wasm32-wasip2 ) \
+    ( cd examples/static-composition/s3-sync && cargo build --release --target wasm32-wasip2 ) \
         >"$LOG_DIR/build-static-s3-demo.log" 2>&1
     S3_DEMO_COMPOSED="$TMP_DIR/static-s3-composed.wasm"
     "$MONAKA" compose --s3-sync \

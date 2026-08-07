@@ -86,9 +86,9 @@ const POLL_TIMEOUT_NS: u64 = 100_000_000;
 /// 16 random bytes come from `wasi:random/random` in WASI builds and from
 /// a non-cryptographic host fallback when this file is compiled for unit
 /// tests. We avoid the `uuid` crate's built-in `v4` feature because its
-/// transitive `getrandom` dependency pulls in `wasi:http/types@0.2.9`,
-/// which the component linker cannot merge with the 0.2.6 interfaces our
-/// world imports.
+/// transitive `getrandom` dependency drags extra WASI imports into the
+/// component world. It also could not be merged with the vendored WIT
+/// while that was still at 0.2.6.
 fn generate_session_id() -> String {
     uuid::Builder::from_random_bytes(random_uuid_bytes())
         .into_uuid()
