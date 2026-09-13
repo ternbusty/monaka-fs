@@ -1,14 +1,19 @@
 //! S3 client for VFS persistence (host- and WASI-shared).
 //!
-//! All S3 operations live here. The `new()` constructor is environment-
-//! specific (different HTTP clients), so consumers build an
+//! Implements [`ObjectStore`] over the AWS SDK. The `new()` constructor is
+//! environment-specific (different HTTP clients), so consumers build an
 //! `aws_config::SdkConfig` themselves and call [`S3Storage::from_sdk_config`].
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use aws_config::SdkConfig;
+use aws_sdk_s3::config::http::HttpResponse;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
 
-use crate::types::{S3Error, S3ObjectInfo};
+use crate::object_store::ObjectStore;
+use crate::types::{ObjectMeta, Precondition, S3Error};
 
 /// Multipart upload threshold (10MB)
 const MULTIPART_THRESHOLD: usize = 10 * 1024 * 1024;
@@ -20,6 +25,59 @@ pub struct S3Storage {
     client: Client,
     bucket: String,
     prefix: String,
+    /// Cleared the first time the backend answers a conditional
+    /// `DeleteObject` with `NotImplemented` (LocalStack 4.x). After that,
+    /// deletes fall back to a HEAD comparison followed by an unconditional
+    /// delete.
+    conditional_delete_supported: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Read,
+    Write,
+    Delete,
+}
+
+fn quote_etag(etag: &str) -> String {
+    format!("\"{}\"", etag.trim_matches('"'))
+}
+
+fn unquote(etag: Option<String>) -> String {
+    etag.unwrap_or_default().trim_matches('"').to_string()
+}
+
+/// Map an SDK error to [`S3Error`], preserving the HTTP status and error
+/// code for the cases the sync logic branches on.
+fn classify<E>(key: &str, e: SdkError<E, HttpResponse>, kind: Kind) -> S3Error
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+{
+    let status = e.raw_response().map(|r| r.status().as_u16());
+    let code = e.code().unwrap_or("").to_string();
+    let message = match e.as_service_error() {
+        Some(se) => format!("{} ({})", se, code),
+        None => e.to_string(),
+    };
+    let key = key.to_string();
+
+    match (status, code.as_str()) {
+        (Some(412), _)
+        | (Some(409), _)
+        | (_, "PreconditionFailed")
+        | (_, "ConditionalRequestConflict") => S3Error::PreconditionFailed {
+            key,
+            status: status.unwrap_or(0),
+            code,
+        },
+        (Some(404), _) | (_, "NotFound") | (_, "NoSuchKey") => S3Error::NotFound { key },
+        (Some(501), _) | (_, "NotImplemented") => S3Error::NotImplemented { key, message },
+        _ => match kind {
+            Kind::Read => S3Error::Read { key, message },
+            Kind::Write => S3Error::Write { key, message },
+            Kind::Delete => S3Error::Delete { key, message },
+        },
+    }
 }
 
 impl S3Storage {
@@ -37,253 +95,50 @@ impl S3Storage {
             client,
             bucket,
             prefix,
+            conditional_delete_supported: AtomicBool::new(true),
         }
     }
 
-    /// Get the full S3 key for a given path
-    fn key(&self, path: &str) -> String {
-        format!("{}{}", self.prefix, path.trim_start_matches('/'))
+    /// Full S3 key for a prefix-relative key.
+    fn key(&self, rel: &str) -> String {
+        format!("{}{}", self.prefix, rel.trim_start_matches('/'))
     }
 
-    /// Delete a file from S3
-    pub async fn delete_file(&self, path: &str) -> Result<(), S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        self.client
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .map_err(|e| S3Error::Delete {
-                key: key.clone(),
-                message: e.to_string(),
-            })?;
-
-        Ok(())
+    /// Prefix-relative key for a full S3 key.
+    fn rel(&self, full: &str) -> String {
+        full.strip_prefix(&self.prefix).unwrap_or(full).to_string()
     }
 
-    /// List all file objects in S3 under the files/ prefix
-    pub async fn list_objects(&self) -> Result<Vec<S3ObjectInfo>, S3Error> {
-        let prefix = self.key("files/");
-        let mut objects = Vec::new();
-        let mut continuation_token: Option<String> = None;
-
-        loop {
-            let mut request = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(&prefix);
-
-            if let Some(token) = continuation_token.take() {
-                request = request.continuation_token(token);
-            }
-
-            let output = request.send().await.map_err(|e| S3Error::Read {
-                key: prefix.clone(),
-                message: e.to_string(),
-            })?;
-
-            if let Some(contents) = output.contents {
-                for obj in contents {
-                    if let (Some(key), Some(etag), Some(size)) =
-                        (obj.key.as_ref(), obj.e_tag.as_ref(), obj.size)
-                    {
-                        let files_prefix = self.key("files");
-                        let path = key.strip_prefix(&files_prefix).unwrap_or(key).to_string();
-                        let last_modified = obj.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
-
-                        objects.push(S3ObjectInfo {
-                            path,
-                            etag: etag.trim_matches('"').to_string(),
-                            last_modified,
-                            size: size as u64,
-                        });
-                    }
-                }
-            }
-
-            if output.is_truncated.unwrap_or(false) {
-                continuation_token = output.next_continuation_token;
-            } else {
-                break;
-            }
-        }
-
-        Ok(objects)
-    }
-
-    /// Get file metadata from S3 (HEAD request, no content download).
-    /// Returns `(etag, last_modified, size)` or `None` if not found.
-    pub async fn head_file(&self, path: &str) -> Result<Option<(String, u64, u64)>, S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                let etag = output
-                    .e_tag
-                    .unwrap_or_default()
-                    .trim_matches('"')
-                    .to_string();
-                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
-                let size = output.content_length.unwrap_or(0) as u64;
-
-                Ok(Some((etag, last_modified, size)))
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                if error_str.contains("NotFound") || error_str.contains("404") {
-                    Ok(None)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Get a single file from S3.
-    /// Returns `(content, etag, last_modified)` or `None` if not found.
-    pub async fn get_file(&self, path: &str) -> Result<Option<(Vec<u8>, String, u64)>, S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        match self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(output) => {
-                let etag = output
-                    .e_tag
-                    .unwrap_or_default()
-                    .trim_matches('"')
-                    .to_string();
-                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
-
-                let data = output.body.collect().await.map_err(|e| S3Error::Read {
-                    key: key.clone(),
-                    message: e.to_string(),
-                })?;
-
-                Ok(Some((data.into_bytes().to_vec(), etag, last_modified)))
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                if error_str.contains("NoSuchKey") || error_str.contains("404") {
-                    Ok(None)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Check if a directory marker object (`files{path}/`) exists.
-    pub async fn head_directory_object(&self, path: &str) -> Result<bool, S3Error> {
-        let key = self.key(&format!("files{}/", path));
-
-        match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                if error_str.contains("NotFound") || error_str.contains("404") {
-                    Ok(false)
-                } else {
-                    Err(S3Error::Read {
-                        key,
-                        message: error_str,
-                    })
-                }
-            }
-        }
-    }
-
-    /// Check if any objects exist under `files{path}/` (max-keys=2 LIST).
-    pub async fn has_children(&self, path: &str) -> Result<bool, S3Error> {
-        let prefix = self.key(&format!("files{}/", path));
-
-        let output = self
-            .client
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(&prefix)
-            .delimiter("/")
-            .max_keys(2)
-            .send()
-            .await
-            .map_err(|e| S3Error::Read {
-                key: prefix.clone(),
-                message: e.to_string(),
-            })?;
-
-        let has_objects = output.contents.as_ref().is_some_and(|c| !c.is_empty())
-            || output
-                .common_prefixes
-                .as_ref()
-                .is_some_and(|p| !p.is_empty());
-
-        Ok(has_objects)
-    }
-
-    /// Upload a file and return the ETag. Uses multipart upload for files
-    /// `>= 10MB`.
-    pub async fn put_file_with_etag(&self, path: &str, data: Vec<u8>) -> Result<String, S3Error> {
-        let key = self.key(&format!("files{}", path));
-
-        if data.len() >= MULTIPART_THRESHOLD {
-            self.multipart_upload(&key, data).await
-        } else {
-            self.simple_upload(&key, data).await
-        }
-    }
-
-    /// Simple single-request upload for small files
-    async fn simple_upload(&self, key: &str, data: Vec<u8>) -> Result<String, S3Error> {
-        let output = self
+    async fn simple_upload(
+        &self,
+        key: &str,
+        data: Vec<u8>,
+        cond: &Precondition,
+    ) -> Result<String, S3Error> {
+        let mut req = self
             .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
-            .body(data.into())
+            .body(data.into());
+        req = match cond {
+            Precondition::None => req,
+            Precondition::IfMatch(etag) => req.if_match(quote_etag(etag)),
+            Precondition::IfNoneMatchAny => req.if_none_match("*"),
+        };
+        let output = req
             .send()
             .await
-            .map_err(|e| S3Error::Write {
-                key: key.to_string(),
-                message: e.to_string(),
-            })?;
-
-        Ok(output
-            .e_tag
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string())
+            .map_err(|e| classify(key, e, Kind::Write))?;
+        Ok(unquote(output.e_tag))
     }
 
-    /// Multipart upload with parallel part uploads.
-    async fn multipart_upload(&self, key: &str, data: Vec<u8>) -> Result<String, S3Error> {
+    async fn multipart_upload(
+        &self,
+        key: &str,
+        data: Vec<u8>,
+        cond: &Precondition,
+    ) -> Result<String, S3Error> {
         let total_parts = data.len().div_ceil(PART_SIZE);
         log::info!(
             "[s3] Starting parallel multipart upload for {} ({} bytes, {} parts)",
@@ -299,10 +154,7 @@ impl S3Storage {
             .key(key)
             .send()
             .await
-            .map_err(|e| S3Error::Write {
-                key: key.to_string(),
-                message: format!("Failed to create multipart upload: {}", e),
-            })?;
+            .map_err(|e| classify(key, e, Kind::Write))?;
 
         let upload_id = create_output
             .upload_id()
@@ -313,7 +165,7 @@ impl S3Storage {
             .to_string();
 
         match self
-            .multipart_upload_inner(key, data, &upload_id, total_parts)
+            .multipart_upload_inner(key, data, &upload_id, total_parts, cond)
             .await
         {
             Ok(etag) => Ok(etag),
@@ -351,6 +203,7 @@ impl S3Storage {
         data: Vec<u8>,
         upload_id: &str,
         total_parts: usize,
+        cond: &Precondition,
     ) -> Result<String, S3Error> {
         let upload_futures: Vec<_> = data
             .chunks(PART_SIZE)
@@ -373,10 +226,7 @@ impl S3Storage {
                         .body(chunk_data.into())
                         .send()
                         .await
-                        .map_err(|e| S3Error::Write {
-                            key: key.clone(),
-                            message: format!("Failed to upload part {}: {}", part_number, e),
-                        })?;
+                        .map_err(|e| classify(&key, e, Kind::Write))?;
 
                     Ok::<_, S3Error>(
                         CompletedPart::builder()
@@ -406,26 +256,208 @@ impl S3Storage {
             .set_parts(Some(parts))
             .build();
 
-        let complete_output = self
+        let mut req = self
             .client
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
             .upload_id(upload_id)
-            .multipart_upload(completed)
+            .multipart_upload(completed);
+        req = match cond {
+            Precondition::None => req,
+            Precondition::IfMatch(etag) => req.if_match(quote_etag(etag)),
+            Precondition::IfNoneMatchAny => req.if_none_match("*"),
+        };
+        let complete_output = req
             .send()
             .await
-            .map_err(|e| S3Error::Write {
-                key: key.to_string(),
-                message: format!("Failed to complete multipart upload: {}", e),
-            })?;
+            .map_err(|e| classify(key, e, Kind::Write))?;
 
         log::info!("[s3] Completed multipart upload for {}", key);
 
-        Ok(complete_output
-            .e_tag()
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string())
+        Ok(unquote(complete_output.e_tag().map(|s| s.to_string())))
+    }
+
+    /// Emulate `If-Match` on delete for backends that reject the header:
+    /// compare the current ETag first, then delete unconditionally. Not
+    /// atomic, but the best available on such backends.
+    async fn delete_with_head_check(&self, key: &str, expected: &str) -> Result<(), S3Error> {
+        let rel = self.rel(key);
+        match self.head(&rel).await? {
+            None => Ok(()),
+            Some(meta) if meta.etag == expected => {
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| classify(key, e, Kind::Delete))?;
+                Ok(())
+            }
+            Some(_) => Err(S3Error::PreconditionFailed {
+                key: key.to_string(),
+                status: 412,
+                code: "PreconditionFailed".into(),
+            }),
+        }
+    }
+}
+
+impl ObjectStore for S3Storage {
+    async fn list(
+        &self,
+        prefix: &str,
+        max_keys: Option<usize>,
+    ) -> Result<Vec<ObjectMeta>, S3Error> {
+        let full_prefix = self.key(prefix);
+        let mut objects = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut request = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&full_prefix);
+            if let Some(n) = max_keys {
+                request = request.max_keys(n as i32);
+            }
+            if let Some(token) = continuation_token.take() {
+                request = request.continuation_token(token);
+            }
+
+            let output = request
+                .send()
+                .await
+                .map_err(|e| classify(&full_prefix, e, Kind::Read))?;
+
+            if let Some(contents) = output.contents {
+                for obj in contents {
+                    if let (Some(key), Some(etag)) = (obj.key.as_ref(), obj.e_tag.as_ref()) {
+                        objects.push(ObjectMeta {
+                            key: self.rel(key),
+                            etag: etag.trim_matches('"').to_string(),
+                            last_modified: obj.last_modified.map(|t| t.secs() as u64).unwrap_or(0),
+                            size: obj.size.unwrap_or(0) as u64,
+                        });
+                    }
+                }
+            }
+
+            if let Some(n) = max_keys {
+                objects.truncate(n);
+                break;
+            }
+            if output.is_truncated.unwrap_or(false) {
+                continuation_token = output.next_continuation_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok(objects)
+    }
+
+    async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, S3Error> {
+        let full = self.key(key);
+        match self
+            .client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(&full)
+            .send()
+            .await
+        {
+            Ok(output) => Ok(Some(ObjectMeta {
+                key: key.to_string(),
+                etag: unquote(output.e_tag),
+                last_modified: output.last_modified.map(|t| t.secs() as u64).unwrap_or(0),
+                size: output.content_length.unwrap_or(0) as u64,
+            })),
+            Err(e) => match classify(&full, e, Kind::Read) {
+                S3Error::NotFound { .. } => Ok(None),
+                other => Err(other),
+            },
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<(Vec<u8>, ObjectMeta)>, S3Error> {
+        let full = self.key(key);
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&full)
+            .send()
+            .await
+        {
+            Ok(output) => {
+                let etag = unquote(output.e_tag);
+                let last_modified = output.last_modified.map(|t| t.secs() as u64).unwrap_or(0);
+                let data = output.body.collect().await.map_err(|e| S3Error::Read {
+                    key: full.clone(),
+                    message: e.to_string(),
+                })?;
+                let bytes = data.into_bytes().to_vec();
+                let size = bytes.len() as u64;
+                Ok(Some((
+                    bytes,
+                    ObjectMeta {
+                        key: key.to_string(),
+                        etag,
+                        last_modified,
+                        size,
+                    },
+                )))
+            }
+            Err(e) => match classify(&full, e, Kind::Read) {
+                S3Error::NotFound { .. } => Ok(None),
+                other => Err(other),
+            },
+        }
+    }
+
+    async fn put(&self, key: &str, body: Vec<u8>, cond: Precondition) -> Result<String, S3Error> {
+        let full = self.key(key);
+        if body.len() >= MULTIPART_THRESHOLD {
+            self.multipart_upload(&full, body, &cond).await
+        } else {
+            self.simple_upload(&full, body, &cond).await
+        }
+    }
+
+    async fn delete(&self, key: &str, cond: Precondition) -> Result<(), S3Error> {
+        let full = self.key(key);
+
+        if let Precondition::IfMatch(expected) = &cond {
+            if !self.conditional_delete_supported.load(Ordering::Relaxed) {
+                return self.delete_with_head_check(&full, expected).await;
+            }
+        }
+
+        let mut req = self.client.delete_object().bucket(&self.bucket).key(&full);
+        if let Precondition::IfMatch(etag) = &cond {
+            req = req.if_match(quote_etag(etag));
+        }
+
+        match req.send().await {
+            Ok(_) => Ok(()),
+            Err(e) => match classify(&full, e, Kind::Delete) {
+                S3Error::NotFound { .. } => Ok(()),
+                S3Error::NotImplemented { .. } if matches!(cond, Precondition::IfMatch(_)) => {
+                    log::warn!(
+                        "[s3] Backend does not implement conditional DeleteObject; falling back to HEAD comparison"
+                    );
+                    self.conditional_delete_supported
+                        .store(false, Ordering::Relaxed);
+                    let Precondition::IfMatch(expected) = &cond else {
+                        unreachable!()
+                    };
+                    self.delete_with_head_check(&full, expected).await
+                }
+                other => Err(other),
+            },
+        }
     }
 }

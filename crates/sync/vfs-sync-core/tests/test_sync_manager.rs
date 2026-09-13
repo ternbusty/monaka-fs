@@ -2,11 +2,12 @@
 //!
 //! These tests focus on the bookkeeping that does not require talking to
 //! S3: outbound queue dedup, metadata cache invalidation on delete, the
-//! shutdown flag, and the realtime/batch dispatch on `is_realtime`. Exercising
-//! the actual upload/download paths needs an `S3Storage` mock, which would
-//! require turning S3 access into a trait. We leave that to a follow-up and
-//! keep these tests pinning the queue logic that the WASI single-threaded
-//! and host multi-threaded callers both rely on.
+//! shutdown flag, and the realtime/batch dispatch on `is_realtime`. The
+//! upload, download, lease and directory-marker paths are covered by the
+//! sibling test files, which run the manager against
+//! `vfs_sync_core::testing::MemoryObjectStore`. This file keeps one manager
+//! built over the real `S3Storage` so the default type parameter stays
+//! covered.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,6 +80,10 @@ impl FsBackend for ErrorFs {
     }
 
     fn mkdir_p(&self, _path: &str) {}
+
+    fn rmdir(&self, _path: &str) -> Result<(), S3Error> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

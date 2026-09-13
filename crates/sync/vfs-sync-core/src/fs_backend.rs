@@ -51,4 +51,9 @@ pub trait FsBackend {
     /// swallowed by sync_manager call sites because the parent dir often
     /// already exists.
     fn mkdir_p(&self, path: &str);
+
+    /// Remove an empty directory at `path`. Used when a directory marker
+    /// disappears from S3. Callers tolerate failure (the directory may be
+    /// non-empty locally).
+    fn rmdir(&self, path: &str) -> Result<(), S3Error>;
 }

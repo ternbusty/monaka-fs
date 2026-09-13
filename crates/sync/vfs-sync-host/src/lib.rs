@@ -23,7 +23,7 @@ use vfs_sync_core::{FsBackend, S3Error};
 
 pub use vfs_sync_core::{
     populate_from_s3, InboundMode, LoadError, MetadataCache, MetadataMode, S3ObjectInfo, S3Storage,
-    SyncConfig, SyncManager, SyncMode, SyncOperation, SyncStats, SyncedFileMetadata,
+    SyncConfig, SyncError, SyncManager, SyncMode, SyncOperation, SyncStats, SyncedFileMetadata,
 };
 
 /// Newtype wrapping the thread-safe `Arc<Fs>` so we can implement
@@ -108,6 +108,13 @@ impl FsBackend for HostFs {
 
     fn mkdir_p(&self, path: &str) {
         let _ = self.0.mkdir_p(path);
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), S3Error> {
+        self.0.rmdir(path).map_err(|e| S3Error::Delete {
+            key: path.to_string(),
+            message: format!("Failed to rmdir: {:?}", e),
+        })
     }
 }
 
