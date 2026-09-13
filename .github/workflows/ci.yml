@@ -70,7 +70,7 @@ jobs:
       # crates outside that list explicitly (the WASM-only crates are built
       # for wasm32 in the build job).
       - name: Run clippy on sync and rpc-server crates
-        run: cargo clippy -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core --all-targets --all-features -- -D warnings
+        run: cargo clippy -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core -p rpc-adapter --all-targets --all-features -- -D warnings
 
   build:
     name: Build
@@ -203,7 +203,7 @@ jobs:
       # layer's tests (conditional writes, leases, directory markers) live
       # outside that list and must run explicitly.
       - name: Run sync and rpc-server tests
-        run: cargo test -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core --all-features --verbose
+        run: cargo test -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core -p rpc-adapter --all-features --verbose
 
       # fs-core ships two filesystem implementations (single-threaded vs
       # `thread-safe` feature). The default `cargo test --all-features` run

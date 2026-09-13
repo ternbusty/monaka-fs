@@ -356,6 +356,16 @@ async fn handle_one_request(client: &mut Client, ctx: &ServerContext) -> HandleR
     HandleResult::Ok
 }
 
+/// TCP port to listen on: `VFS_RPC_PORT`, falling back to the protocol
+/// default. The rpc-adapter reads the same variable so a client can be
+/// pointed at a second server instance.
+fn listen_port() -> u16 {
+    std::env::var("VFS_RPC_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(vfs_rpc_protocol::DEFAULT_PORT)
+}
+
 /// Main entry point.
 #[no_mangle]
 pub extern "C" fn _start() {
@@ -375,8 +385,9 @@ async fn async_main() {
     let network = instance_network();
     let socket = create_tcp_socket(IpAddressFamily::Ipv4).expect("Failed to create TCP socket");
 
+    let port = listen_port();
     let bind_addr = IpSocketAddress::Ipv4(Ipv4SocketAddress {
-        port: 9000,
+        port,
         address: (127, 0, 0, 1),
     });
 
@@ -385,12 +396,12 @@ async fn async_main() {
         .expect("Failed to start bind");
     socket.finish_bind().expect("Failed to finish bind");
 
-    log::info!("Socket bound to 127.0.0.1:9000");
+    log::info!("Socket bound to 127.0.0.1:{}", port);
 
     socket.start_listen().expect("Failed to start listen");
     socket.finish_listen().expect("Failed to finish listen");
 
-    log::info!("VFS RPC Server listening on 127.0.0.1:9000");
+    log::info!("VFS RPC Server listening on 127.0.0.1:{}", port);
     log::info!("Protocol version: {}", vfs_rpc_protocol::PROTOCOL_VERSION);
     log::info!("Waiting for connections...");
 
@@ -443,6 +454,11 @@ async fn async_main() {
                                 "Client disconnected (session: {:?})",
                                 clients[client_idx].session_id
                             );
+                            // Release descriptors (and any S3 leases) the
+                            // session left open.
+                            if let Some(ref sid) = clients[client_idx].session_id {
+                                ctx.close_session(sid).await;
+                            }
                             #[cfg(feature = "s3-sync")]
                             if let Some(ref sync) = ctx.sync_manager {
                                 if sync.pending_count() > 0 {
