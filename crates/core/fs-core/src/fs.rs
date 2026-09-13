@@ -810,10 +810,10 @@ impl<T: TimeProvider> Fs<T> {
     pub fn close(&self, fd: Fd) -> Result<(), FsError> {
         trace!("close: fd={}", fd);
 
-        self.fd_remove(fd).ok_or_else(|| {
+        if self.fd_remove(fd).is_none() {
             error!("close: bad file descriptor {}", fd);
-            FsError::BadFileDescriptor
-        })?;
+            return Err(FsError::BadFileDescriptor);
+        }
 
         debug!("close: fd={} closed successfully", fd);
         Ok(())
