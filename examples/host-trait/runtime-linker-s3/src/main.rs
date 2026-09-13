@@ -11,7 +11,10 @@
 //! Optional:
 //! - `VFS_S3_PREFIX`: Key prefix (default: "vfs/")
 //! - `VFS_SYNC_MODE`: "batch" (default) or "realtime"
-//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (for LocalStack/MinIO)
+//! - `VFS_S3_FILE_LOCK`: "enabled" (default) or "disabled"
+//! - `DEMO_PATH`: path demo-writer writes (default: "/message.txt")
+//! - `DEMO_CONTENT`: content demo-writer writes (default: "Hello from App1!")
+//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (for LocalStack)
 //! - `AWS_REGION`: AWS region
 //!
 //! ## Usage
@@ -76,8 +79,11 @@ fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState) -> Result<VfsHostStat
     if writer_path.exists() {
         log::info!("Running demo-writer...");
 
-        let writer_state = vfs_host_state
-            .clone_shared_with_args(&["demo-writer", "/message.txt", "Hello from App1!"]);
+        let demo_path = std::env::var("DEMO_PATH").unwrap_or_else(|_| "/message.txt".to_string());
+        let demo_content =
+            std::env::var("DEMO_CONTENT").unwrap_or_else(|_| "Hello from App1!".to_string());
+        let writer_state =
+            vfs_host_state.clone_shared_with_args(&["demo-writer", &demo_path, &demo_content]);
         let mut store = Store::new(engine, writer_state);
         let mut linker = wasmtime::component::Linker::new(engine);
         vfs_host::add_to_linker_with_vfs(&mut linker)?;

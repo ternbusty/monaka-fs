@@ -2,6 +2,8 @@
 //!
 //! Writes log entries to a shared log file with timestamps.
 //! Multiple replicas can run concurrently, each identified by REPLICA_ID.
+//! `ENTRY_COUNT` and `ENTRY_DELAY_MS` override the number of entries and
+//! the pause between them (the e2e suite uses short runs).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -67,8 +69,48 @@ fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+/// Append one line, reporting the error kind on failure so a lock
+/// timeout (`ResourceBusy`) is visible in the output.
+fn append_line(replica_id: &str, log_path: &str, entry: &str) {
+    let file = OpenOptions::new().create(true).append(true).open(log_path);
+    let mut file = match file {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "[replica-{}] Failed to open log file: {} ({:?})",
+                replica_id,
+                e,
+                e.kind()
+            );
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = file.write_all(entry.as_bytes()) {
+        eprintln!("[replica-{}] Failed to write log: {}", replica_id, e);
+        std::process::exit(1);
+    }
+    if let Err(e) = file.sync_all() {
+        eprintln!(
+            "[replica-{}] Failed to sync log file: {} ({:?})",
+            replica_id,
+            e,
+            e.kind()
+        );
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let replica_id = std::env::var("REPLICA_ID").unwrap_or_else(|_| "1".to_string());
+    let entry_count = env_u64("ENTRY_COUNT", 10);
+    let entry_delay = Duration::from_millis(env_u64("ENTRY_DELAY_MS", 1000));
 
     println!("[replica-{}] Starting logger...", replica_id);
 
@@ -78,7 +120,7 @@ fn main() {
     let log_path = "/logs/app.log";
 
     // Write log entries with delay to allow interleaving with other replicas
-    for i in 1..=10 {
+    for i in 1..=entry_count {
         let timestamp = format_timestamp();
         let entry = format!(
             "{} [replica-{}] Entry {}: Processing request...\n",
@@ -87,16 +129,10 @@ fn main() {
         println!("[replica-{}] Entry {}", replica_id, i);
 
         // Append to shared log file
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-            .expect("Failed to open log file");
-        file.write_all(entry.as_bytes())
-            .expect("Failed to write log");
+        append_line(&replica_id, log_path, &entry);
 
-        // Wait 1 second before next entry
-        thread::sleep(Duration::from_secs(1));
+        // Pause before the next entry so replicas interleave
+        thread::sleep(entry_delay);
     }
 
     let timestamp = format_timestamp();
@@ -104,13 +140,7 @@ fn main() {
         "{} [replica-{}] Completed all tasks\n",
         timestamp, replica_id
     );
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .expect("Failed to open log file");
-    file.write_all(entry.as_bytes())
-        .expect("Failed to write log");
+    append_line(&replica_id, log_path, &entry);
 
     println!("[replica-{}] Wrote log to {}", replica_id, log_path);
 }
