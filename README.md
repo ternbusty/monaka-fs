@@ -119,14 +119,24 @@ All three deployment models support S3 synchronization. Behavior is controlled b
 | `VFS_S3_BUCKET` | | (required) | S3 bucket name |
 | `VFS_S3_PREFIX` | | `vfs/` | Key prefix for synced files |
 | `VFS_SYNC_MODE` | `batch`, `realtime` | `batch` | `batch`: periodic flush. `realtime`: immediate S3 PUT on every write |
+| `VFS_INBOUND_MODE` | `none`, `polling`, `readthrough` | `polling` | How changes made by other instances are picked up |
 | `VFS_READ_MODE` | `memory`, `s3` | `memory` | `memory`: read from VFS only. `s3`: read-through from S3 on every read |
 | `VFS_METADATA_MODE` | `local`, `s3` | `local` | `local`: use cached metadata. `s3`: HEAD request on every file open |
+| `VFS_POLL_INTERVAL_SECS` | seconds | `30` | Interval between inbound polls |
+| `VFS_FLUSH_INTERVAL_SECS` | seconds | `5` | Batch flush interval |
+| `VFS_OUTBOUND_BATCH_SIZE` | count | `10` | Operations per batch flush |
+| `VFS_S3_FILE_LOCK` | `enabled`, `disabled` | `enabled` | Per-file S3 lease on open for write, so several instances can share one prefix safely |
+| `VFS_S3_FILE_LOCK_TIMEOUT_MS` | milliseconds | `10000` | How long an open waits for a lease held elsewhere before failing with a busy error |
+| `VFS_S3_FILE_LOCK_LEASE_SECS` | seconds | `30` | Lease lifetime. Only matters when a holder crashes |
+| `VFS_RPC_PORT` | port | `9000` | Port for `vfs-rpc-server` and the `rpc-adapter` |
 | `AWS_ACCESS_KEY_ID` | | | AWS credential |
 | `AWS_SECRET_ACCESS_KEY` | | | AWS credential |
 | `AWS_REGION` | | | AWS region |
-| `AWS_ENDPOINT_URL` | | | Custom endpoint (for LocalStack, GCS, MinIO, etc.) |
+| `AWS_ENDPOINT_URL` | | | Custom endpoint (for LocalStack, GCS, and other S3 compatible stores) |
 
 For Static Composition and RPC, these are passed as `--env` flags to `wasmtime run`. For Host Trait, these are read from the process environment by the AWS SDK.
+
+Several instances may share one bucket and prefix. Every write to S3 is conditional on the ETag the instance last saw, and opening a file for write takes a per-file lease, so a concurrent change is either serialized or reported to the application instead of being silently overwritten. Writes become visible to other instances when the file is closed. The full contract, including the error codes an application sees and the supported backends, is in [docs/sync-semantics.md](./docs/sync-semantics.md).
 
 ## Three Deployment Models
 
@@ -169,12 +179,12 @@ crates/
 │   ├── vfs-host/           # wasmtime host for dynamic linking
 │   └── vfs-rpc-host/       # wasmtime host for RPC-based access
 ├── sync/
-│   ├── vfs-sync-core/      # Core sync types
-│   ├── vfs-sync-host/      # S3 sync for vfs-host / vfs-rpc-server
-│   └── vfs-sync-adapter/   # S3 sync for vfs-adapter (WASI)
+│   ├── vfs-sync-core/      # Core sync logic (conditional writes, leases)
+│   ├── vfs-sync-host/      # S3 sync for vfs-host
+│   └── vfs-sync-adapter/   # S3 sync for vfs-adapter / vfs-rpc-server (WASI)
 ├── rpc/
 │   ├── vfs-rpc-protocol/   # RPC message types
-│   └── vfs-rpc-server/     # TCP server on port 9000
+│   └── vfs-rpc-server/     # TCP server (port 9000 by default, VFS_RPC_PORT)
 └── tools/
     └── monaka-cli/        # Monaka CLI (embed, compose, extract)
 ```
