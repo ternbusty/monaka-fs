@@ -66,6 +66,12 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # The invocation above only covers `default-members`. Lint the native
+      # crates outside that list explicitly (the WASM-only crates are built
+      # for wasm32 in the build job).
+      - name: Run clippy on sync and rpc-server crates
+        run: cargo clippy -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core --all-targets --all-features -- -D warnings
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -192,6 +198,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --verbose
+
+      # `cargo test` without `-p` only runs `default-members`. The sync
+      # layer's tests (conditional writes, leases, directory markers) live
+      # outside that list and must run explicitly.
+      - name: Run sync and rpc-server tests
+        run: cargo test -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core --all-features --verbose
 
       # fs-core ships two filesystem implementations (single-threaded vs
       # `thread-safe` feature). The default `cargo test --all-features` run
