@@ -216,6 +216,54 @@ s3_reset_bucket() {
     awslocal_cmd s3 rm "s3://$S3_BUCKET/" --recursive >/dev/null 2>&1 || true
 }
 
+# Verify that the S3 backend actually enforces conditional writes. The sync
+# layer relies on If-Match / If-None-Match on PutObject for locking and
+# fencing; a backend that silently ignores them (LocalStack 3.x) would make
+# the S3 tiers pass while proving nothing. Conditional DeleteObject is only
+# supported by newer backends, so record that separately and let the
+# scenarios that need it skip instead of fail.
+COND_DELETE_SUPPORTED=0
+s3_smoke_conditional_writes() {
+    local key="e2e-smoke/conditional-writes.txt"
+    local body="$TMP_DIR/smoke-body.txt"
+    local wrong_etag='"0123456789abcdef0123456789abcdef"'
+    printf 'smoke\n' >"$body"
+
+    awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" >/dev/null
+
+    if awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" \
+        --if-match "$wrong_etag" >/dev/null 2>"$LOG_DIR/smoke-if-match.log"; then
+        echo "S3 backend does not enforce If-Match on PutObject (need LocalStack >= 4.0.3)." >&2
+        exit 2
+    fi
+    if ! grep -q "PreconditionFailed" "$LOG_DIR/smoke-if-match.log"; then
+        echo "Unexpected error from conditional PutObject, see $LOG_DIR/smoke-if-match.log" >&2
+        exit 2
+    fi
+
+    if awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" \
+        --if-none-match '*' >/dev/null 2>"$LOG_DIR/smoke-if-none-match.log"; then
+        echo "S3 backend does not enforce If-None-Match: * on PutObject." >&2
+        exit 2
+    fi
+
+    # LocalStack 4.x answers a conditional DeleteObject with NotImplemented
+    # rather than evaluating it, and the sync layer falls back to an
+    # unconditional delete in that case. Only a PreconditionFailed proves
+    # the backend evaluated the header.
+    if awslocal_cmd s3api delete-object --bucket "$S3_BUCKET" --key "$key" \
+        --if-match "$wrong_etag" >/dev/null 2>"$LOG_DIR/smoke-delete-if-match.log"; then
+        info "backend ignores If-Match on DeleteObject; conditional-delete scenarios will be skipped"
+    elif grep -q "PreconditionFailed" "$LOG_DIR/smoke-delete-if-match.log"; then
+        COND_DELETE_SUPPORTED=1
+    else
+        info "backend rejects If-Match on DeleteObject ($(head -c 80 "$LOG_DIR/smoke-delete-if-match.log" | tr -d '\n')); conditional-delete scenarios will be skipped"
+    fi
+
+    awslocal_cmd s3 rm "s3://$S3_BUCKET/$key" >/dev/null 2>&1 || true
+    info "S3 backend enforces conditional writes"
+}
+
 # ---------------------------------------------------------------------------
 # Pre-flight: tooling sanity checks
 # ---------------------------------------------------------------------------
@@ -244,6 +292,7 @@ if (( RUN_S3 )); then
         echo "Either start it (--start-stack) or rerun with --no-s3." >&2
         exit 2
     fi
+    s3_smoke_conditional_writes
 fi
 
 # ---------------------------------------------------------------------------
