@@ -12,8 +12,13 @@
 //! - `VFS_S3_BUCKET`: S3 bucket name (required to enable sync)
 //! - `VFS_S3_PREFIX`: Key prefix for all objects (default: "vfs/")
 //! - `VFS_SYNC_MODE`: "batch" (default) or "realtime"
-//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (LocalStack, MinIO)
+//! - `VFS_S3_FILE_LOCK`: "enabled" (default) or "disabled"
+//! - `VFS_S3_FILE_LOCK_TIMEOUT_MS`: wait for a lease held elsewhere (default 10000)
+//! - `VFS_S3_FILE_LOCK_LEASE_SECS`: lease lifetime (default 30)
+//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (LocalStack)
 //! - `AWS_REGION`: AWS region (default from SDK config)
+//!
+//! The consistency contract is documented in `docs/sync-semantics.md`.
 
 use std::sync::Arc;
 

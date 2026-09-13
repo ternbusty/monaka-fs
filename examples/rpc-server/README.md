@@ -1,6 +1,6 @@
 # RPC Server Examples
 
-TCP-based communication using `vfs-rpc-server`. WASM apps are composed with `rpc-adapter`, then connect to a running server on port 9000.
+TCP-based communication using `vfs-rpc-server`. WASM apps are composed with `rpc-adapter`, then connect to a running server on port 9000 (override with `VFS_RPC_PORT` on both sides).
 
 ```
 App (std::fs) + rpc-adapter  -->  Composed WASM  --[TCP:9000]-->  vfs-rpc-server

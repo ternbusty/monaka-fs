@@ -104,6 +104,8 @@ Enable the `s3-sync` feature to synchronize the in memory filesystem with S3.
 let vfs_host = VfsHostState::new_with_s3(bucket, prefix).await?;
 ```
 
+Several hosts may share one bucket and prefix. Opening a file for write takes a per-file S3 lease, and every write is conditional on the ETag last seen, so concurrent changes are serialized or reported instead of silently overwritten. An open that cannot get the lease within `VFS_S3_FILE_LOCK_TIMEOUT_MS` fails with `busy`. The full contract is in `docs/sync-semantics.md` at the repository root.
+
 ## Example
 
 See `examples/host-trait/runtime-linker` for a complete working example.

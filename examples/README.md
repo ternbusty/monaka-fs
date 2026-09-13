@@ -14,7 +14,7 @@ Examples demonstrating the Monaka VFS.
 |--------|-----------|-------------|
 | [Static Composition](./static-composition/) | `static-composition/` | Build-time composition with `wac plug` + `vfs-adapter` |
 | [Host Trait](./host-trait/) | `host-trait/` | Native host binary using `vfs-host` for runtime dynamic linking |
-| [RPC Server](./rpc-server/) | `rpc-server/` | TCP-based sharing via `vfs-rpc-server` on port 9000 |
+| [RPC Server](./rpc-server/) | `rpc-server/` | TCP-based sharing via `vfs-rpc-server` (port 9000 by default) |
 
 ## Prerequisites
 
