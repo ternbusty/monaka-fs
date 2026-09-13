@@ -14,8 +14,22 @@ pub mod vfs {
 
 pub use vfs::*;
 
-/// Protocol version
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version spoken by this build. Version 2 added `Request::Fsync`
+/// and the `Busy` / `Conflict` error codes.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Oldest protocol version a server still accepts.
+pub const MIN_PROTOCOL_VERSION: u32 = 1;
+
+/// Pick the version a server should speak with a client that announced
+/// `client`. `None` when the client is outside the supported range.
+pub fn negotiate_version(client: u32) -> Option<u32> {
+    if (MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&client) {
+        Some(client)
+    } else {
+        None
+    }
+}
 
 /// Default server port
 pub const DEFAULT_PORT: u16 = 9000;
@@ -36,6 +50,10 @@ pub enum ErrorCode {
     ProtocolError = 10,
     SerializationError = 11,
     Io = 12,
+    /// A per-file lock is held by another instance (protocol v2).
+    Busy = 13,
+    /// The object changed in S3 under a held lease (protocol v2).
+    Conflict = 14,
 }
 
 impl ErrorCode {
@@ -54,6 +72,8 @@ impl ErrorCode {
             ErrorCode::ProtocolError => "Protocol error",
             ErrorCode::SerializationError => "Serialization error",
             ErrorCode::Io => "I/O error",
+            ErrorCode::Busy => "Resource busy",
+            ErrorCode::Conflict => "Conflict",
         }
     }
 
@@ -72,6 +92,8 @@ impl ErrorCode {
             10 => Some(ErrorCode::ProtocolError),
             11 => Some(ErrorCode::SerializationError),
             12 => Some(ErrorCode::Io),
+            13 => Some(ErrorCode::Busy),
+            14 => Some(ErrorCode::Conflict),
             _ => None,
         }
     }
@@ -153,6 +175,11 @@ pub enum Request {
     Rename {
         old_path: String,
         new_path: String,
+    },
+    /// Flush a write descriptor's pending changes to S3 without closing
+    /// it (protocol v2).
+    Fsync {
+        fd: u32,
     },
 }
 
@@ -245,6 +272,7 @@ pub fn from_proto_request(proto_req: vfs::RpcRequest) -> Result<RpcRequestMessag
             old_path: r.old_path,
             new_path: r.new_path,
         },
+        Some(R::Fsync(f)) => Request::Fsync { fd: f.fd },
         None => return Err("Missing request"),
     };
     Ok(RpcRequestMessage {
@@ -354,6 +382,7 @@ pub fn to_proto_request_bytes(rpc_request: &RpcRequestMessage) -> Vec<u8> {
             old_path: old_path.clone(),
             new_path: new_path.clone(),
         }),
+        Request::Fsync { fd } => R::Fsync(vfs::Fsync { fd: *fd }),
     };
 
     let proto_request = vfs::RpcRequest {

@@ -9,8 +9,9 @@
 
 use prost::Message;
 use vfs_rpc_protocol::{
-    from_proto_request, from_proto_response_bytes, to_proto_request_bytes, to_proto_response, vfs,
-    DirEntry, ErrorCode, FileMetadata, Request, Response, RpcRequestMessage,
+    from_proto_request, from_proto_response_bytes, negotiate_version, to_proto_request_bytes,
+    to_proto_response, vfs, DirEntry, ErrorCode, FileMetadata, Request, Response,
+    RpcRequestMessage, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -567,4 +568,51 @@ fn error_code_as_str_non_empty() {
     ] {
         assert!(!code.as_str().is_empty(), "{:?} has empty as_str", code);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol v2 additions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn request_fsync_round_trip() {
+    let out = request_round_trip(&rq(Request::Fsync { fd: 7 }));
+    match out.request {
+        Request::Fsync { fd } => assert_eq!(fd, 7),
+        other => panic!("unexpected variant: {:?}", other),
+    }
+}
+
+#[test]
+fn response_error_busy_and_conflict_round_trip() {
+    for code in [ErrorCode::Busy, ErrorCode::Conflict] {
+        let out = response_round_trip(Response::Error {
+            code,
+            message: "m".into(),
+        });
+        match out {
+            Response::Error { code: got, message } => {
+                assert_eq!(got, code);
+                assert_eq!(message, "m");
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn error_code_from_i32_maps_v2_codes() {
+    assert_eq!(ErrorCode::from_i32(13), Some(ErrorCode::Busy));
+    assert_eq!(ErrorCode::from_i32(14), Some(ErrorCode::Conflict));
+    assert_eq!(ErrorCode::from_i32(15), None);
+}
+
+#[test]
+fn protocol_version_is_two_and_accepts_one() {
+    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(MIN_PROTOCOL_VERSION, 1);
+    assert_eq!(negotiate_version(1), Some(1));
+    assert_eq!(negotiate_version(2), Some(2));
+    assert_eq!(negotiate_version(0), None);
+    assert_eq!(negotiate_version(3), None);
 }

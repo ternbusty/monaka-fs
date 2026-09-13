@@ -22,6 +22,7 @@ message RpcRequest {
     Rmdir rmdir = 17;
     AppendWrite append_write = 18;
     Rename rename = 19;
+    Fsync fsync = 20;
   }
 }
 
@@ -43,6 +44,7 @@ message ReaddirFd { uint32 fd = 1; }
 message Rmdir { string path = 1; }
 message AppendWrite { uint32 fd = 1; bytes data = 2; }
 message Rename { string old_path = 1; string new_path = 2; }
+message Fsync { uint32 fd = 1; }
 
 message RpcResponse {
   oneof response {
