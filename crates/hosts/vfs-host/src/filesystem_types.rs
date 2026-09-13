@@ -15,7 +15,7 @@ use wasmtime_wasi::p2::{
 use wasmtime_wasi::TrappableError;
 
 #[cfg(feature = "s3-sync")]
-use super::SyncHooks;
+use super::{OpenKind, SyncHookError, SyncHooks};
 
 // fs-core open flags
 const O_RDONLY: u32 = 0;
@@ -223,6 +223,32 @@ impl VfsHostState {
         Ok((wrapper.fd, wrapper.path.clone()))
     }
 
+    /// Helper: Get the full descriptor wrapper (fd, path, open flags)
+    fn get_fs_wrapper(
+        &self,
+        host_desc: &Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<FsDescriptorWrapper, wasmtime::Error> {
+        let rep = host_desc.rep();
+        let wrapper_resource: Resource<FsDescriptorWrapper> = Resource::new_borrow(rep);
+        self.table
+            .get(&wrapper_resource)
+            .cloned()
+            .map_err(|e| wasmtime::format_err!("Failed to get descriptor from table: {}", e))
+    }
+
+    /// Run a sync hook that may fail and map its error to a WASI code.
+    #[cfg(feature = "s3-sync")]
+    fn run_hook(
+        &self,
+        f: impl FnOnce(&dyn SyncHooks) -> Result<(), SyncHookError>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
+        match self.sync_hooks {
+            Some(ref hooks) => f(hooks.as_ref())
+                .map_err(|e| convert_sync_to_nonsync_error(super::convert_sync_hook_error(e))),
+            None => Ok(()),
+        }
+    }
+
     /// Helper: Resolve relative path from directory descriptor
     fn resolve_path(&self, dir_path: &Option<String>, relative_path: &str) -> String {
         match dir_path {
@@ -234,6 +260,32 @@ impl VfsHostState {
             ),
             None => format!("/{}", relative_path.trim_start_matches('/')),
         }
+    }
+
+    /// `sync` / `sync-data`: push a write descriptor's pending content to
+    /// S3 without releasing its lease. This is where a lease conflict is
+    /// reported to the application.
+    fn fsync_descriptor(
+        &self,
+        self_: &Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+    ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
+        let wrapper = self.get_fs_wrapper(self_).map_err(TrappableError::trap)?;
+        #[cfg(feature = "s3-sync")]
+        if let Some(ref path) = wrapper.path {
+            let kind = OpenKind::from_fs_flags(wrapper.flags);
+            if kind.is_write() {
+                if let Some(ref hooks) = self.sync_hooks {
+                    // Make sure the write is registered before flushing;
+                    // stream drops normally do this, but `sync` can run
+                    // while the stream is still open.
+                    hooks.on_write(path);
+                }
+                self.run_hook(|hooks| hooks.on_fsync(path, kind))?;
+            }
+        }
+        #[cfg(not(feature = "s3-sync"))]
+        let _ = wrapper;
+        Ok(())
     }
 }
 
@@ -398,6 +450,20 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
         let wrapper_resource: Resource<FsDescriptorWrapper> = Resource::new_own(rep.rep());
         let wrapper = self.table.delete(wrapper_resource)?;
 
+        // Push pending content and release the S3 lease for write
+        // descriptors. A resource drop cannot report an error to the guest
+        // (it would trap), so a conflict here is logged; applications that
+        // need to observe it call `sync` before closing.
+        #[cfg(feature = "s3-sync")]
+        if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &wrapper.path) {
+            let kind = OpenKind::from_fs_flags(wrapper.flags);
+            if kind.is_write() {
+                if let Err(e) = hooks.on_close(path, kind) {
+                    log::warn!("[vfs-host] close of {} reported: {:?}", path, e);
+                }
+            }
+        }
+
         // Close the fd in fs-core
         let _ = self.shared_vfs.close(wrapper.fd); // Ignore close errors
         Ok(())
@@ -516,10 +582,9 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
 
     fn sync_data(
         &mut self,
-        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
-        // In-memory FS: sync is no-op
-        Ok(())
+        self.fsync_descriptor(&self_)
     }
 
     fn get_flags(
@@ -563,13 +628,18 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
         self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
         size: u64,
     ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
-        let (fd, _) = self
+        let (fd, _path) = self
             .get_fs_descriptor(&self_)
             .map_err(TrappableError::trap)?;
 
         self.shared_vfs
             .ftruncate(fd, size)
             .map_err(convert_fs_error_to_trappable)?;
+
+        #[cfg(feature = "s3-sync")]
+        if let (Some(ref hooks), Some(ref path)) = (&self.sync_hooks, &_path) {
+            hooks.on_truncate(path);
+        }
 
         Ok(())
     }
@@ -651,9 +721,9 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
 
     fn sync(
         &mut self,
-        _self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
+        self_: Resource<wasmtime_wasi::p2::bindings::filesystem::types::Descriptor>,
     ) -> Result<(), TrappableError<wasmtime_wasi::p2::bindings::filesystem::types::ErrorCode>> {
-        Ok(())
+        self.fsync_descriptor(&self_)
     }
 
     fn create_directory_at(
@@ -669,6 +739,9 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
         self.shared_vfs
             .mkdir(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
+
+        #[cfg(feature = "s3-sync")]
+        self.run_hook(|hooks| hooks.on_mkdir(&full_path))?;
 
         Ok(())
     }
@@ -742,13 +815,6 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
             .map_err(TrappableError::trap)?;
         let full_path = self.resolve_path(&dir_path, &path);
 
-        // Trigger on_open hook for metadata sync (like s3fs HEAD request)
-        // This checks S3 for updates before opening the file
-        #[cfg(feature = "s3-sync")]
-        if let Some(ref hooks) = self.sync_hooks {
-            hooks.on_open(&full_path);
-        }
-
         // Convert flags to fs-core flags
         let mut fs_flags = 0u32;
 
@@ -771,6 +837,13 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
             fs_flags |= O_TRUNC;
         }
 
+        // Sync hook before the local open: for write opens this acquires
+        // the S3 lease and refreshes the local copy, which must happen
+        // before an O_TRUNC open empties the file. A Busy or Conflict
+        // aborts the open without leaking a descriptor.
+        #[cfg(feature = "s3-sync")]
+        self.run_hook(|hooks| hooks.on_open(&full_path, OpenKind::from_fs_flags(fs_flags)))?;
+
         let fd = self
             .shared_vfs
             .open_path_with_flags(&full_path, fs_flags)
@@ -781,6 +854,7 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
         let wrapper = FsDescriptorWrapper {
             fd,
             path: Some(full_path),
+            flags: fs_flags,
         };
         let wrapper_resource: Resource<FsDescriptorWrapper> = self.table.push(wrapper)?;
 
@@ -832,6 +906,9 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::types::HostDescriptor for Vf
         self.shared_vfs
             .rmdir(&full_path)
             .map_err(convert_fs_error_to_trappable)?;
+
+        #[cfg(feature = "s3-sync")]
+        self.run_hook(|hooks| hooks.on_rmdir(&full_path))?;
 
         Ok(())
     }

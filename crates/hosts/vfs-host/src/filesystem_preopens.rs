@@ -33,6 +33,7 @@ impl wasmtime_wasi::p2::bindings::sync::filesystem::preopens::Host for VfsHostSt
         let wrapper = FsDescriptorWrapper {
             fd,
             path: Some("/".to_string()),
+            flags: O_RDONLY,
         };
 
         // Push to ResourceTable
