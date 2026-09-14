@@ -16,7 +16,7 @@ vfs-rpc-server-core = { path = "../vfs-rpc-server-core" }
 vfs-rpc-protocol = { path = "../vfs-rpc-protocol" }
 vfs-sync-adapter = { path = "../../sync/vfs-sync-adapter", optional = true }
 prost = "0.14"
-wit-bindgen = { version = "0.60.0", default-features = false, features = ["realloc", "macros", "bitflags"] }
+wit-bindgen = { version = "0.61.1", default-features = false, features = ["realloc", "macros", "bitflags"] }
 log = "0.4"
 # `v4` feature is intentionally omitted: it pulls in `getrandom` →
 # `wasip2` 0.2.9, which clashes with the wasi 0.2.6 interfaces our world
@@ -28,4 +28,4 @@ uuid = { version = "1", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "sync"] }
 
 [build-dependencies]
-wit-bindgen = "0.60.0"
+wit-bindgen = "0.61.1"
