@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ternbusty/monaka-fs/compare/vfs-adapter-v0.3.1...vfs-adapter-v0.4.0) (2026-09-19)
+
+
+### Features
+
+* per-file S3 leases and conditional writes for multi-instance sync ([#113](https://github.com/ternbusty/monaka-fs/issues/113)) ([44c5c90](https://github.com/ternbusty/monaka-fs/commit/44c5c908a767348c01025c7c12fccd4586640882))
+
 ## [0.3.1](https://github.com/ternbusty/monaka-fs/compare/vfs-adapter-v0.3.0...vfs-adapter-v0.3.1) (2026-08-19)
 
 
