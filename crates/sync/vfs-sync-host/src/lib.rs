@@ -12,8 +12,13 @@
 //! - `VFS_S3_BUCKET`: S3 bucket name (required to enable sync)
 //! - `VFS_S3_PREFIX`: Key prefix for all objects (default: "vfs/")
 //! - `VFS_SYNC_MODE`: "batch" (default) or "realtime"
-//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (LocalStack, MinIO)
+//! - `VFS_S3_FILE_LOCK`: "enabled" (default) or "disabled"
+//! - `VFS_S3_FILE_LOCK_TIMEOUT_MS`: wait for a lease held elsewhere (default 10000)
+//! - `VFS_S3_FILE_LOCK_LEASE_SECS`: lease lifetime (default 30)
+//! - `AWS_ENDPOINT_URL`: Custom S3 endpoint (LocalStack)
 //! - `AWS_REGION`: AWS region (default from SDK config)
+//!
+//! The consistency contract is documented in `docs/sync-semantics.md`.
 
 use std::sync::Arc;
 
@@ -23,7 +28,7 @@ use vfs_sync_core::{FsBackend, S3Error};
 
 pub use vfs_sync_core::{
     populate_from_s3, InboundMode, LoadError, MetadataCache, MetadataMode, S3ObjectInfo, S3Storage,
-    SyncConfig, SyncManager, SyncMode, SyncOperation, SyncStats, SyncedFileMetadata,
+    SyncConfig, SyncError, SyncManager, SyncMode, SyncOperation, SyncStats, SyncedFileMetadata,
 };
 
 /// Newtype wrapping the thread-safe `Arc<Fs>` so we can implement
@@ -108,6 +113,13 @@ impl FsBackend for HostFs {
 
     fn mkdir_p(&self, path: &str) {
         let _ = self.0.mkdir_p(path);
+    }
+
+    fn rmdir(&self, path: &str) -> Result<(), S3Error> {
+        self.0.rmdir(path).map_err(|e| S3Error::Delete {
+            key: path.to_string(),
+            message: format!("Failed to rmdir: {:?}", e),
+        })
     }
 }
 

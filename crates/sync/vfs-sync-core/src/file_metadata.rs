@@ -1,7 +1,8 @@
 //! File metadata cache for S3 synchronization
 //!
-//! Tracks ETag and timestamps for synced files to enable
-//! change detection and conflict resolution.
+//! Tracks the ETag this instance last saw for every synced file, which is
+//! the sole input to inbound change detection and the base for conditional
+//! writes. Directory markers are tracked separately.
 
 use std::collections::HashMap;
 
@@ -19,16 +20,17 @@ pub struct SyncedFileMetadata {
 }
 
 /// Cache of synced file metadata
+#[derive(Default)]
 pub struct MetadataCache {
     /// Map from VFS path to sync metadata
     files: HashMap<String, SyncedFileMetadata>,
+    /// Map from VFS directory path to the ETag of its marker object
+    dirs: HashMap<String, String>,
 }
 
 impl MetadataCache {
     pub fn new() -> Self {
-        Self {
-            files: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Update metadata for a file after successful S3 upload
@@ -79,15 +81,30 @@ impl MetadataCache {
         self.files.remove(path);
     }
 
-    /// Get all tracked paths
+    /// Get all tracked file paths
     pub fn paths(&self) -> impl Iterator<Item = &String> {
         self.files.keys()
     }
-}
 
-impl Default for MetadataCache {
-    fn default() -> Self {
-        Self::new()
+    pub fn add_dir(&mut self, path: &str, etag: String) {
+        self.dirs.insert(path.to_string(), etag);
+    }
+
+    pub fn remove_dir(&mut self, path: &str) {
+        self.dirs.remove(path);
+    }
+
+    pub fn dir_etag(&self, path: &str) -> Option<&String> {
+        self.dirs.get(path)
+    }
+
+    pub fn has_dir(&self, path: &str) -> bool {
+        self.dirs.contains_key(path)
+    }
+
+    /// Get all tracked directory paths
+    pub fn dirs(&self) -> impl Iterator<Item = &String> {
+        self.dirs.keys()
     }
 }
 

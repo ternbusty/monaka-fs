@@ -27,6 +27,7 @@ members = [
   "examples/apps/demo-fs-operations",
   "examples/apps/demo-writer",
   "examples/apps/demo-reader",
+  "examples/apps/demo-dirlist",
   "examples/static-composition/embed",
 
   # Use Cases - RPC Server

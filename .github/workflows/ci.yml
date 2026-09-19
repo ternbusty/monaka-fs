@@ -66,6 +66,12 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # The invocation above only covers `default-members`. Lint the native
+      # crates outside that list explicitly (the WASM-only crates are built
+      # for wasm32 in the build job).
+      - name: Run clippy on sync and rpc-server crates
+        run: cargo clippy -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core -p rpc-adapter --all-targets --all-features -- -D warnings
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -137,7 +143,8 @@ jobs:
         run: |
           cargo build --release --target wasm32-wasip2 \
             -p demo-writer -p demo-reader -p demo-fs-operations \
-            -p demo-embed-read -p ci-job -p logger -p image-processor
+            -p demo-embed-read -p ci-job -p logger -p image-processor \
+            -p demo-dirlist
           cargo build --target wasm32-wasip2 \
             -p demo-writer -p demo-reader -p demo-fs-operations
 
@@ -192,6 +199,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features --verbose
+
+      # `cargo test` without `-p` only runs `default-members`. The sync
+      # layer's tests (conditional writes, leases, directory markers) live
+      # outside that list and must run explicitly.
+      - name: Run sync and rpc-server tests
+        run: cargo test -p vfs-sync-core -p vfs-sync-host -p vfs-rpc-server-core -p rpc-adapter --all-features --verbose
 
       # fs-core ships two filesystem implementations (single-threaded vs
       # `thread-safe` feature). The default `cargo test --all-features` run
@@ -314,18 +327,19 @@ jobs:
       # creates `test-vfs-bucket` is still mounted in the same place.
       - name: Start LocalStack
         run: |
-          # The latest `localstack/localstack` image performs a Pro license
-          # check on startup and exits with code 55 ("License activation
-          # failed") even when only community services are requested.
-          # Pin to v3 which still ships the community build under the same
-          # entrypoint without an auth-token requirement.
+          # LocalStack images from 2026.03.0 onward are a single token-gated
+          # build and exit with code 55 ("License activation failed") without
+          # LOCALSTACK_AUTH_TOKEN. 4.14.0 is the last release that starts
+          # without a token, and it already enforces the S3 conditional
+          # writes (If-Match / If-None-Match on PutObject) that the sync
+          # layer depends on. Keep this tag in step with docker-compose.yml.
           docker run -d --name halycon-localstack-1 \
             -p 4566:4566 \
             -e SERVICES=s3 \
             -e DEBUG=1 \
             -e AWS_DEFAULT_REGION=ap-northeast-1 \
             -v "${GITHUB_WORKSPACE}/localstack-init:/etc/localstack/init/ready.d" \
-            localstack/localstack:3
+            localstack/localstack:4.14.0
           # Wait for the gateway to come up.
           for i in $(seq 1 60); do
             if curl -sf http://localhost:4566/_localstack/health >/dev/null; then

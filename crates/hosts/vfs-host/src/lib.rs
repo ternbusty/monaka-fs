@@ -19,9 +19,9 @@ pub mod filesystem_types;
 #[cfg(feature = "s3-sync")]
 mod sync_hooks;
 #[cfg(feature = "s3-sync")]
-pub use sync_hooks::{NoOpSyncHooks, S3SyncHooks, SyncHooks};
+pub use sync_hooks::{NoOpSyncHooks, OpenKind, S3SyncHooks, SyncHookError, SyncHooks};
 #[cfg(feature = "s3-sync")]
-pub use vfs_sync_host::{init_from_s3, HostSyncManager, S3Storage, SyncConfig};
+pub use vfs_sync_host::{init_from_s3, HostSyncManager, S3Storage, SyncConfig, SyncError};
 
 /// Wrapper for fs-core file descriptor stored in ResourceTable.
 /// Contains the fd and optionally the path for directory descriptors.
@@ -31,6 +31,8 @@ pub struct FsDescriptorWrapper {
     pub fd: u32,
     /// Path for directory descriptors (used for relative path resolution)
     pub path: Option<String>,
+    /// fs-core open flags, so close can tell write descriptors apart
+    pub flags: u32,
 }
 
 /// Wrapper for directory entry stream stored in ResourceTable.
@@ -126,6 +128,14 @@ impl VfsHostState {
         let config = SyncConfig::from_env();
 
         log::info!("[vfs-host] Sync mode: {:?}", config.mode);
+        log::info!(
+            "[vfs-host] S3 file lock: {}",
+            if config.file_lock {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
 
         // Check if read-from-S3 mode is enabled
         let read_from_s3 = std::env::var("VFS_READ_MODE")
@@ -177,9 +187,13 @@ impl VfsHostState {
                         sync.maybe_sync().await;
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    // Final flush before exit
+                    // Final flush before exit, then give back every S3
+                    // lease this process still holds.
                     if let Err(e) = sync.force_flush().await {
                         log::error!("[vfs-host] Final flush failed: {}", e);
+                    }
+                    if let Err(e) = sync.release_all_leases().await {
+                        log::error!("[vfs-host] Releasing leases failed: {}", e);
                     }
                     log::info!("[vfs-host] Background sync thread stopped");
                 });
@@ -344,6 +358,22 @@ pub fn convert_fs_error(
         FsError::BadFileDescriptor => ErrorCode::BadDescriptor,
         FsError::PermissionDenied => ErrorCode::Access,
         FsError::InvalidArgument => ErrorCode::Invalid,
+    }
+}
+
+/// Convert a sync hook error to a WASI error code.
+#[cfg(feature = "s3-sync")]
+pub fn convert_sync_hook_error(
+    error: SyncHookError,
+) -> wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode {
+    use wasmtime_wasi::p2::bindings::sync::filesystem::types::ErrorCode;
+    match error {
+        SyncHookError::Busy => ErrorCode::Busy,
+        SyncHookError::Conflict => ErrorCode::NotRecoverable,
+        SyncHookError::Io(msg) => {
+            log::error!("[vfs-host] sync error: {}", msg);
+            ErrorCode::Io
+        }
     }
 }
 

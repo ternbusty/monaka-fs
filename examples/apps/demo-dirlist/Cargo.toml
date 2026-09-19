@@ -1,0 +1,11 @@
+[package]
+name = "demo-dirlist"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[[bin]]
+name = "demo-dirlist"
+path = "src/main.rs"

@@ -66,6 +66,9 @@ awslocal s3 cp s3://test-vfs-bucket/demo/files/data/config.json -
 | `VFS_S3_PREFIX` | Key prefix for synced files | `vfs/` |
 | `VFS_SYNC_MODE` | `batch` or `realtime` | `batch` |
 | `VFS_FLUSH_INTERVAL_SECS` | Batch flush interval (seconds) | `5` |
+| `VFS_S3_FILE_LOCK` | `enabled` or `disabled`. Per-file S3 lease on open for write | `enabled` |
+| `VFS_S3_FILE_LOCK_TIMEOUT_MS` | Wait for a lease held by another instance | `10000` |
+| `VFS_S3_FILE_LOCK_LEASE_SECS` | Lease lifetime, only relevant if a holder crashes | `30` |
 | `AWS_ENDPOINT_URL` | S3 endpoint (for LocalStack) | - |
 | `AWS_ACCESS_KEY_ID` | AWS credential | - |
 | `AWS_SECRET_ACCESS_KEY` | AWS credential | - |
@@ -99,11 +102,13 @@ wac plug \
 
 ## Comparison with Other Approaches
 
-| Approach | S3 Sync | Multi-process | Complexity |
-|----------|---------|---------------|------------|
-| Static (this) | Yes | No | Low |
-| Dynamic (runtime-linker-s3) | Yes | No | Medium |
-| RPC (vfs-rpc-server) | Yes | Yes | High |
+| Approach | S3 Sync | Shared VFS in one process group | Several processes on one bucket | Complexity |
+|----------|---------|---------------------------------|--------------------------------|------------|
+| Static (this) | Yes | No | Yes, through S3 leases | Low |
+| Dynamic (runtime-linker-s3) | Yes | Yes | Yes, through S3 leases | Medium |
+| RPC (vfs-rpc-server) | Yes | Yes | Yes, through S3 leases | High |
+
+Any number of composed processes may share one bucket and prefix. Writes to the same file are serialized by the per-file lease described in [docs/sync-semantics.md](../../../docs/sync-semantics.md).
 
 Use **static composition** when:
 - Single WASM component needs S3 persistence

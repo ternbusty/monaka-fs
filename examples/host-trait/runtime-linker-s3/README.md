@@ -61,7 +61,11 @@ Expected:
 | `VFS_S3_BUCKET` | Yes | - | S3 bucket name |
 | `VFS_S3_PREFIX` | No | `vfs/` | Key prefix in bucket |
 | `VFS_SYNC_MODE` | No | `batch` | `batch` or `realtime` |
-| `AWS_ENDPOINT_URL` | No | - | For LocalStack/MinIO |
+| `VFS_S3_FILE_LOCK` | No | `enabled` | Per-file S3 lease on open for write |
+| `VFS_S3_FILE_LOCK_TIMEOUT_MS` | No | `10000` | Wait for a lease held by another instance |
+| `DEMO_PATH` | No | `/message.txt` | Path demo-writer writes |
+| `DEMO_CONTENT` | No | `Hello from App1!` | Content demo-writer writes |
+| `AWS_ENDPOINT_URL` | No | - | For LocalStack |
 | `AWS_ACCESS_KEY_ID` | Yes | - | AWS credential |
 | `AWS_SECRET_ACCESS_KEY` | Yes | - | AWS credential |
 | `AWS_REGION` | No | - | AWS region |

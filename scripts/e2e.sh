@@ -6,6 +6,7 @@
 #   2. RPC server lifecycle (vfs-rpc-server + rpc-adapter clients)
 #   3. LocalStack S3 (write direction)
 #   4. LocalStack S3 (load / restore direction)
+#   5. LocalStack S3 (several instances sharing one bucket: leases)
 #
 # Each demo follows the same pattern: build, run, assert on stdout/stderr,
 # then move on. Per-demo logs land in $LOG_DIR so the CI can upload them on
@@ -93,6 +94,7 @@ run_with_timeout() {
 
 cleanup() {
     stop_rpc_server || true
+    stop_all_rpc_servers || true
     rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
@@ -201,6 +203,62 @@ stop_rpc_server() {
     RPC_SERVER_PID=""
 }
 
+# Tier 5 runs more than one rpc-server at a time. These helpers take an
+# explicit port and keep every pid so the EXIT trap can reach them.
+RPC_SERVER_PIDS=()
+
+wait_for_port() {
+    local port="$1"
+    local timeout="${2:-15}"
+    local elapsed=0
+    until nc -z localhost "$port" 2>/dev/null; do
+        if (( elapsed >= timeout )); then
+            return 1
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+}
+
+# Args: <port> <wasm> <log filename> [extra wasmtime flags...]
+start_rpc_server_on() {
+    local port="$1"; shift
+    local wasm="$1"; shift
+    local logname="$1"; shift
+    local logfile="$LOG_DIR/$logname"
+
+    info "starting rpc-server on :$port ($logname)"
+    wasmtime run -S inherit-network=y -S http --env "VFS_RPC_PORT=$port" "$@" "$wasm" \
+        >"$logfile" 2>&1 &
+    local pid=$!
+    RPC_SERVER_PIDS+=("$pid")
+
+    if ! wait_for_port "$port" 20; then
+        fail_msg "rpc-server didn't bind to :$port in time"
+        tail -n 50 "$logfile" >&2
+        return 1
+    fi
+}
+
+stop_all_rpc_servers() {
+    local pid
+    for pid in "${RPC_SERVER_PIDS[@]:-}"; do
+        [[ -z "$pid" ]] && continue
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.5
+            done
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+    RPC_SERVER_PIDS=()
+}
+
 # Pick the right `awslocal` / `aws` invocation. Prefer awslocal (which
 # auto-targets LocalStack); fall back to awscli with the env vars set.
 awslocal_cmd() {
@@ -214,6 +272,90 @@ awslocal_cmd() {
 
 s3_reset_bucket() {
     awslocal_cmd s3 rm "s3://$S3_BUCKET/" --recursive >/dev/null 2>&1 || true
+}
+
+# Number of lines in an S3 object (0 when it does not exist).
+s3_line_count() {
+    awslocal_cmd s3 cp "s3://$S3_BUCKET/$1" - 2>/dev/null | wc -l | tr -d ' ' || echo 0
+}
+
+# Fail the named check when any lease object is left under <prefix>locks/.
+assert_no_locks() {
+    local name="$1"
+    local prefix="$2"
+    local leftovers
+    leftovers=$(awslocal_cmd s3 ls "s3://$S3_BUCKET/${prefix}locks/" --recursive 2>/dev/null || true)
+    if [[ -z "$leftovers" ]]; then
+        info "[OK] $name: no lease objects left under ${prefix}locks/"
+    else
+        fail_msg "$name: lease objects left behind:"
+        printf '%s\n' "$leftovers" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# Write a lease record by hand, as another instance would have. Args:
+#   <vfs path> <expires as unix milliseconds> <owner id>
+forge_lock() {
+    local path="$1"
+    local expires_ms="$2"
+    local owner="$3"
+    local body="$TMP_DIR/forged-lock.txt"
+    printf 'instance=%s\nepoch=1\nexpires=%s\npath=%s\n' "$owner" "$expires_ms" "$path" >"$body"
+    awslocal_cmd s3api put-object --bucket "$S3_BUCKET" \
+        --key "vfs/locks${path}" --body "$body" >/dev/null
+}
+
+now_ms() {
+    python3 -c 'import time; print(int(time.time() * 1000))'
+}
+
+# Verify that the S3 backend actually enforces conditional writes. The sync
+# layer relies on If-Match / If-None-Match on PutObject for locking and
+# fencing; a backend that silently ignores them (LocalStack 3.x) would make
+# the S3 tiers pass while proving nothing. Conditional DeleteObject is only
+# supported by newer backends, so record that separately and let the
+# scenarios that need it skip instead of fail.
+COND_DELETE_SUPPORTED=0
+s3_smoke_conditional_writes() {
+    local key="e2e-smoke/conditional-writes.txt"
+    local body="$TMP_DIR/smoke-body.txt"
+    local wrong_etag='"0123456789abcdef0123456789abcdef"'
+    printf 'smoke\n' >"$body"
+
+    awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" >/dev/null
+
+    if awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" \
+        --if-match "$wrong_etag" >/dev/null 2>"$LOG_DIR/smoke-if-match.log"; then
+        echo "S3 backend does not enforce If-Match on PutObject (need LocalStack >= 4.0.3)." >&2
+        exit 2
+    fi
+    if ! grep -q "PreconditionFailed" "$LOG_DIR/smoke-if-match.log"; then
+        echo "Unexpected error from conditional PutObject, see $LOG_DIR/smoke-if-match.log" >&2
+        exit 2
+    fi
+
+    if awslocal_cmd s3api put-object --bucket "$S3_BUCKET" --key "$key" --body "$body" \
+        --if-none-match '*' >/dev/null 2>"$LOG_DIR/smoke-if-none-match.log"; then
+        echo "S3 backend does not enforce If-None-Match: * on PutObject." >&2
+        exit 2
+    fi
+
+    # LocalStack 4.x answers a conditional DeleteObject with NotImplemented
+    # rather than evaluating it, and the sync layer falls back to an
+    # unconditional delete in that case. Only a PreconditionFailed proves
+    # the backend evaluated the header.
+    if awslocal_cmd s3api delete-object --bucket "$S3_BUCKET" --key "$key" \
+        --if-match "$wrong_etag" >/dev/null 2>"$LOG_DIR/smoke-delete-if-match.log"; then
+        info "backend ignores If-Match on DeleteObject; conditional-delete scenarios will be skipped"
+    elif grep -q "PreconditionFailed" "$LOG_DIR/smoke-delete-if-match.log"; then
+        COND_DELETE_SUPPORTED=1
+    else
+        info "backend rejects If-Match on DeleteObject ($(head -c 80 "$LOG_DIR/smoke-delete-if-match.log" | tr -d '\n')); conditional-delete scenarios will be skipped"
+    fi
+
+    awslocal_cmd s3 rm "s3://$S3_BUCKET/$key" >/dev/null 2>&1 || true
+    info "S3 backend enforces conditional writes"
 }
 
 # ---------------------------------------------------------------------------
@@ -244,6 +386,7 @@ if (( RUN_S3 )); then
         echo "Either start it (--start-stack) or rerun with --no-s3." >&2
         exit 2
     fi
+    s3_smoke_conditional_writes
 fi
 
 # ---------------------------------------------------------------------------
@@ -260,6 +403,7 @@ cargo build --release --target wasm32-wasip2 \
     -p ci-job \
     -p logger \
     -p image-processor \
+    -p demo-dirlist \
     >"$LOG_DIR/build-workspace-wasm.log" 2>&1
 info "workspace WASM packages (release) built"
 
@@ -307,6 +451,7 @@ RPC_WRITER="$TMP_DIR/rpc-writer.wasm"
 RPC_READER="$TMP_DIR/rpc-reader.wasm"
 RPC_CI_JOB="$TMP_DIR/ci-job.wasm"
 RPC_LOGGER="$TMP_DIR/logger.wasm"
+RPC_DIRLIST="$TMP_DIR/dirlist.wasm"
 "$MONAKA" compose --rpc \
     "$REPO_ROOT/target/wasm32-wasip2/release/demo-writer.wasm" \
     -o "$RPC_WRITER" >/dev/null
@@ -319,6 +464,9 @@ RPC_LOGGER="$TMP_DIR/logger.wasm"
 "$MONAKA" compose --rpc \
     "$REPO_ROOT/target/wasm32-wasip2/release/logger.wasm" \
     -o "$RPC_LOGGER" >/dev/null
+"$MONAKA" compose --rpc \
+    "$REPO_ROOT/target/wasm32-wasip2/release/demo-dirlist.wasm" \
+    -o "$RPC_DIRLIST" >/dev/null
 info "RPC clients composed"
 
 # ---------------------------------------------------------------------------
@@ -634,6 +782,261 @@ else
         fi
     else
         info "Skipping tier4-roundtrip (--no-rpc)"
+    fi
+
+    # ---------------------------------------------------------------
+    # Tier 5: several instances sharing one bucket
+    # ---------------------------------------------------------------
+    # Every scenario below runs with the default VFS_S3_FILE_LOCK=enabled
+    # and a short poll interval. Tiers 3 and 4 above already exercise the
+    # lease path with a single instance; this tier is where two instances
+    # contend for the same objects.
+
+    log "Tier 5 / 5: LocalStack S3 - several instances, one bucket"
+
+    S3_ENV=(
+        --env "VFS_S3_BUCKET=$S3_BUCKET"
+        --env "AWS_ENDPOINT_URL=$S3_ENDPOINT"
+        --env "AWS_ACCESS_KEY_ID=test"
+        --env "AWS_SECRET_ACCESS_KEY=test"
+        --env "AWS_REGION=ap-northeast-1"
+    )
+    HOST_S3_ENV="VFS_S3_BUCKET=$S3_BUCKET AWS_ENDPOINT_URL=$S3_ENDPOINT AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=ap-northeast-1"
+    LOG_KEY="vfs/files/logs/app.log"
+
+    # 5.1 Two rpc-servers, replicas split across them, all appending to
+    # one file. Without leases the whole-file PUTs from the two servers
+    # would overwrite each other; with them every line must survive.
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        t5_dir="$LOG_DIR/tier5-two-servers"
+        mkdir -p "$t5_dir"
+        start_rpc_server_on 9000 "$RPC_SERVER_WASM_S3" "tier5-two-servers-A.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=2
+        start_rpc_server_on 9001 "$RPC_SERVER_WASM_S3" "tier5-two-servers-B.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=2
+        {
+            run_with_timeout 240 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=1 --env ENTRY_DELAY_MS=300 "$RPC_LOGGER" >"$t5_dir/r1.log" 2>&1 &
+            q1=$!
+            run_with_timeout 240 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=2 --env ENTRY_DELAY_MS=300 "$RPC_LOGGER" >"$t5_dir/r2.log" 2>&1 &
+            q2=$!
+            run_with_timeout 240 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9001 --env REPLICA_ID=3 --env ENTRY_DELAY_MS=300 "$RPC_LOGGER" >"$t5_dir/r3.log" 2>&1 &
+            q3=$!
+            run_with_timeout 240 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9001 --env REPLICA_ID=4 --env ENTRY_DELAY_MS=300 "$RPC_LOGGER" >"$t5_dir/r4.log" 2>&1 &
+            q4=$!
+            wait $q1 $q2 $q3 $q4
+        } || true
+        sleep 3
+        stop_all_rpc_servers
+        t5_body=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/$LOG_KEY" - 2>/dev/null || true)
+        t5_total=$(printf '%s\n' "$t5_body" | grep -c 'replica-' || true)
+        t5_ok=1
+        for r in 1 2 3 4; do
+            n=$(printf '%s\n' "$t5_body" | grep -c "\[replica-$r\]" || true)
+            if (( n != 11 )); then
+                fail_msg "tier5-two-servers: replica $r has $n lines in S3, expected 11"
+                t5_ok=0
+            fi
+        done
+        if (( t5_ok && t5_total == 44 )); then
+            info "[OK] tier5-two-servers: all 44 lines from 4 replicas on 2 servers present"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-two-servers: $t5_total lines total (expected 44)"
+            for r in 1 2 3 4; do tail -n 5 "$t5_dir/r$r.log" >&2; done
+            tail -n 30 "$LOG_DIR/tier5-two-servers-A.log" "$LOG_DIR/tier5-two-servers-B.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        assert_no_locks "tier5-two-servers" "vfs/"
+    else
+        info "Skipping tier5-two-servers (--no-rpc)"
+    fi
+
+    # 5.2 Close-to-open: a foreign write between two appends must be
+    # picked up by the open, not only by polling (poll is effectively off).
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        start_rpc_server_on 9000 "$RPC_SERVER_WASM_S3" "tier5-close-to-open.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=3600
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=1 --env ENTRY_COUNT=1 --env ENTRY_DELAY_MS=0 "$RPC_LOGGER" \
+            >"$LOG_DIR/tier5-close-to-open-r1.log" 2>&1 || true
+        sleep 1
+        printf 'foreign 1\nforeign 2\nforeign 3\nforeign 4\nforeign 5\n' >"$TMP_DIR/foreign.log"
+        awslocal_cmd s3 cp "$TMP_DIR/foreign.log" "s3://$S3_BUCKET/$LOG_KEY" >/dev/null
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=2 --env ENTRY_COUNT=1 --env ENTRY_DELAY_MS=0 "$RPC_LOGGER" \
+            >"$LOG_DIR/tier5-close-to-open-r2.log" 2>&1 || true
+        sleep 1
+        stop_all_rpc_servers
+        cto_body=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/$LOG_KEY" - 2>/dev/null || true)
+        cto_lines=$(printf '%s\n' "$cto_body" | grep -c . || true)
+        if [[ "$cto_body" == foreign\ 1* ]] && (( cto_lines == 7 )) && printf '%s\n' "$cto_body" | grep -q '\[replica-2\] Completed'; then
+            info "[OK] tier5-close-to-open: foreign content kept, replica 2 appended on top"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-close-to-open: unexpected log content ($cto_lines lines):"
+            printf '%s\n' "$cto_body" >&2
+            tail -n 30 "$LOG_DIR/tier5-close-to-open.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        assert_no_locks "tier5-close-to-open" "vfs/"
+    fi
+
+    # 5.3 A live lease held elsewhere makes the open fail with busy after
+    # the timeout; an expired lease is taken over.
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        start_rpc_server_on 9000 "$RPC_SERVER_WASM_S3" "tier5-busy.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=3600
+        forge_lock "/logs/app.log" "$(( $(now_ms) + 3600000 ))" "e2e-forged"
+        set +e
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=9 --env ENTRY_COUNT=1 --env ENTRY_DELAY_MS=0 \
+            --env VFS_S3_FILE_LOCK_TIMEOUT_MS=1500 "$RPC_LOGGER" >"$LOG_DIR/tier5-busy-probe.log" 2>&1
+        busy_rc=$?
+        set -e
+        if (( busy_rc != 0 )) && grep -qi 'busy' "$LOG_DIR/tier5-busy-probe.log"; then
+            info "[OK] tier5-busy: open failed with a busy error while the lease was held"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-busy: expected a busy failure (rc=$busy_rc):"
+            tail -n 20 "$LOG_DIR/tier5-busy-probe.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        if awslocal_cmd s3api head-object --bucket "$S3_BUCKET" --key "vfs/locks/logs/app.log" >/dev/null 2>&1; then
+            info "[OK] tier5-busy: the live lease was not taken over"
+        else
+            fail_msg "tier5-busy: the live lease disappeared"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+
+        forge_lock "/logs/app.log" "$(( $(now_ms) - 10000 ))" "e2e-forged"
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=10 --env ENTRY_COUNT=1 --env ENTRY_DELAY_MS=0 \
+            "$RPC_LOGGER" >"$LOG_DIR/tier5-takeover.log" 2>&1 || true
+        sleep 1
+        stop_all_rpc_servers
+        if grep -q "Wrote log to" "$LOG_DIR/tier5-takeover.log" && grep -q "Took over expired lease" "$LOG_DIR/tier5-busy.log"; then
+            info "[OK] tier5-takeover: expired lease was taken over and the write landed"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-takeover: expected a takeover:"
+            tail -n 20 "$LOG_DIR/tier5-takeover.log" "$LOG_DIR/tier5-busy.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        assert_no_locks "tier5-takeover" "vfs/"
+    fi
+
+    # 5.4 Directory markers: mkdir on server A is visible on server B after
+    # a poll, and rmdir removes it again.
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        start_rpc_server_on 9000 "$RPC_SERVER_WASM_S3" "tier5-dirs-A.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=1
+        start_rpc_server_on 9001 "$RPC_SERVER_WASM_S3" "tier5-dirs-B.log" \
+            "${S3_ENV[@]}" --env VFS_POLL_INTERVAL_SECS=1
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 "$RPC_DIRLIST" mkdir /shared/from-a \
+            >"$LOG_DIR/tier5-dirs-mkdir.log" 2>&1 || true
+        sleep 3
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9001 "$RPC_DIRLIST" ls /shared \
+            >"$LOG_DIR/tier5-dirs-ls1.log" 2>&1 || true
+        if awslocal_cmd s3api head-object --bucket "$S3_BUCKET" --key "vfs/files/shared/from-a/" >/dev/null 2>&1 \
+            && grep -q "Entry: from-a" "$LOG_DIR/tier5-dirs-ls1.log"; then
+            info "[OK] tier5-dirs: mkdir on A produced a marker and B listed it"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-dirs: marker or listing missing:"
+            cat "$LOG_DIR/tier5-dirs-mkdir.log" "$LOG_DIR/tier5-dirs-ls1.log" >&2
+            tail -n 20 "$LOG_DIR/tier5-dirs-A.log" "$LOG_DIR/tier5-dirs-B.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 "$RPC_DIRLIST" rmdir /shared/from-a \
+            >"$LOG_DIR/tier5-dirs-rmdir.log" 2>&1 || true
+        sleep 3
+        run_with_timeout 60 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9001 "$RPC_DIRLIST" ls /shared \
+            >"$LOG_DIR/tier5-dirs-ls2.log" 2>&1 || true
+        stop_all_rpc_servers
+        if ! awslocal_cmd s3api head-object --bucket "$S3_BUCKET" --key "vfs/files/shared/from-a/" >/dev/null 2>&1 \
+            && ! grep -q "Entry: from-a" "$LOG_DIR/tier5-dirs-ls2.log"; then
+            info "[OK] tier5-dirs: rmdir on A removed the marker and B no longer lists it"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-dirs: marker or listing still present after rmdir:"
+            cat "$LOG_DIR/tier5-dirs-rmdir.log" "$LOG_DIR/tier5-dirs-ls2.log" >&2
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    fi
+
+    # 5.5 Two host-trait processes writing the same path concurrently.
+    s3_reset_bucket
+    (
+        cd examples/host-trait/runtime-linker-s3 && \
+        env $HOST_S3_ENV RUST_LOG=info DEMO_PATH=/same.txt DEMO_CONTENT=alpha \
+            cargo run --release --quiet
+    ) >"$LOG_DIR/tier5-host-A.log" 2>&1 &
+    h1=$!
+    (
+        cd examples/host-trait/runtime-linker-s3 && \
+        env $HOST_S3_ENV RUST_LOG=info DEMO_PATH=/same.txt DEMO_CONTENT=beta \
+            cargo run --release --quiet
+    ) >"$LOG_DIR/tier5-host-B.log" 2>&1 &
+    h2=$!
+    wait $h1 $h2 || true
+    same_body=$(awslocal_cmd s3 cp "s3://$S3_BUCKET/vfs/files/same.txt" - 2>/dev/null || true)
+    if grep -q "demo-writer executed successfully" "$LOG_DIR/tier5-host-A.log" \
+        && grep -q "demo-writer executed successfully" "$LOG_DIR/tier5-host-B.log" \
+        && { [[ "$same_body" == "alpha" ]] || [[ "$same_body" == "beta" ]]; }; then
+        info "[OK] tier5-host-trait: both hosts completed, same.txt holds one full write ($same_body)"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        fail_msg "tier5-host-trait: unexpected outcome (same.txt='$same_body'):"
+        tail -n 20 "$LOG_DIR/tier5-host-A.log" "$LOG_DIR/tier5-host-B.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+    assert_no_locks "tier5-host-trait" "vfs/"
+
+    # 5.6 Two statically composed processes at once (realtime mode).
+    s3_reset_bucket
+    for side in A B; do
+        wasmtime run -S inherit-network=y -S http \
+            "${S3_ENV[@]}" \
+            --env VFS_S3_PREFIX=demo/ \
+            --env VFS_SYNC_MODE=realtime \
+            "$S3_DEMO_COMPOSED" >"$LOG_DIR/tier5-static-$side.log" 2>&1 &
+        eval "s$side=\$!"
+    done
+    wait $sA $sB || true
+    if grep -q "Demo Complete" "$LOG_DIR/tier5-static-A.log" && grep -q "Demo Complete" "$LOG_DIR/tier5-static-B.log"; then
+        info "[OK] tier5-static: both composed processes completed"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        fail_msg "tier5-static: a composed process failed:"
+        tail -n 20 "$LOG_DIR/tier5-static-A.log" "$LOG_DIR/tier5-static-B.log" >&2
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+    assert_no_locks "tier5-static" "demo/"
+
+    # 5.7 The opt-out still works: one server, leases disabled.
+    if (( RUN_RPC )); then
+        s3_reset_bucket
+        start_rpc_server_on 9000 "$RPC_SERVER_WASM_S3" "tier5-disabled.log" \
+            "${S3_ENV[@]}" --env VFS_S3_FILE_LOCK=disabled
+        dis_pids=()
+        for r in 1 2 3; do
+            run_with_timeout 120 wasmtime run -S inherit-network=y --env VFS_RPC_PORT=9000 --env REPLICA_ID=$r --env ENTRY_DELAY_MS=200 "$RPC_LOGGER" >"$LOG_DIR/tier5-disabled-r$r.log" 2>&1 &
+            dis_pids+=("$!")
+        done
+        # Wait for the loggers only; a bare `wait` would also block on the
+        # background rpc-server.
+        wait "${dis_pids[@]}" || true
+        sleep 6
+        stop_all_rpc_servers
+        dis_lines=$(s3_line_count "$LOG_KEY")
+        if (( dis_lines >= 30 )); then
+            info "[OK] tier5-disabled: $dis_lines lines in S3 with leases disabled"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            fail_msg "tier5-disabled: expected >=30 lines, got $dis_lines"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+        assert_no_locks "tier5-disabled" "vfs/"
     fi
 fi
 

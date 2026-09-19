@@ -176,15 +176,6 @@ impl VfsState {
         self.dirty_descriptors.insert(descriptor);
     }
 
-    #[cfg(feature = "s3-sync")]
-    fn sync_if_dirty(&mut self, descriptor: u32) {
-        if self.dirty_descriptors.remove(&descriptor) {
-            if let Some(path) = self.descriptor_to_path.get(&descriptor) {
-                s3_sync::on_write(path);
-            }
-        }
-    }
-
     fn get_fd(&self, descriptor: u32) -> Result<Fd, ErrorCode> {
         self.descriptor_to_fd
             .get(&descriptor)
@@ -316,6 +307,7 @@ impl exports::wasi::filesystem::preopens::Guest for VfsAdapter {
         let desc = Descriptor::new(DescriptorImpl {
             handle: 0,
             path: "/".to_string(),
+            flags: fs_core::O_RDONLY,
         });
         vec![(desc, "/".to_string())]
     }
@@ -339,6 +331,33 @@ struct DescriptorImpl {
     // The `*-at` methods resolve their relative paths against it, since
     // fs-core's directory-level operations are path-based.
     path: String,
+    // fs-core open flags, so close and fsync can tell write descriptors
+    // (which hold an S3 lease) from read descriptors.
+    flags: u32,
+}
+
+impl DescriptorImpl {
+    /// `sync` / `sync-data`: push pending content to S3 without releasing
+    /// the lease. The only place a lease conflict reaches the application.
+    fn fsync(&self) -> Result<(), ErrorCode> {
+        if self.handle == 0 {
+            return Ok(());
+        }
+        #[cfg(feature = "s3-sync")]
+        {
+            let path = with_vfs_state(|state| Ok(state.get_path(self.handle).cloned()))?;
+            if let Some(path) = path {
+                // Drop the dirty mark now; the explicit enqueue in on_fsync
+                // covers the same write.
+                with_vfs_state(|state| {
+                    state.dirty_descriptors.remove(&self.handle);
+                    Ok(())
+                })?;
+                s3_sync::on_fsync(&path, self.flags)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // Resolve a WASI `*-at` relative path against a descriptor's absolute path.
@@ -362,10 +381,16 @@ impl Drop for DescriptorImpl {
             return;
         }
 
-        with_vfs_state(|state| {
-            // Sync to S3 if this descriptor was written to
+        // Local bookkeeping first, with the state borrowed; the sync hooks
+        // run afterwards so they never overlap the `VFS_STATE` borrow.
+        let _sync_info = with_vfs_state(|state| {
             #[cfg(feature = "s3-sync")]
-            state.sync_if_dirty(self.handle);
+            let info = (
+                state.get_path(self.handle).cloned(),
+                state.dirty_descriptors.remove(&self.handle),
+            );
+            #[cfg(not(feature = "s3-sync"))]
+            let info = ();
 
             if let Some(fd) = state.descriptor_to_fd.get(&self.handle).copied() {
                 // Close the fd in fs-core
@@ -373,7 +398,22 @@ impl Drop for DescriptorImpl {
             }
             // Release the descriptor from our mappings
             state.release_descriptor(self.handle);
+            info
         });
+
+        // Register the write (batch: marks the lease dirty; realtime: PUT),
+        // then push and release the lease. A resource drop cannot return
+        // an error to the application, so a conflict here is logged;
+        // applications that need to observe it call `sync` before dropping.
+        #[cfg(feature = "s3-sync")]
+        if let Some(path) = _sync_info.0 {
+            if _sync_info.1 {
+                s3_sync::on_write(&path);
+            }
+            if let Err(e) = s3_sync::on_close(&path, self.flags) {
+                log::warn!("[s3-sync] close of {} reported: {:?}", path, e);
+            }
+        }
     }
 }
 
@@ -478,8 +518,7 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn sync_data(&self) -> Result<(), ErrorCode> {
-        // No-op for in-memory filesystem
-        Ok(())
+        self.fsync()
     }
 
     fn get_flags(&self) -> Result<DescriptorFlags, ErrorCode> {
@@ -631,20 +670,23 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn sync(&self) -> Result<(), ErrorCode> {
-        // No-op for in-memory filesystem
-        Ok(())
+        self.fsync()
     }
 
     fn create_directory_at(&self, path: String) -> Result<(), ErrorCode> {
+        let full_path = join_at_path(&self.path, &path);
         with_vfs_state(|state| {
             // Use mkdir (not mkdir_p) to properly return errors for existing directories
             // fs::create_dir_all() will call this multiple times for nested paths
             state
                 .fs
                 .borrow_mut()
-                .mkdir(&join_at_path(&self.path, &path))
+                .mkdir(&full_path)
                 .map_err(to_error_code)
-        })
+        })?;
+        #[cfg(feature = "s3-sync")]
+        s3_sync::on_mkdir(&full_path);
+        Ok(())
     }
 
     fn stat(&self) -> Result<DescriptorStat, ErrorCode> {
@@ -727,14 +769,22 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
                 Ok(Descriptor::new(DescriptorImpl {
                     handle,
                     path: self.path.clone(),
+                    flags: fs_core::O_RDONLY,
                 }))
             });
         }
 
-        with_vfs_state(|state| {
-            let core_flags = convert_flags(open_flags, flags);
-            let full_path = join_at_path(&self.path, &path);
+        let core_flags = convert_flags(open_flags, flags);
+        let full_path = join_at_path(&self.path, &path);
 
+        // Sync hook before the local open: for write opens this acquires
+        // the S3 lease and refreshes the local copy, which has to happen
+        // before an O_TRUNC open empties the file. Runs outside the
+        // `VFS_STATE` borrow.
+        #[cfg(feature = "s3-sync")]
+        s3_sync::on_open(&full_path, core_flags)?;
+
+        with_vfs_state(|state| {
             let fd = state
                 .fs
                 .borrow_mut()
@@ -746,13 +796,10 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
             #[cfg(not(feature = "s3-sync"))]
             let handle = state.allocate_descriptor(fd);
 
-            // Notify S3 sync to check metadata on open (if metadata sync mode)
-            #[cfg(feature = "s3-sync")]
-            s3_sync::on_open(&full_path);
-
             Ok(Descriptor::new(DescriptorImpl {
                 handle,
                 path: full_path,
+                flags: core_flags,
             }))
         })
     }
@@ -762,16 +809,18 @@ impl exports::wasi::filesystem::types::GuestDescriptor for DescriptorImpl {
     }
 
     fn remove_directory_at(&self, path: String) -> Result<(), ErrorCode> {
+        let full_path = join_at_path(&self.path, &path);
         with_vfs_state(|state| {
-            let full_path = join_at_path(&self.path, &path);
-
             // Use rmdir for removing directories
             state
                 .fs
                 .borrow_mut()
                 .rmdir(&full_path)
                 .map_err(to_error_code)
-        })
+        })?;
+        #[cfg(feature = "s3-sync")]
+        s3_sync::on_rmdir(&full_path);
+        Ok(())
     }
 
     fn rename_at(
