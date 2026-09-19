@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive"] }
 
 # WASM manipulation
 wasm-encoder = "0.256"
-wasmparser = "0.256"
+wasmparser = "0.259"
 
 # WASM composition (wac plug API)
 wac-graph = "0.10"
