@@ -231,6 +231,7 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
         }
 
         let retry_as_create = matches!(cond, Precondition::IfMatch(_));
+        let retry_as_overwrite = matches!(cond, Precondition::IfNoneMatchAny);
         let cond_clone = cond.clone();
         let etag = match self.store.put_file(path, content.clone(), cond).await {
             Ok(etag) => etag,
@@ -242,6 +243,20 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
                 self.store
                     .put_file(path, content, Precondition::IfNoneMatchAny)
                     .await?
+            }
+            Err(e) if e.is_precondition_failed() && retry_as_overwrite => {
+                match self.store.head_file(path).await? {
+                    Some(_) => return Err(e.into()),
+                    None => {
+                        log::warn!(
+                            "[sync] {} got spurious 412 on create (HEAD confirms no object); retrying",
+                            path
+                        );
+                        self.store
+                            .put_file(path, content, Precondition::IfNoneMatchAny)
+                            .await?
+                    }
+                }
             }
             Err(e) if !e.is_precondition_failed() => {
                 match self.verify_upload_landed(path, &cond_clone).await {
