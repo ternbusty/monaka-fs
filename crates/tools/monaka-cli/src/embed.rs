@@ -12,7 +12,7 @@ use fs_core::snapshot::{
 use crate::wasm;
 
 /// Run the embed command: embed files into the CLI's bundled vfs-adapter.
-pub fn run(output: &PathBuf, mounts: &[String], s3_sync: bool) -> Result<()> {
+pub fn run(output: &Path, mounts: &[String], s3_sync: bool) -> Result<()> {
     let mounts: Vec<(String, PathBuf)> = mounts
         .iter()
         .map(|m| parse_mount(m))
@@ -279,17 +279,16 @@ fn build_snapshot(mounts: &[(String, PathBuf)]) -> Result<FsSnapshot> {
                 dir_entries
                     .get(&0)
                     .cloned()
-                    .unwrap_or_else(|| BTreeMap::<String, InodeId>::new()),
+                    .unwrap_or_else(BTreeMap::<String, InodeId>::new),
             ),
         },
     );
 
     for inode in &mut inodes {
-        if let FileContentSnapshot::Dir(_) = &inode.content {
-            if let Some(entries) = dir_entries.get(&inode.id) {
-                let cloned: BTreeMap<String, InodeId> = entries.clone();
-                inode.content = FileContentSnapshot::Dir(cloned);
-            }
+        if let FileContentSnapshot::Dir(_) = &inode.content
+            && let Some(entries) = dir_entries.get(&inode.id)
+        {
+            inode.content = FileContentSnapshot::Dir(entries.clone());
         }
     }
 
@@ -384,17 +383,21 @@ fn find_monaka_target(bytes: &[u8]) -> Option<(u8, usize, usize)> {
             Ok(Payload::ModuleSection {
                 unchecked_range, ..
             }) => {
-                let module_bytes = &bytes[unchecked_range.start..unchecked_range.end];
+                let start = unchecked_range.start as usize;
+                let end = unchecked_range.end as usize;
+                let module_bytes = &bytes[start..end];
                 if has_monaka_globals(module_bytes) {
-                    return Some((1, unchecked_range.start, unchecked_range.end));
+                    return Some((1, start, end));
                 }
             }
             Ok(Payload::ComponentSection {
                 unchecked_range, ..
             }) => {
-                let component_bytes = &bytes[unchecked_range.start..unchecked_range.end];
+                let start = unchecked_range.start as usize;
+                let end = unchecked_range.end as usize;
+                let component_bytes = &bytes[start..end];
                 if find_monaka_target(component_bytes).is_some() {
-                    return Some((4, unchecked_range.start, unchecked_range.end));
+                    return Some((4, start, end));
                 }
             }
             _ => {}
@@ -520,7 +523,7 @@ fn modify_core_module(
     let new_memory_pages = if current_memory_size >= snapshot_space_needed + 0x200000 {
         memory_min_pages
     } else {
-        let needed = (0x200000 + snapshot_space_needed + page_size - 1) / page_size;
+        let needed = (0x200000 + snapshot_space_needed).div_ceil(page_size);
         std::cmp::max(memory_min_pages, needed)
     };
 
@@ -614,9 +617,11 @@ fn modify_core_module(
             }
             _ => {
                 if let Some((id, range)) = payload.as_section() {
+                    let start = range.start as usize;
+                    let end = range.end as usize;
                     result.push(id);
-                    write_leb128_u32(&mut result, (range.end - range.start) as u32);
-                    result.extend_from_slice(&module_bytes[range]);
+                    write_leb128_u32(&mut result, (end - start) as u32);
+                    result.extend_from_slice(&module_bytes[start..end]);
                 }
             }
         }
