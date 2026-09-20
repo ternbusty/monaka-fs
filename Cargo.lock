@@ -2173,7 +2173,7 @@ dependencies = [
  "wac-graph",
  "walkdir",
  "wasm-encoder 0.256.0",
- "wasmparser 0.256.0",
+ "wasmparser 0.259.0",
 ]
 
 [[package]]
@@ -3793,10 +3793,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60bd825ffedc6cba8a642924ba7ae424afbc47811cffbcb7b92031ec24e59b4c"
 dependencies = [
  "bitflags",
- "hashbrown 0.17.1",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]
@@ -3809,6 +3807,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]

@@ -462,3 +462,38 @@ fn append_from_two_instances_is_serialised_by_the_lease() {
     );
     assert!(store.keys_under("locks/").is_empty());
 }
+
+#[test]
+fn fsync_recovers_when_put_landed_but_response_was_lost() {
+    let store = store();
+    let (mgr, fs) = instance(&store, base_config());
+    rt().block_on(async {
+        mgr.on_open_write("/a").await.unwrap();
+        fs.write_local("/a", b"data");
+        mgr.enqueue_upload("/a".into());
+
+        // Simulate: S3 committed the object but the HTTP response was
+        // lost. The store holds the file and the next PUT call returns a
+        // transport error.
+        store.insert_raw("files/a", b"data");
+        store.fail_next(vfs_sync_core::S3Error::Write {
+            key: "files/a".into(),
+            message: "connection reset".into(),
+        });
+
+        mgr.on_fsync("/a").await.unwrap();
+    });
+
+    assert_eq!(store.get_raw("files/a").unwrap(), b"data");
+    assert!(mgr.is_locked("/a"), "lease must still be held after fsync");
+
+    // A subsequent close should succeed without a conflict because
+    // the fsync recovery updated base_etag.
+    rt().block_on(async {
+        fs.append_local("/a", b" more");
+        mgr.enqueue_upload("/a".into());
+        mgr.on_close("/a").await.unwrap();
+    });
+    assert_eq!(store.get_raw("files/a").unwrap(), b"data more");
+    assert!(!mgr.is_locked("/a"));
+}

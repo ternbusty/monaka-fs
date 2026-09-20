@@ -206,6 +206,11 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
     /// A 404 on `If-Match` means the object was deleted concurrently; the
     /// local write is newer intent than that delete, so it is retried as a
     /// create. A 412 propagates for the caller to resolve.
+    ///
+    /// A transport error (timeout, connection reset) does not guarantee
+    /// the PUT failed: S3 may have committed the object before the
+    /// response was lost. When a conditional PUT gets a non-precondition
+    /// error, HEAD the object to check whether the write actually landed.
     async fn upload_with_cond(&self, path: &str, cond: Precondition) -> Result<String, SyncError> {
         let content = self
             .read_file_content(path)
@@ -226,6 +231,7 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
         }
 
         let retry_as_create = matches!(cond, Precondition::IfMatch(_));
+        let cond_clone = cond.clone();
         let etag = match self.store.put_file(path, content.clone(), cond).await {
             Ok(etag) => etag,
             Err(e) if e.is_not_found() && retry_as_create => {
@@ -236,6 +242,12 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
                 self.store
                     .put_file(path, content, Precondition::IfNoneMatchAny)
                     .await?
+            }
+            Err(e) if !e.is_precondition_failed() => {
+                match self.verify_upload_landed(path, &cond_clone).await {
+                    Some(etag) => etag,
+                    None => return Err(e.into()),
+                }
             }
             Err(e) => return Err(e.into()),
         };
@@ -253,6 +265,37 @@ impl<F: FsBackend, S: ObjectStore> SyncManager<F, S> {
 
         log::info!("[sync] Uploaded: {}", path);
         Ok(etag)
+    }
+
+    /// After a non-precondition PUT error, HEAD the object to check whether
+    /// the write actually committed. Returns `Some(etag)` when the object
+    /// state is consistent with a successful write, `None` when the PUT
+    /// genuinely failed.
+    async fn verify_upload_landed(&self, path: &str, cond: &Precondition) -> Option<String> {
+        let (remote_etag, _, _) = match self.store.head_file(path).await {
+            Ok(Some(meta)) => meta,
+            _ => return None,
+        };
+
+        let landed = match cond {
+            // File must not have existed before our PUT. If it exists now,
+            // our PUT is the only thing that could have created it.
+            Precondition::IfNoneMatchAny => true,
+            // We hold the lease, so only our PUT could have changed the
+            // etag from the base value.
+            Precondition::IfMatch(base) => remote_etag != *base,
+            Precondition::None => false,
+        };
+
+        if landed {
+            log::warn!(
+                "[sync] PUT for {} reported a transport error but HEAD confirms the write landed",
+                path
+            );
+            Some(remote_etag)
+        } else {
+            None
+        }
     }
 
     /// A conditional upload of `path` was rejected. With file locks
