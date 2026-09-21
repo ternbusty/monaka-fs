@@ -15,7 +15,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 
 # WASM manipulation
-wasm-encoder = "0.256"
+wasm-encoder = "0.259"
 wasmparser = "0.259"
 
 # WASM composition (wac plug API)
