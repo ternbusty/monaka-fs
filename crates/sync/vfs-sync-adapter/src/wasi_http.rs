@@ -25,9 +25,42 @@ use bytes::{Bytes, BytesMut};
 use crate::wasi::clocks::monotonic_clock::subscribe_duration;
 use crate::wasi::http::{
     outgoing_handler,
-    types::{self as wasi_http, OutgoingBody, RequestOptions},
+    types::{self as wasi_http, ErrorCode as WasiErrorCode, OutgoingBody, RequestOptions},
 };
 use crate::wasi::io::poll::poll;
+
+fn classify_wasi_http_error(err: WasiErrorCode) -> ConnectorError {
+    match err {
+        WasiErrorCode::DnsTimeout
+        | WasiErrorCode::ConnectionTimeout
+        | WasiErrorCode::ConnectionReadTimeout
+        | WasiErrorCode::ConnectionWriteTimeout
+        | WasiErrorCode::HttpResponseTimeout => {
+            ConnectorError::timeout(Box::new(WasiHttpError(err)))
+        }
+        WasiErrorCode::ConnectionRefused
+        | WasiErrorCode::ConnectionTerminated
+        | WasiErrorCode::ConnectionLimitReached
+        | WasiErrorCode::DestinationNotFound
+        | WasiErrorCode::DestinationUnavailable
+        | WasiErrorCode::DestinationIpUnroutable
+        | WasiErrorCode::DnsError(_)
+        | WasiErrorCode::HttpResponseIncomplete
+        | WasiErrorCode::InternalError(_) => ConnectorError::io(Box::new(WasiHttpError(err))),
+        _ => ConnectorError::other(Box::new(WasiHttpError(err)), None),
+    }
+}
+
+#[derive(Debug)]
+struct WasiHttpError(WasiErrorCode);
+
+impl std::fmt::Display for WasiHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WASI HTTP error: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for WasiHttpError {}
 
 /// Builder for [`ChunkedWasiHttpClient`].
 #[derive(Default, Debug)]
@@ -142,7 +175,7 @@ impl WasiClient {
 
         // 2. Start HTTP connection FIRST (this allows data to flow)
         let future_response = outgoing_handler::handle(request, self.options.clone().0)
-            .map_err(|err| ConnectorError::other(err.into(), None))?;
+            .map_err(classify_wasi_http_error)?;
 
         // 3. Now write body chunks - connection is consuming data (async)
         write_body_streaming_async(&request_stream, &body)
@@ -173,7 +206,7 @@ impl WasiClient {
             .get()
             .expect("Http response not ready")
             .expect("Http response accessed more than once")
-            .map_err(|err| ConnectorError::other(err.into(), None))?;
+            .map_err(classify_wasi_http_error)?;
 
         let response = http::Response::try_from(WasiResponse(incoming_res))
             .map_err(|err| ConnectorError::other(err.into(), None))?;
