@@ -177,6 +177,24 @@ pub struct Acquired {
     pub expires_at: Instant,
 }
 
+/// GET the lock and check whether our PUT actually landed despite a
+/// reported error (transport failure, spurious 412). Returns the lock
+/// ETag when the stored record matches our `instance` and `epoch`.
+async fn verify_lease_landed<S: ObjectStore>(
+    store: &S,
+    key: &str,
+    instance: &str,
+    epoch: u64,
+) -> Option<String> {
+    let (body, meta) = store.get(key).await.ok().flatten()?;
+    let record = LockRecord::parse(&body)?;
+    if record.instance == instance && record.epoch == epoch {
+        Some(meta.etag)
+    } else {
+        None
+    }
+}
+
 /// Acquire the lease for `path`, waiting up to `timeout` for a live holder
 /// to release it. Expired records are taken over.
 pub async fn acquire<S: ObjectStore>(
@@ -213,8 +231,22 @@ pub async fn acquire<S: ObjectStore>(
                             expires_at,
                         })
                     }
-                    Err(e) if e.is_precondition_failed() => Err(e),
-                    Err(e) => return Err(e.into()),
+                    Err(put_err) => match verify_lease_landed(store, &key, instance, 1).await {
+                        Some(lock_etag) => {
+                            log::warn!(
+                                "[sync] Lease PUT for {} failed ({}) but GET confirms it landed",
+                                path,
+                                put_err
+                            );
+                            return Ok(Acquired {
+                                lock_etag,
+                                epoch: 1,
+                                expires_at,
+                            });
+                        }
+                        None if put_err.is_precondition_failed() => Err(put_err),
+                        None => return Err(put_err.into()),
+                    },
                 }
             }
             Some((body, meta)) => {
@@ -229,6 +261,7 @@ pub async fn acquire<S: ObjectStore>(
                         path: path.to_string(),
                     };
                     let expires_at = Instant::now() + lease;
+                    let prev_holder = record.map(|r| r.instance).unwrap_or_default();
                     match store
                         .put(&key, fresh.encode(), Precondition::IfMatch(meta.etag))
                         .await
@@ -237,7 +270,7 @@ pub async fn acquire<S: ObjectStore>(
                             log::warn!(
                                 "[sync] Took over expired lease for {} from {}",
                                 path,
-                                record.map(|r| r.instance).unwrap_or_default()
+                                prev_holder
                             );
                             return Ok(Acquired {
                                 lock_etag,
@@ -245,10 +278,26 @@ pub async fn acquire<S: ObjectStore>(
                                 expires_at,
                             });
                         }
-                        // Lost the takeover race, or the holder released in
-                        // between (404). Either way, look again.
-                        Err(e) if e.is_precondition_failed() || e.is_not_found() => Err(e),
-                        Err(e) => return Err(e.into()),
+                        Err(put_err) => {
+                            if let Some(lock_etag) =
+                                verify_lease_landed(store, &key, instance, epoch).await
+                            {
+                                log::warn!(
+                                    "[sync] Takeover PUT for {} failed ({}) but GET confirms it landed",
+                                    path, put_err
+                                );
+                                return Ok(Acquired {
+                                    lock_etag,
+                                    epoch,
+                                    expires_at,
+                                });
+                            }
+                            if put_err.is_precondition_failed() || put_err.is_not_found() {
+                                Err(put_err)
+                            } else {
+                                return Err(put_err.into());
+                            }
+                        }
                     }
                 } else {
                     holder = record.map(|r| r.instance);

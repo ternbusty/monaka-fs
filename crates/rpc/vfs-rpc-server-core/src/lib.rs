@@ -115,6 +115,7 @@ impl ServerContext {
         let sync = self.sync_manager.as_ref()?;
         if sync.file_lock_enabled() && is_write_access(flags) {
             if let Err(e) = sync.on_open_write(path).await {
+                log::warn!("[sync] on_open_write({}) failed: {}", path, e);
                 return Some(map_sync_error(e));
             }
         } else if self.metadata_sync {
