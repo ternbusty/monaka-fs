@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/ternbusty/monaka-fs/compare/vfs-host-v0.3.1...vfs-host-v0.4.0) (2026-09-22)
+
+
+### Features
+
+* per-file S3 leases and conditional writes for multi-instance sync ([#113](https://github.com/ternbusty/monaka-fs/issues/113)) ([44c5c90](https://github.com/ternbusty/monaka-fs/commit/44c5c908a767348c01025c7c12fccd4586640882))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * fs-core bumped from 0.3.1 to 0.4.0
+    * vfs-sync-host bumped from 0.3.1 to 0.4.0
+
 ## [0.3.1](https://github.com/ternbusty/monaka-fs/compare/vfs-host-v0.3.0...vfs-host-v0.3.1) (2026-08-19)
 
 

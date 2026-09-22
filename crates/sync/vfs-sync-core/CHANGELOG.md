@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/ternbusty/monaka-fs/compare/vfs-sync-core-v0.3.1...vfs-sync-core-v0.4.0) (2026-09-22)
+
+
+### Features
+
+* per-file S3 leases and conditional writes for multi-instance sync ([#113](https://github.com/ternbusty/monaka-fs/issues/113)) ([44c5c90](https://github.com/ternbusty/monaka-fs/commit/44c5c908a767348c01025c7c12fccd4586640882))
+
+
+### Bug Fixes
+
+* **sync:** retry spurious 412 on IfNoneMatchAny and classify WASI HTTP errors ([#119](https://github.com/ternbusty/monaka-fs/issues/119)) ([7d3cdb1](https://github.com/ternbusty/monaka-fs/commit/7d3cdb1290ca074c5da935c4e24e7b25f34ac4d3))
+* **sync:** verify lease landed after PUT failure to prevent orphaned leases ([#125](https://github.com/ternbusty/monaka-fs/issues/125)) ([159bb92](https://github.com/ternbusty/monaka-fs/commit/159bb9296926afb056787106bd689bccaaf4f098))
+
 ## [0.3.1](https://github.com/ternbusty/monaka-fs/compare/vfs-sync-core-v0.3.0...vfs-sync-core-v0.3.1) (2026-08-19)
 
 
