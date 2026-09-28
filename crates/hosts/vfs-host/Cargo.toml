@@ -19,7 +19,7 @@ s3-sync = ["dep:vfs-sync-host", "dep:tokio"]
 [dependencies]
 # vfs-host requires thread-safe fs-core (wasmtime Host trait requires Send+Sync)
 fs-core = { version = "0.3.1", path = "../../core/fs-core", features = ["thread-safe"] }
-wasmtime = "48.0.0"
+wasmtime = "49.0.1"
 wasmtime-wasi = "48.0.0"
 wasmtime-wasi-io = "48.0.0"
 anyhow = "1.0"
