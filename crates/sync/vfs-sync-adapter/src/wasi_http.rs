@@ -28,6 +28,7 @@ use crate::wasi::http::{
     types::{self as wasi_http, ErrorCode as WasiErrorCode, OutgoingBody, RequestOptions},
 };
 use crate::wasi::io::poll::poll;
+use crate::wasi::io::streams::StreamError;
 
 fn classify_wasi_http_error(err: WasiErrorCode) -> ConnectorError {
     match err {
@@ -288,10 +289,16 @@ async fn write_body_streaming_async(
         offset = end;
     }
 
-    // Start flush (non-blocking)
-    stream
-        .flush()
-        .map_err(|_| ParseError::new("Failed to start flush"))?;
+    // Start flush (non-blocking). Every byte is already in the stream, and
+    // with a known Content-Length hyper drops the body right after sending
+    // the last one, so `Closed` here is the normal end of the body rather
+    // than a failure. If the connection did break, the response future
+    // reports it.
+    match stream.flush() {
+        Ok(()) => {}
+        Err(StreamError::Closed) => return Ok(()),
+        Err(_) => return Err(ParseError::new("Failed to start flush")),
+    }
 
     // Wait for flush to complete - ASYNC with poll + yield
     let pollable = stream.subscribe();
