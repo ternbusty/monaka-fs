@@ -328,6 +328,7 @@ impl ServerContext {
                     if let (Some(path), Some(sync)) = (path, self.sync_manager.as_ref()) {
                         if is_write_access(flags) {
                             if let Err(e) = sync.on_fsync(&path).await {
+                                log::warn!("[sync] fsync of {} failed: {}", path, e);
                                 return map_sync_error(e);
                             }
                         }

@@ -153,6 +153,11 @@ wait_for_rpc_port() {
     done
 }
 
+# wasmtime-wasi-http logs the underlying hyper error of a failed outgoing
+# request at warn level. The guest only sees a coarse error code, so keep
+# the detail in the server logs.
+SERVER_WASMTIME_LOG="wasmtime_wasi_http=warn"
+
 # Globals so the EXIT trap can reach them.
 RPC_SERVER_PID=""
 RPC_SERVER_LOG=""
@@ -171,7 +176,7 @@ start_rpc_server() {
 
     # The wasmtime + wasm flags differ between plain and S3 server, so the
     # caller passes everything beyond the wasm path.
-    wasmtime run -S inherit-network=y -S http "$@" "$wasm" \
+    WASMTIME_LOG="$SERVER_WASMTIME_LOG" wasmtime run -S inherit-network=y -S http "$@" "$wasm" \
         >"$RPC_SERVER_LOG" 2>&1 &
     RPC_SERVER_PID=$!
     info "  pid: $RPC_SERVER_PID"
@@ -228,7 +233,7 @@ start_rpc_server_on() {
     local logfile="$LOG_DIR/$logname"
 
     info "starting rpc-server on :$port ($logname)"
-    wasmtime run -S inherit-network=y -S http --env "VFS_RPC_PORT=$port" "$@" "$wasm" \
+    WASMTIME_LOG="$SERVER_WASMTIME_LOG" wasmtime run -S inherit-network=y -S http --env "VFS_RPC_PORT=$port" "$@" "$wasm" \
         >"$logfile" 2>&1 &
     local pid=$!
     RPC_SERVER_PIDS+=("$pid")
@@ -614,7 +619,7 @@ else
         "$REPO_ROOT/examples/static-composition/s3-sync/target/wasm32-wasip2/release/static-s3-demo.wasm" \
         -o "$S3_DEMO_COMPOSED" >/dev/null
     run_demo "tier3-static-s3-sync" \
-        "wasmtime run -S inherit-network=y -S http \
+        "WASMTIME_LOG=$SERVER_WASMTIME_LOG wasmtime run -S inherit-network=y -S http \
             --env VFS_S3_BUCKET=$S3_BUCKET \
             --env VFS_S3_PREFIX=demo/ \
             --env VFS_SYNC_MODE=realtime \
@@ -995,7 +1000,7 @@ else
     # 5.6 Two statically composed processes at once (realtime mode).
     s3_reset_bucket
     for side in A B; do
-        wasmtime run -S inherit-network=y -S http \
+        WASMTIME_LOG="$SERVER_WASMTIME_LOG" wasmtime run -S inherit-network=y -S http \
             "${S3_ENV[@]}" \
             --env VFS_S3_PREFIX=demo/ \
             --env VFS_SYNC_MODE=realtime \

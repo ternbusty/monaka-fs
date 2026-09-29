@@ -373,6 +373,12 @@ jobs:
       - name: Run E2E suite
         run: bash scripts/e2e.sh
 
+      # LocalStack runs with DEBUG=1, so its log shows how it answered each
+      # request. Keep it next to the e2e logs for the failure artifact.
+      - name: Save LocalStack log
+        if: always()
+        run: docker logs halycon-localstack-1 >/tmp/e2e-logs/localstack.log 2>&1 || true
+
       - name: Stop LocalStack
         if: always()
         run: docker rm -f halycon-localstack-1 || true

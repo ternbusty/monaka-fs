@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use aws_config::SdkConfig;
 use aws_sdk_s3::config::http::HttpResponse;
-use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::error::{DisplayErrorContext, ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use aws_sdk_s3::Client;
 
@@ -55,9 +55,11 @@ where
 {
     let status = e.raw_response().map(|r| r.status().as_u16());
     let code = e.code().unwrap_or("").to_string();
+    // `SdkError`'s own Display is just "dispatch failure" for transport
+    // errors; the cause chain is what says which step broke.
     let message = match e.as_service_error() {
         Some(se) => format!("{} ({})", se, code),
-        None => e.to_string(),
+        None => DisplayErrorContext(&e).to_string(),
     };
     let key = key.to_string();
 
