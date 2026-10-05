@@ -19,7 +19,7 @@ wasm-encoder = "0.259"
 wasmparser = "0.259"
 
 # WASM composition (wac plug API)
-wac-graph = "0.11"
+wac-graph = "0.12"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
