@@ -237,6 +237,12 @@ jobs:
       # when composed with the rpc-adapter. The WIT update to 0.2.9 and
       # the unified pollable representation in both adapters removed
       # both failure modes.
+      #
+      # The vendored WIT has to stay at or above the WASI version the
+      # stable std imports. The 1.99 std imports 0.2.12, and against the
+      # 0.2.9 adapters its monotonic-clock pollable no longer matched the
+      # adapter's, so `monaka compose` failed validation. Bump wit/deps
+      # when a new stable moves to a newer 0.2.x.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
