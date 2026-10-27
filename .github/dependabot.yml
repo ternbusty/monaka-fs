@@ -13,6 +13,14 @@ updates:
     commit-message:
       prefix: deps
       include: scope
+    # wasmtime-wasi's traits are written against the wasmtime types of the
+    # same release, so bumping one crate alone leaves two wasmtime versions
+    # in the graph and vfs-host stops compiling. Update them as one PR.
+    groups:
+      wasmtime:
+        patterns:
+          - "wasmtime"
+          - "wasmtime-*"
 
   # GitHub Actions used in the workflows (checkout, rust-toolchain, ...).
   # Action updates often carry node-version or security fixes; keep them
