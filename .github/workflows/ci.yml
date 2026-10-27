@@ -98,8 +98,8 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-build-${{ hashFiles('**/Cargo.lock') }}
 
-      # Same cache path/key the e2e job uses, including the sub-workspace
-      # target dirs the host-trait runtime-linker examples maintain. The
+      # Same cache path/key the e2e job uses, including the target dirs of
+      # the guest WASM crates that still live in their own workspaces. The
       # warmup steps below populate every directory so the e2e job's
       # pre-flight is cache-hit-only relinks.
       - name: Cache cargo build
@@ -107,11 +107,6 @@ jobs:
         with:
           path: |
             target
-            examples/host-trait/runtime-linker/target
-            examples/host-trait/runtime-linker-demo-fs/target
-            examples/host-trait/runtime-linker-s3/target
-            usecases/host-trait/sensor-pipeline/runtime-linker/target
-            usecases/host-trait/concurrent-append/host-runner/target
             usecases/host-trait/concurrent-append/append-client/target
             usecases/host-trait/sensor-pipeline/sensor-ingest/target
             usecases/host-trait/sensor-pipeline/sensor-process/target
@@ -138,7 +133,7 @@ jobs:
       #
       # Pre-warm the parts e2e needs: the demo apps that get composed via
       # monaka, the monaka CLI bundle itself, and the host-trait
-      # runtime-linker examples that live in their own Cargo workspaces.
+      # runtime-linker examples with the guest WASMs they load.
       - name: Pre-build workspace demo WASMs
         run: |
           cargo build --release --target wasm32-wasip2 \
@@ -265,21 +260,17 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-build-${{ hashFiles('**/Cargo.lock') }}
 
-      # The host-trait runtime-linker examples and usecases each live in
-      # their own Cargo workspace, so they each get their own `target/`
-      # directory that the root cache doesn't cover. Caching them too makes
-      # the e2e job's pre-flight a relink instead of a full wasmtime + AWS
-      # SDK compile from scratch.
+      # The host-trait guest WASM crates each live in their own Cargo
+      # workspace, so they each get their own `target/` directory that the
+      # root cache doesn't cover. The native runtime-linker hosts are root
+      # workspace members and build into `target/`, so caching it makes the
+      # e2e job's pre-flight a relink instead of a full wasmtime + AWS SDK
+      # compile from scratch.
       - name: Cache cargo build target
         uses: actions/cache@v6
         with:
           path: |
             target
-            examples/host-trait/runtime-linker/target
-            examples/host-trait/runtime-linker-demo-fs/target
-            examples/host-trait/runtime-linker-s3/target
-            usecases/host-trait/sensor-pipeline/runtime-linker/target
-            usecases/host-trait/concurrent-append/host-runner/target
             usecases/host-trait/concurrent-append/append-client/target
             usecases/host-trait/sensor-pipeline/sensor-ingest/target
             usecases/host-trait/sensor-pipeline/sensor-process/target

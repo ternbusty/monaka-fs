@@ -3,19 +3,13 @@ name = "host-concurrent-runner"
 version = "0.1.0"
 edition = "2021"
 
-# Standalone package, not part of workspace
-[workspace]
-
 [dependencies]
 # WASM runtime
-wasmtime = { version = "50.0.0", features = ["component-model"] }
-wasmtime-wasi = "50.0.0"
+wasmtime = { workspace = true, features = ["component-model"] }
+wasmtime-wasi.workspace = true
 
 # VFS host implementation
 vfs-host = { path = "../../../../crates/hosts/vfs-host" }
 
 # Utilities
 anyhow = "1.0"
-
-[profile.release]
-opt-level = 3

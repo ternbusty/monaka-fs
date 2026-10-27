@@ -23,7 +23,7 @@ Unlike the [RPC version](../../rpc-server/concurrent-append/), this uses true mu
 # Build append-client WASM (standalone package)
 cd usecases/host-trait/concurrent-append/append-client && cargo build --release --target wasm32-wasip2 && cd ../../../..
 
-# Build host-runner (standalone package)
+# Build host-runner (member of the root workspace, output goes to target/)
 cd usecases/host-trait/concurrent-append/host-runner && cargo build --release && cd ../../../..
 ```
 
@@ -31,7 +31,7 @@ cd usecases/host-trait/concurrent-append/host-runner && cargo build --release &&
 
 ```bash
 WASM_PATH=usecases/host-trait/concurrent-append/append-client/target/wasm32-wasip2/release/append-client.wasm \
-  usecases/host-trait/concurrent-append/host-runner/target/release/host-concurrent-runner 3 50
+  target/release/host-concurrent-runner 3 50
 ```
 
 Arguments: `host-concurrent-runner [num_clients] [append_count]`

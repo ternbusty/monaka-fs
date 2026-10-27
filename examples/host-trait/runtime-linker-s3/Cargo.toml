@@ -2,14 +2,12 @@
 name = "runtime-linker-s3"
 version = "0.1.0"
 edition = "2021"
-
-[workspace]
 description = "Example: vfs-host with S3 sync enabled"
 
 [dependencies]
 vfs-host = { path = "../../../crates/hosts/vfs-host", features = ["s3-sync"] }
-wasmtime = "50.0.0"
-wasmtime-wasi = "50.0.0"
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
 anyhow = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 env_logger = "0.11"

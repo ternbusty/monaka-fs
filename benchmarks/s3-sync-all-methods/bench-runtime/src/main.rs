@@ -4,10 +4,10 @@
 //! Supports full S3 passthrough mode (realtime + read-through + metadata sync).
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use std::sync::Arc;
 use std::time::Instant;
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 
 use vfs_host::{self, VfsHostState};
@@ -42,14 +42,18 @@ async fn init_vfs_with_s3() -> Result<VfsHostState> {
 }
 
 /// Run WASM benchmark (sync operation - must run outside tokio runtime)
-fn run_wasm(engine: &Engine, vfs_host_state: VfsHostState, wasm_path: &str) -> Result<VfsHostState> {
+fn run_wasm(
+    engine: &Engine,
+    vfs_host_state: VfsHostState,
+    wasm_path: &str,
+) -> Result<VfsHostState> {
     let mut store = Store::new(engine, vfs_host_state);
     let mut linker = wasmtime::component::Linker::new(engine);
     vfs_host::add_to_linker_with_vfs(&mut linker)?;
 
     log::info!("Loading WASM: {}", wasm_path);
-    let component = Component::from_file(engine, wasm_path)
-        .context("Failed to load WASM component")?;
+    let component =
+        Component::from_file(engine, wasm_path).context("Failed to load WASM component")?;
 
     use wasmtime_wasi::p2::bindings::sync::Command;
     let command = Command::instantiate(&mut store, &component, &linker)
@@ -108,13 +112,14 @@ async fn main() -> Result<()> {
         run_wasm(&engine_clone, vfs_host_state, &wasm_path_clone)
     })
     .await;
-    let vfs_host_state = anyhow::Context::context(
-        vfs_host_state,
-        "WASM execution thread panicked",
-    )??;
+    let vfs_host_state =
+        anyhow::Context::context(vfs_host_state, "WASM execution thread panicked")??;
 
     let bench_elapsed = bench_start.elapsed();
-    log::info!("WASM execution time: {:.3}ms", bench_elapsed.as_secs_f64() * 1000.0);
+    log::info!(
+        "WASM execution time: {:.3}ms",
+        bench_elapsed.as_secs_f64() * 1000.0
+    );
 
     // For realtime mode, no need to wait for batch flush
     let sync_mode = std::env::var("VFS_SYNC_MODE").unwrap_or_else(|_| "batch".to_string());
@@ -128,10 +133,16 @@ async fn main() -> Result<()> {
     let shutdown_start = Instant::now();
     drop(vfs_host_state);
     let shutdown_elapsed = shutdown_start.elapsed();
-    log::info!("Shutdown time: {:.3}ms", shutdown_elapsed.as_secs_f64() * 1000.0);
+    log::info!(
+        "Shutdown time: {:.3}ms",
+        shutdown_elapsed.as_secs_f64() * 1000.0
+    );
 
     let total_elapsed = bench_start.elapsed();
-    println!("[TOTAL_WITH_SYNC] {:.3}ms", total_elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "[TOTAL_WITH_SYNC] {:.3}ms",
+        total_elapsed.as_secs_f64() * 1000.0
+    );
 
     Ok(())
 }

@@ -34,8 +34,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 
 use vfs_host::{self, VfsHostState};

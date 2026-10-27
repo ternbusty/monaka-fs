@@ -3,7 +3,6 @@
 mod common;
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use common::{
     print_csv_header, setup_test_data, verify_benchmark_results, BenchConfig, BenchResult,
     BenchTimer, VfsOps, DATA_SIZES, OPS_PER_THREAD, SCENARIOS, THREAD_COUNTS,
@@ -13,6 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use vfs_host::{add_to_linker_with_vfs, Fs, VfsHostState};
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::sync::Command;
 
@@ -68,13 +68,23 @@ fn main() -> Result<()> {
         eprintln!("--- Data size: {} bytes ---", data_size);
         for thread_count in THREAD_COUNTS {
             for scenario in &SCENARIOS {
-                let (result, shared_vfs) =
-                    run_benchmark(&engine, &component, scenario, thread_count, data_size, no_cache)?;
+                let (result, shared_vfs) = run_benchmark(
+                    &engine,
+                    &component,
+                    scenario,
+                    thread_count,
+                    data_size,
+                    no_cache,
+                )?;
 
                 // Verify data integrity for write/same scenario
                 let integrity = if scenario.scenario == "write" && scenario.file_scope == "same" {
-                    let correctness =
-                        verify_benchmark_results(&*shared_vfs, thread_count, OPS_PER_THREAD, data_size)?;
+                    let correctness = verify_benchmark_results(
+                        &*shared_vfs,
+                        thread_count,
+                        OPS_PER_THREAD,
+                        data_size,
+                    )?;
                     format!("{:.1}%", correctness.integrity_percent())
                 } else {
                     "N/A".to_string()
@@ -174,7 +184,10 @@ fn run_wasm_instance(
         ("BENCH_SCENARIO", scenario.to_string()),
         ("BENCH_FILE_SCOPE", file_scope.to_string()),
         ("BENCH_DATA_SIZE", data_size.to_string()),
-        ("BENCH_NO_CACHE", if no_cache { "1" } else { "0" }.to_string()),
+        (
+            "BENCH_NO_CACHE",
+            if no_cache { "1" } else { "0" }.to_string(),
+        ),
     ];
     let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
 

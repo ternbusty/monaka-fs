@@ -3,16 +3,14 @@ name = "http-cache-server"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [dependencies]
 # HTTP server
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 
 # WASM runtime
-wasmtime = { version = "50.0.0", features = ["component-model"] }
-wasmtime-wasi = "50.0.0"
+wasmtime = { workspace = true, features = ["component-model"] }
+wasmtime-wasi.workspace = true
 
 # VFS host
 vfs-host = { path = "../../../../crates/hosts/vfs-host" }

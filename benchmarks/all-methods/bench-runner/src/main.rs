@@ -4,9 +4,9 @@
 //! This represents the "host trait" method in the benchmark comparison.
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use std::env;
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 
 fn main() -> Result<()> {
@@ -25,8 +25,7 @@ fn main() -> Result<()> {
     let engine = Engine::new(&config)?;
 
     // Create VfsHostState (uses fs-core directly via host trait)
-    let vfs_host_state = vfs_host::VfsHostState::new()
-        .context("Failed to create VfsHostState")?;
+    let vfs_host_state = vfs_host::VfsHostState::new().context("Failed to create VfsHostState")?;
 
     // Create store and linker
     let mut store = Store::new(&engine, vfs_host_state);

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 
 // Import VFS Host trait implementations from vfs-host crate
