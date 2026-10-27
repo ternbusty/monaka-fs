@@ -36,6 +36,19 @@ members = [
 
   # Use Cases - Static Composition
   "usecases/static-composition/image-pipeline/image-processor",
+
+  # Host Trait - native wasmtime hosts embedding vfs-host
+  "examples/host-trait/runtime-linker",
+  "examples/host-trait/runtime-linker-demo-fs",
+  "examples/host-trait/runtime-linker-s3",
+  "usecases/host-trait/concurrent-append/host-runner",
+  "usecases/host-trait/http-cache/http-server",
+  "usecases/host-trait/sensor-pipeline/runtime-linker",
+
+  # Benchmarks - native wasmtime runners
+  "benchmarks/all-methods/bench-runner",
+  "benchmarks/lock-strategy/bench-runner",
+  "benchmarks/s3-sync-all-methods/bench-runtime",
 ]
 default-members = [
   "crates/core/fs-core",
@@ -51,6 +64,13 @@ exclude = [
   "usecases/benchmarks",
 ]
 resolver="3"
+
+# wasmtime-wasi's traits are written against the wasmtime types of the same
+# release, so every crate that touches them must agree on one version.
+[workspace.dependencies]
+wasmtime = "50.0.0"
+wasmtime-wasi = "50.0.0"
+wasmtime-wasi-io = "50.0.0"
 
 [profile.dev]
 opt-level = 1

@@ -8,13 +8,13 @@
 //!   host-concurrent-runner 3 50
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use vfs_host::{add_to_linker_with_vfs, VfsHostState};
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::sync::Command;
 
@@ -39,8 +39,9 @@ fn main() -> Result<()> {
     let engine = Arc::new(Engine::new(&config)?);
 
     // Load the append-client WASM component
-    let wasm_path = std::env::var("WASM_PATH")
-        .unwrap_or_else(|_| "../append-client/target/wasm32-wasip2/release/append-client.wasm".to_string());
+    let wasm_path = std::env::var("WASM_PATH").unwrap_or_else(|_| {
+        "../append-client/target/wasm32-wasip2/release/append-client.wasm".to_string()
+    });
     let component = Arc::new(
         Component::from_file(&engine, &wasm_path)
             .context(format!("Failed to load WASM from {}", wasm_path))?,
@@ -129,10 +130,7 @@ fn run_wasm_instance(
     error_count: Arc<AtomicUsize>,
 ) {
     // Set up environment variables
-    let env_vars = [
-        ("CLIENT_ID", client_id),
-        ("APPEND_COUNT", append_count),
-    ];
+    let env_vars = [("CLIENT_ID", client_id), ("APPEND_COUNT", append_count)];
 
     // Create VfsHostState with shared VFS
     let vfs_host_state = VfsHostState::from_shared_vfs_with_env(shared_vfs, &env_vars);
@@ -242,7 +240,11 @@ fn verify_results(
     client_ids.sort();
     for client_id in &client_ids {
         let count = client_counts[client_id];
-        let status = if count == expected_appends { "OK" } else { "MISMATCH" };
+        let status = if count == expected_appends {
+            "OK"
+        } else {
+            "MISMATCH"
+        };
         println!("  Client {:3}: {:5} lines [{}]", client_id, count, status);
     }
 

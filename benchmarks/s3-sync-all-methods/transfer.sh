@@ -23,7 +23,7 @@ echo ""
 
 # Verify built files
 BENCH_APP="$SCRIPT_DIR/bench-app/target/wasm32-wasip2/release/bench-08-app.wasm"
-BENCH_RUNTIME="$SCRIPT_DIR/bench-runtime/target/aarch64-unknown-linux-gnu/release/bench-runtime-08"
+BENCH_RUNTIME="$ROOT_DIR/target/aarch64-unknown-linux-gnu/release/bench-runtime-08"
 RPC_SERVER="$ROOT_DIR/target/wasm32-wasip2/release/vfs_rpc_server.wasm"
 
 for f in "$BENCH_APP" "$BENCH_RUNTIME" "$SCRIPT_DIR/bench-wac.wasm" "$SCRIPT_DIR/bench-rpc.wasm" "$RPC_SERVER"; do

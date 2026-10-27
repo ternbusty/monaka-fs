@@ -113,8 +113,8 @@ run_demo() {
     info "log: $logfile"
 
     # 5 minutes is enough headroom even for the host-trait examples that
-    # live in their own workspace and have to compile wasmtime/anyhow on
-    # a cold CI runner before they can run.
+    # have to compile wasmtime/anyhow on a cold CI runner before they can
+    # run.
     if run_with_timeout 300 bash -c "$cmd" >"$logfile" 2>&1; then
         local missing=""
         for expected in "$@"; do
@@ -423,8 +423,7 @@ info "monaka CLI + bundled WASMs built"
 # Pre-build the host-trait runtime-linker examples so that
 # `cargo run --release` in Tier 1 / Tier 3 / Tier 4 hits the per-demo
 # timeout only on the actual run, not on a cold compile of wasmtime,
-# tokio, AWS SDK, etc. Each lives in its own workspace so the root
-# cargo cache doesn't help them.
+# tokio, AWS SDK, etc.
 for sub in \
     examples/host-trait/runtime-linker \
     examples/host-trait/runtime-linker-demo-fs \
@@ -506,7 +505,7 @@ run_demo "tier1-sensor-pipeline" \
     >"$LOG_DIR/build-host-runner.log" 2>&1
 run_demo "tier1-concurrent-append" \
     "WASM_PATH=usecases/host-trait/concurrent-append/append-client/target/wasm32-wasip2/release/append-client.wasm \
-     usecases/host-trait/concurrent-append/host-runner/target/release/host-concurrent-runner 3 50" \
+     target/release/host-concurrent-runner 3 50" \
     "Total lines:   150" \
     "Invalid lines: 0"
 

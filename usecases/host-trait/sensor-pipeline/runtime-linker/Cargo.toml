@@ -3,10 +3,8 @@ name = "sensor-pipeline-runner"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [dependencies]
-wasmtime = { version = "50.0.0", features = ["component-model"] }
-wasmtime-wasi = "50.0.0"
+wasmtime = { workspace = true, features = ["component-model"] }
+wasmtime-wasi.workspace = true
 anyhow = "1.0"
 vfs-host = { path = "../../../../crates/hosts/vfs-host" }

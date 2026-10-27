@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use wasmtime::error::Context as _;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -16,6 +15,7 @@ use axum::{
 };
 use vfs_host::Fs;
 use wasmtime::component::Component;
+use wasmtime::error::Context as _;
 use wasmtime::{Config, Engine, Store};
 
 /// Shared application state

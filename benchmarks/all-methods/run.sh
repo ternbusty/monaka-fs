@@ -29,7 +29,7 @@ for f in "$SCRIPT_DIR/bench-static.wasm" "$SCRIPT_DIR/bench-rpc.wasm" "$RPC_SERV
     fi
 done
 
-BENCH_RUNNER="$SCRIPT_DIR/bench-runner/target/release/bench-runner"
+BENCH_RUNNER="$ROOT_DIR/target/release/bench-runner"
 if [ ! -f "$BENCH_RUNNER" ]; then
     echo -e "${RED}[ERROR] bench-runner not found. Run ./build.sh first.${NC}"
     exit 1
