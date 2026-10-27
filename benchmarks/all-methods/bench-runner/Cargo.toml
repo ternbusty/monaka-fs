@@ -7,7 +7,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-wasmtime = { version = "49.0.1", features = ["component-model"] }
-wasmtime-wasi = "49.0.1"
+wasmtime = { version = "50.0.0", features = ["component-model"] }
+wasmtime-wasi = "50.0.0"
 anyhow = "1.0"
 vfs-host = { path = "../../../crates/hosts/vfs-host" }
