@@ -2323,7 +2323,7 @@ dependencies = [
  "wac-graph",
  "walkdir",
  "wasm-encoder 0.262.0",
- "wasmparser 0.261.0",
+ "wasmparser 0.262.0",
 ]
 
 [[package]]
@@ -4019,6 +4019,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]
