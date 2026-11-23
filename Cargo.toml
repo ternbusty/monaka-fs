@@ -68,9 +68,9 @@ resolver="3"
 # wasmtime-wasi's traits are written against the wasmtime types of the same
 # release, so every crate that touches them must agree on one version.
 [workspace.dependencies]
-wasmtime = "50.0.0"
-wasmtime-wasi = "50.0.0"
-wasmtime-wasi-io = "50.0.0"
+wasmtime = "51.0.0"
+wasmtime-wasi = "51.0.0"
+wasmtime-wasi-io = "51.0.0"
 
 [profile.dev]
 opt-level = 1
